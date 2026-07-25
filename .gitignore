@@ -14,3 +14,6 @@ frontend/dist/
 
 # calibration artifacts (generated)
 calib/
+
+# poses taught through the UI (per-lab, not source)
+data/

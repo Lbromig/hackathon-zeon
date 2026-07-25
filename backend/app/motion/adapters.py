@@ -33,8 +33,9 @@ class ArmDriverMover:
         ), speed=speed)
 
     def gripper(self, width) -> None:
-        # width in metres; ArmDriver.grip expects its own units — adapt as needed per gripper
-        self.arm.grip(width=width)
+        # Planner speaks metres; the gripper speaks its own units (counts on the
+        # xArm parallel gripper). The driver rejects a raw metre value, so convert.
+        self.arm.grip(width=self.arm.width_from_metres(width))
 
     def attach(self, object_id: str) -> None:
         if self._on_attach:

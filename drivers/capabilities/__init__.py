@@ -2,8 +2,11 @@
 
 Instrument packages (xarm/, opentrons/, camera/) implement these.
 """
-from .arm import ArmDriver, Pose
+from .arm import ArmDriver, ArmLimits, GripperInfo, GripperKind, Pose
 from .camera import CameraDriver
 from .liquid_handler import DeckLocation, LiquidHandlerDriver
 
-__all__ = ["ArmDriver", "Pose", "CameraDriver", "LiquidHandlerDriver", "DeckLocation"]
+__all__ = [
+    "ArmDriver", "ArmLimits", "GripperInfo", "GripperKind", "Pose",
+    "CameraDriver", "LiquidHandlerDriver", "DeckLocation",
+]

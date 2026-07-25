@@ -17,11 +17,14 @@ app/
 
 ## Run
 
+Dependencies live in the root `pyproject.toml` and are managed with
+[uv](https://docs.astral.sh/uv/) — `uv sync` from the repo root installs everything,
+including the vendored xArm SDK.
+
 ```bash
+uv sync                                            # from the repo root
 cd backend
-pip install -r requirements.txt
-pip install -e ../third_party/xArm-Python-SDK     # real arms (optional to boot)
-PYTHONPATH=.. uvicorn app.main:app --reload       # .. so `drivers` is importable
+PYTHONPATH=.. uv run uvicorn app.main:app --reload  # .. so `drivers` is importable
 ```
 
 Boots even with no hardware attached — drivers that fail to init are skipped,

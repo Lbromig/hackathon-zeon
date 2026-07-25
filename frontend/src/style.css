@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/* Dark lab-console palette, matching the existing fleet panels. */
+@theme {
+  --color-deck-950: #0b1220;
+  --color-deck-900: #101a2e;
+  --color-deck-800: #14203a;
+  --color-deck-700: #1e2c4a;
+  --color-deck-600: #24365c;
+  --color-deck-400: #6b7a90;
+  --color-deck-200: #9fb0cc;
+  --color-deck-100: #cad6ec;
+}
+
+body {
+  @apply bg-deck-950 text-deck-100 antialiased;
+  font-family: system-ui, sans-serif;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-deck-600 bg-deck-800 p-4;
+  }
+  .card-title {
+    @apply mb-3 text-xs font-semibold uppercase tracking-wider text-deck-400;
+  }
+
+  /* Buttons are chunky on purpose — this gets clicked with one hand on the e-stop. */
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-1.5 rounded-lg border
+           border-deck-600 bg-deck-700 px-3 py-2 text-sm font-semibold text-deck-100
+           transition-colors hover:bg-deck-600 active:bg-blue-600
+           disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-deck-700;
+  }
+  .btn-primary {
+    @apply border-blue-500 bg-blue-600 hover:bg-blue-500 disabled:hover:bg-blue-600;
+  }
+  .btn-danger {
+    @apply border-red-500 bg-red-600 hover:bg-red-500 disabled:hover:bg-red-600;
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent hover:bg-deck-700;
+  }
+  .btn-sm {
+    @apply px-2 py-1 text-xs;
+  }
+
+  .chip {
+    @apply rounded-md border border-deck-600 px-2 py-1 text-xs font-semibold text-deck-200
+           transition-colors hover:border-deck-400 hover:text-deck-100;
+  }
+  .chip-on {
+    @apply border-blue-500 bg-blue-600/20 text-blue-200;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-deck-600 bg-deck-900 px-2 py-1.5 text-sm
+           text-deck-100 outline-none focus:border-blue-500;
+  }
+  .kbd {
+    @apply rounded border border-deck-600 bg-deck-900 px-1.5 py-0.5 font-mono text-[10px] text-deck-200;
+  }
+  .num {
+    @apply font-mono tabular-nums;
+  }
+}
