@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 
-from .api import calibration, instruments, teach, workflow
+from .api import calibration, instruments, liquid_handler, teach, workflow
 from .services.device_manager import device_manager
 
 
@@ -60,6 +60,7 @@ async def validation_error(_: Request, exc: RequestValidationError) -> JSONRespo
 
 app.include_router(instruments.router)
 app.include_router(teach.router)
+app.include_router(liquid_handler.router)
 app.include_router(calibration.router)
 app.include_router(workflow.router)
 

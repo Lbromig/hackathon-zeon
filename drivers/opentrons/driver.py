@@ -282,12 +282,27 @@ class OpentronsDriver(LiquidHandlerDriver):
         self._reference_lost = False
         self._z_offset_mm = 0.0
 
-    def jog_z(self, delta_mm: float, feedrate: float = APPROACH_FEED) -> float:
-        """Move Z by a relative amount. Positive is DOWN on this unit.
+    def jog(self, axis: str, delta_mm: float,
+            feedrate: float = APPROACH_FEED) -> None:
+        """Move one axis by a relative amount.
 
-        Relative, because there is no trustworthy datum. Returns the new depth
-        below the homed position.
+        Relative, because this unit has no trustworthy datum on any axis. The
+        caller is responsible for knowing there is room: with no endstops and no
+        current sensing, an overrun is invisible to software.
+
+        Sign conventions verified on this unit so far:
+          Z: positive is DOWN.
+          X: NOT established. Test with a small step and observe before
+             relying on it.
         """
+        axis = axis.upper()
+        if axis not in ("X", "Y", "Z", "A"):
+            raise DriverError(f"unknown axis {axis!r}")
+        if axis == "Y":
+            raise DriverError(
+                "refusing to move Y: it drives looking for a switch that never "
+                "reports and grinds against a hard stop."
+            )
         if abs(delta_mm) > MAX_JOG_MM:
             raise DriverError(
                 f"refusing a {delta_mm} mm jog: the cap is {MAX_JOG_MM} mm per "
@@ -298,7 +313,7 @@ class OpentronsDriver(LiquidHandlerDriver):
         self._send(G_STEPPERS_ON)
         try:
             self._send(G_RELATIVE)
-            self._motion(f"{G_MOVE} Z{delta_mm:.2f} F{feedrate:.0f}")
+            self._motion(f"{G_MOVE} {axis}{delta_mm:.2f} F{feedrate:.0f}")
         finally:
             # Always restore absolute mode, even on failure, so the board is
             # never left in a mode the next caller does not expect.
@@ -306,6 +321,13 @@ class OpentronsDriver(LiquidHandlerDriver):
                 self._send(G_ABSOLUTE)
             except Exception:
                 pass
+
+    def jog_z(self, delta_mm: float, feedrate: float = APPROACH_FEED) -> float:
+        """Move Z by a relative amount. Positive is DOWN on this unit.
+
+        Returns the new depth below the homed position.
+        """
+        self.jog("Z", delta_mm, feedrate)
         self._z_offset_mm += delta_mm
         return self._z_offset_mm
 

@@ -1,10 +1,18 @@
 <script setup lang="ts">
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
+import { computed } from "vue";
 import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
+import OpentronsJog from "./components/OpentronsJog.vue";
 
 const { instruments, connected } = useFleet();
+
+// Jog pads for every liquid handler in the fleet. Driven off the fleet list
+// rather than a hard-coded id so it appears for whatever is actually connected.
+const liquidHandlers = computed(() =>
+  instruments.value.filter((d) => d.kind === "liquid_handler"),
+);
 </script>
 
 <template>
@@ -20,6 +28,12 @@ const { instruments, connected } = useFleet();
         <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
       </section>
       <aside>
+        <OpentronsJog
+          v-for="d in liquidHandlers"
+          :key="d.id"
+          :device-id="d.id"
+          class="mb"
+        />
         <WorkflowRunner />
       </aside>
     </main>
@@ -35,5 +49,6 @@ body { margin: 0; background: #0b1220; font-family: system-ui, sans-serif; }
 .live.on { color: #22c55e; }
 .top button { margin-left: auto; background: #2e6bff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
 main { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; align-items: start; }
+.mb { margin-bottom: 16px; }
 .fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
 </style>
