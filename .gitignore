@@ -11,3 +11,6 @@ venv/
 node_modules/
 frontend/dist/
 *.local
+
+# calibration artifacts (generated)
+calib/
