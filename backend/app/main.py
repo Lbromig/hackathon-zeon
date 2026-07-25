@@ -16,7 +16,8 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 
-from .api import calibration, instruments, teach, workflow
+from .api import agent, calibration, cameras, instruments, teach, workflow
+from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
 
 
@@ -24,6 +25,9 @@ from .services.device_manager import device_manager
 async def lifespan(app: FastAPI):
     device_manager.load_fleet()
     yield
+    # Stop the frame workers before the drivers they hold go away, or a worker
+    # keeps grabbing from a released VideoCapture during shutdown.
+    camera_hub.stop_all()
     device_manager.disconnect_all()
 
 
@@ -60,8 +64,10 @@ async def validation_error(_: Request, exc: RequestValidationError) -> JSONRespo
 
 app.include_router(instruments.router)
 app.include_router(teach.router)
+app.include_router(cameras.router)
 app.include_router(calibration.router)
 app.include_router(workflow.router)
+app.include_router(agent.router)
 
 
 @app.get("/api/health")
