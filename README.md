@@ -25,13 +25,18 @@ with cameras feeding the verification agents that gate each step.
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** and **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 for diagrams, and **[PROJECT_PLAN.md](PROJECT_PLAN.md)** for the 24h plan and ownership.
 
-## Quick start
+## Quick start (uv)
+
+This project uses **[uv](https://docs.astral.sh/uv/)** for all Python work.
 
 ```bash
+uv sync                     # create .venv + install deps (incl. vendored xArm SDK)
+
+# initialize the arm
+uv run python scripts/init_xarm.py --ip 192.168.3.13
+
 # backend
-cd backend && pip install -r requirements.txt
-pip install -e ../third_party/xArm-Python-SDK
-PYTHONPATH=.. uvicorn app.main:app --reload
+cd backend && PYTHONPATH=.. uv run uvicorn app.main:app --reload
 
 # frontend (separate shell)
 cd frontend && npm install && npm run dev

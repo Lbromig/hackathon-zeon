@@ -1,0 +1,36 @@
+[project]
+name = "hackathon-zeon"
+version = "0.1.0"
+description = "Autonomous lab cell: xArm Lite 6 arms + Opentrons + vision, driven by a FastAPI backend"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    # backend
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    "websockets",
+    # perception / verification
+    "numpy",
+    "opencv-python",
+    # robot control (vendored in third_party/, see [tool.uv.sources])
+    "xarm-python-sdk",
+    # config
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx",  # FastAPI TestClient
+]
+
+[tool.uv]
+# The repo is an application, not an importable distribution — don't try to build it.
+package = false
+
+[tool.uv.sources]
+xarm-python-sdk = { path = "third_party/xArm-Python-SDK", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend", "."]
