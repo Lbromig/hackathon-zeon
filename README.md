@@ -12,10 +12,11 @@ backend/    Python / FastAPI — API + websocket, device manager, orchestration,
             verification agents. Depends ONLY on drivers/ interfaces.
   app/worldmodel/    digital twin — scene graph of entities + poses (world frame)
   app/calibration/   init + vision calibration (ArUco + 3D-printed ruler + scan adapter)
+  app/motion/        safe pick/place planner + anti-flip (upright) guard
 drivers/    Instrument abstraction — capability interfaces + one driver per instrument,
             built via a registry. No vendor SDK leaks above this layer.
 third_party/xArm-Python-SDK/   vendored vendor SDK
-docs/       ARCHITECTURE.md · WORKFLOW.md · DIGITAL_TWIN.md (mermaid diagrams)
+docs/       ARCHITECTURE · WORKFLOW · DIGITAL_TWIN · CAPABILITY_pick_place · ZEON_INTEGRATION
 ```
 
 Data flow: `Vue → FastAPI (REST/WS) → Orchestrator → capability → Driver → Device`,
