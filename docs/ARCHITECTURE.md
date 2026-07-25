@@ -17,8 +17,8 @@ flowchart TB
   end
 
   subgraph BE[Backend · Python / FastAPI]
-    REST[REST · /api/instruments, /api/teach]:::be
-    WS[WebSocket · /ws/state, /ws/workflow, /ws/agent]:::be
+    REST[REST · /api/instruments, /api/teach<br/>/api/worldmodel · /api/cameras*]:::be
+    WS[WebSocket · /ws/state, /ws/workflow<br/>/ws/agent, /ws/calibrate]:::be
     DM[DeviceManager]:::be
     WF[Workflow orchestrator<br/>hardcoded PLAN · capability → driver]:::be
     subgraph AG[Agent loop · P0 IMPLEMENTED]
@@ -27,13 +27,14 @@ flowchart TB
       TB[Toolbox<br/>skills · twin · verify]:::be
     end
     VER[Verify agents · STUBS<br/>core/verification · return ok=True]:::be
-    subgraph PER[Perception subsystem · PLANNED — no code yet]
-      CAL[Calibration<br/>OpenCV hand-eye + extrinsics · stubs]:::be
-      DET[Detect / segment<br/>Grounded-SAM 2]:::be
-      POSE[6-DoF pose + track<br/>FoundationPose CAD]:::be
-      RC[Render-compare<br/>Kaolin diff-render]:::be
+    subgraph PER[Perception · fiducials REAL · learned stack PLANNED]
+      FID[Fiducials · REAL<br/>core/perception/fiducials.py<br/>AprilTag tag36h11 + 6-DoF pose]:::be
+      CAL[Calibration pipeline<br/>runs + publishes twin<br/>hand-eye/world-frame/scan · TODO]:::be
+      DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
+      POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
+      RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
     end
-    WM[World model · twin<br/>core/worldmodel + services/twin<br/>entity model real · not yet populated]:::be
+    WM[World model · twin<br/>core/worldmodel + services/twin<br/>populated after /ws/calibrate · placeholder poses]:::be
     BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
     REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
@@ -81,6 +82,9 @@ flowchart TB
   CAMd --> CAMS
 
   %% perception → twin → verify → recover loop
+  CAMd -. frames .-> FID
+  FID -->|marker pose → corrective world pose| WM
+  CAL --> FID
   CAMd -. frames .-> DET
   DET --> POSE
   POSE --> RC
@@ -105,14 +109,25 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
 - **Real:** the driver layer + registry, `DeviceManager`, the hardcoded `WF` orchestrator, the
   **P0 agent loop** (`backend/app/agent/`, streamed on `/ws/agent`), the world-model *entity model*
   (`core/worldmodel/` + CAD tube/cap meshes) and the `services/twin.py` holder, and the REST/WS API.
-  The xArm driver runs the real vendor SDK; other drivers have mock counterparts.
+  **Fiducial perception is now real:** `core/perception/fiducials.py` detects AprilTag `tag36h11`
+  and estimates 6-DoF marker pose (OpenCV `aruco` + `solvePnP` IPPE_SQUARE), with
+  `entity_world_pose()` composing the corrective world pose (test: `backend/tests/test_fiducials.py`).
+  The **calibration pipeline** (`core/calibration/pipeline.py`, streamed on `/ws/calibrate`) now runs
+  end-to-end and **publishes the twin** (`twin.set_world`): it connects the fleet, registers skeleton
+  geometry (tip box + tube rack) and seeds a demo tube, so `services/twin.get_world()` is populated
+  after a calibrate run. The xArm driver runs the real vendor SDK; other drivers have mock counterparts.
 - **Stub / no-op:** every `core/verification` agent returns `ok=True, confidence=0.0` — so the
   verify→retry loop cannot currently fail. The hero workflow's `_execute` has its driver calls
-  commented out.
-- **Planned, no code yet:** the entire **perception subsystem** (Grounded-SAM 2 / FoundationPose /
-  Kaolin render-compare), the **background verifier**, and the **recovery controller**; `core/calibration`
-  is scaffolding with `TODO` steps, so the twin is not yet populated (`services/twin.get_world()` is
-  `None` until calibration runs). None of the perception model dependencies are installed.
+  commented out. Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`,
+  so twin poses are placeholder (the `PlaceholderScanAdapter`), and `MARKER_MAP` uses **example** ids
+  with `identity()` marker→entity offsets — real alignment needs measured values. A **cameras router**
+  (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) and a `camera_hub`
+  exist on disk but are **not yet mounted** — `main.py` includes only instruments, teach, calibration,
+  workflow, and agent, so the camera feed/overlay is unreachable until wired in.
+- **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
+  Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
+  learned-perception model dependencies are installed; fiducial detection needs only
+  `opencv-contrib-python`.
 
 ## Layer responsibilities
 
@@ -158,6 +173,17 @@ Data flow:
 7. **Recovery controller** engages **only** on a failed/low-confidence predicate: re-localize,
    visual-servo re-align, or regrasp — bounded by max attempts, then **stop and request help**.
    On success it hands control back to the open-loop orchestrator.
+
+### Live camera feed + entity overlay
+
+The operator-facing surface of this loop is specified in `docs/CAMERA_UI_PLAN.md`: cameras
+stream raw **MJPEG** (`GET /api/cameras/{id}/stream`) while detections + twin state ride
+`/ws/state` as JSON, and the frontend draws an **SVG overlay** on top. Highlighting has two
+sources — **twin-projection** of calibrated entities (`cv2.projectPoints` using
+`T_world_cam` + CAD `dims`) and **live detection** (AprilTag `core/perception/fiducials.py`
++ classical OpenCV). Clicking a highlighted entity issues `POST /api/robot/pick {entity_id}`,
+which grasps using the entity's pose (twin) and size (CAD). The same detections feed the
+background verifier, so the overlay colour *is* the live verification state.
 
 ### Where each dependency lives
 

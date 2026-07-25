@@ -13,10 +13,33 @@ on **dexterity + physical verification**; the Opentrons hand-off is the narrativ
 lands both themes in one motion. The floor we will always be able to show is a snap-cap +
 OT-nest aspirate; the target adds the dual-arm screw-cap and arm-held aspiration; the honest
 differentiator over "another pick-and-place" is the closed **verify → retry** loop.
+**Verification substrate is now marker-based, not learned:** a real AprilTag detector +
+6-DoF pose (`core/perception/fiducials.py`) feeding a live twin is the pragmatic sensing
+layer for verdicts — the heavy learned-perception stack (SAM 2 / FoundationPose / Kaolin)
+stays a post-hackathon ambition, off the demo path.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-25T23:32Z — The substrate for a real verifier now exists; the verifier still doesn't
+
+**Demo-readiness score: 3.5/10 for the *stated* PoC (verified uncap→aspirate); ~6/10 for a teleop-only "two real arms" show.** Up half a point from this morning — not because anything is *verified* yet, but because the pieces needed to make a verifier real landed on disk.
+
+**What changed since the last review.** Di's perception work is no longer vaporware: `core/perception/fiducials.py` is a real AprilTag `tag36h11` detector with 6-DoF pose (`solvePnP` IPPE_SQUARE) and an `entity_world_pose()` that yields a corrective world pose (test: `test_fiducials.py`). The calibration pipeline (`/ws/calibrate`) now **runs end-to-end and publishes the twin** — it connects the fleet, registers rack + tip-box geometry, seeds a demo tube, and calls `twin.set_world`, so `get_world()` is no longer `None`. A cameras router + `camera_hub` (MJPEG stream + detections) were also written.
+
+**What did NOT change — and it's the whole ballgame.** All four `core/verification/agents.py` agents still `return VerificationResult(ok=True, confidence=0.0, detail="stub")`, and `uncap_aspirate.py::_execute` still has every driver call commented out. So the headline claim — *verified* — remains **unbacked**, and the agent loop still walks the plan "passing" against empty actions.
+
+**The single biggest threat — verification is still a no-op, but the excuse is gone.** Previously the honest defense was "we have no signal to verify from." That defense is dead: `fiducials.detect()` returns marker poses today, and `entity_world_pose()` turns them into a twin pose. `tube_aligned` could be *one function* — compare the detected present-pose to the expected pose, threshold the error. `cap_removed` could be "cap marker 224 no longer detected" or a gripper-torque drop. The gap is now pure wiring (a threshold + a subtraction), not research. Every hour that passes with `ok=True` hardcoded is an hour spent proving the *easy* half of Track C (motion) and none of the *scored* half (verification). Second-order risk: the cameras router that feeds any vision verifier **isn't mounted** in `main.py` (Q-CAMERAS-MOUNT) — a one-line omission silently blocking the whole vision path — and `MARKER_MAP` still uses example ids with `identity()` offsets (Q-FIDUCIAL-IDS), so twin poses are cosmetically populated but numerically placeholder.
+
+**Refine scope for the time remaining.**
+- **CUT (from the demo path):** the learned perception stack (SAM 2 / FoundationPose / Kaolin), the background verifier, and closed-loop recovery. Unchanged — zero code, no deps, no time. Doc them as the post-hackathon architecture.
+- **KEEP:** real single-arm motion via the teach layer; the P0 agent loop as orchestrator; the hardcoded `PLAN`; and — newly promoted — **fiducial detection + the calibration twin as the verification substrate**. This is real, cheap, RGB-only, and already tested.
+- **ADD, in strict priority order:** (1) **mount the cameras router** (`include_router(cameras.router)` — one line) so frames/detections are reachable; (2) wire `_execute` for the **floor** path so something moves autonomously end-to-end; (3) make **one** verifier real off the fiducial pose already implemented — `tube_aligned` (pose-error threshold) or `cap_removed` (marker-gone) — so the loop can genuinely fail; (4) script **one deliberate failure injection** on that verifier for the reveal. One real verdict from a marker beats four stubs and a slide.
+
+**Opposing view (steelman).** If the two-arm *screw-cap* uncap is the judged wow-factor, Dale's dexterity is the higher-ceiling bet and stubs can be swapped late. Fair — but the marker verifier is now so cheap (a threshold on an existing pose) that skipping it is no longer a time trade-off, it's leaving the scored theme on the table. Sequence the floor + one honest verifier first as insurance, then spend surplus on the screw-cap ceiling.
+
+**Verdict:** The tools to stop being theater are now in the repo. The next block is not "build perception" — it's *mount one router, subtract two poses, threshold the result.* If this cycle ends with even one verifier returning a real `ok=False`, the PoC crosses from plumbing to proof.
 
 ### 2026-07-25 — Verification is theater; the demo is currently below its own floor
 

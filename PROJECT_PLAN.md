@@ -38,7 +38,7 @@ be as honest as the verifiers, which are still stubs (see Risks).
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
 - [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). *OT + camera drivers exist but their one real action (OT home / camera stream) is not yet verified in git/on-disk.*
 - [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
-- [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts
+- [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose) and the calibration pipeline now runs and publishes the twin (`/ws/calibrate`). Still open: verification agents remain stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
 - [ ] **H+22** — Freeze features, rehearse demo, record backup video
 - [ ] **H+24** — Present
@@ -61,3 +61,9 @@ be as honest as the verifiers, which are still stubs (see Risks).
 - Live chaining → the verify→retry loop is the safety net; prefer deliberate failure injection in the demo.
 - The hero workflow `_execute` is still empty (commented TODOs); wire at least the floor path so the
   chain and the agent loop drive real hardware, not no-ops.
+- Camera feed is one wire away but currently dead: `backend/app/api/cameras.py` + `camera_hub` exist,
+  but `main.py` never `include_router(cameras.router)`, so `/api/cameras/*` (MJPEG stream + detections)
+  is unreachable. A real vision verifier and the camera-overlay demo both depend on mounting it.
+- Fiducial poses will be wrong until measured: `core/calibration/markers.py::MARKER_MAP` uses example
+  ids + `identity()` marker→entity offsets, and the world-frame board ids (0–3) aren't in the printed
+  tag36h11 stock (180–224). Measure offsets / assign real board tags before trusting twin poses.
