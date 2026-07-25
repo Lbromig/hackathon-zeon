@@ -43,3 +43,12 @@ cd frontend && npm install && npm run dev
 ```
 
 Boots without hardware — drivers that can't init are skipped; SDK/opencv imports are optional.
+
+## Hardware bring-up (standalone POC tools)
+
+Read-only / guarded utilities used to bring each machine up before it is wired into
+the stack above. They are deliberately independent of `backend/` and `drivers/`.
+
+- **[hardware/xarm6/README.md](hardware/xarm6/README.md)** — safe first connection to a
+  UFACTORY xArm 6. Intentionally read-only: verifies network access and reports
+  controller status without enabling motors or sending movement commands.
