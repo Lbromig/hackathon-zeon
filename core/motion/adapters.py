@@ -37,6 +37,11 @@ class ArmDriverMover:
         # xArm parallel gripper). The driver rejects a raw metre value, so convert.
         self.arm.grip(width=self.arm.width_from_metres(width))
 
+    def current_xyz(self) -> list[float]:
+        """TCP position in metres — the driver reports mm."""
+        p = self.arm.get_pose()
+        return [p.x / 1000.0, p.y / 1000.0, p.z / 1000.0]
+
     def attach(self, object_id: str) -> None:
         if self._on_attach:
             self._on_attach(object_id)
