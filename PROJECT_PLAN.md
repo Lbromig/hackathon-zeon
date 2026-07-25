@@ -4,6 +4,70 @@ Goal: **Cooperative Uncap → Aspirate**, verified. Three owners, one per device
 owning their driver + the matching capability/verification slice + their share of the
 backend and UI.
 
+## Objective — OT-One free-space motion, then agent-directed positioning
+
+**The pipette can move in all directions, so that we can build a real-world
+understanding with depth perception, and have an AI agent drive the pipette to
+where the tube actually is.**
+
+That is the target. It decomposes into four steps, and they are strictly ordered
+because each one is meaningless without the one before it.
+
+1. **Move every axis under software control.** X, Z and A jog from the UI today
+   (`/api/liquid-handlers/{id}/jog`). **Y does not move** — see the blocker below.
+2. **Establish a coordinate frame.** Perceive the deck and express positions in a
+   frame shared with the world model.
+3. **Depth perception.** Recover the tube's position in 3D, not just in the image
+   plane, and put it into `core/worldmodel/` as a pose like any other entity.
+4. **Agent-directed motion.** The agent asks for a pose; the driver executes it
+   and a verification agent confirms arrival.
+
+### The blocker, stated plainly
+
+Steps 2 to 4 all assume the machine can be told *"go to this coordinate."* **It
+cannot.** No endstop on any axis registers with the board — `M119` was polled for
+18 s while the Z limit switch was pressed by hand and no bit ever changed, and the
+firmware config holds no axis limit entries. `G28.2` therefore never terminates on
+a limit; it drives a fixed search distance into the mechanical stop and zeroes the
+counter there. So `Z=0` is not a physical datum and absolute coordinates reference
+a position that was never established. Everything working today is *relative*
+jogging, which needs no datum. Details in `docs/OT_ONE_HARDWARE.md`.
+
+This means an AI agent cannot currently be handed a target position at all, no
+matter how good the perception is: there is no frame to express it in. Vision
+would recover where the tube is and the machine would still have no way to be told
+where to go.
+
+There are two ways through, and one has to be chosen:
+
+- **Repair the reference.** Fix the endstop wiring or the firmware config so
+  `G28.2` terminates on a switch. This makes homing a true datum, unblocks Y, and
+  makes absolute positioning trustworthy. Cleanest, and it also removes the fact
+  that every home currently drives into a hard stop.
+- **Close the loop with vision instead.** Never trust machine coordinates; have
+  the camera measure the pipette *and* the tube, and jog relatively until the
+  error is small. Slower and needs the camera calibrated to the deck, but it
+  works on the hardware exactly as it is, and it is closer to the verification
+  approach the rest of Track C already uses.
+
+### Status
+
+| Step | State |
+|------|-------|
+| X / Z / A relative jog, from UI and REST | working, on hardware |
+| Tip pickup | working — 53 mm engagement, measured |
+| Y axis | **blocked** — drives looking for a switch that never reports, and grinds |
+| Absolute positioning / any coordinate frame | **blocked** — no datum exists |
+| Depth perception → tube pose | not started, blocked on a frame |
+| Agent-directed move-to-tube | not started, blocked on the above |
+
+One safety property to carry into the agent work: with no endstops and no current
+sensing, **a crash is invisible to software.** A stalled stepper skips steps and
+the call returns exactly as it would on a clean move. Motion duration proves a
+move ran, never that the path was clear. An agent given authority to move this
+machine has no feedback channel that would tell it that it hit something, so
+vision has to supply that before it is left unattended.
+
 ## Ownership
 
 | Owner | Device | Owns |
