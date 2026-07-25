@@ -2,14 +2,20 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 
+// In Docker the backend is a sibling service, not localhost — see docker-compose.yml.
+const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
+
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   server: {
     port: 5173,
     proxy: {
       // REST + websocket to the FastAPI backend
-      "/api": "http://localhost:8000",
-      "/ws": { target: "ws://localhost:8000", ws: true },
+      "/api": backend,
+      "/ws": { target: backend.replace(/^http/, "ws"), ws: true },
     },
+    // Bind-mounted source on Docker Desktop doesn't deliver inotify events to the
+    // container, so hot reload needs polling there (and only there — it burns CPU).
+    watch: process.env.VITE_USE_POLLING ? { usePolling: true, interval: 300 } : undefined,
   },
 });

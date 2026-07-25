@@ -27,8 +27,9 @@ pose changes at runtime; "static" = fixed once calibrated.
 | 5 | Left TCP | `tcp` | dynamic | Forward kinematics | left base | — |
 | 6 | Right TCP | `tcp` | dynamic | Forward kinematics | right base | — |
 | 7 | Gripper / cap tool (per arm) | `tool` | dynamic | Fixed tool offset | its TCP | jaw width |
-| 8 | On-arm camera | `camera` | dynamic | **Hand-eye** offset from TCP | its TCP | intrinsics |
-| 9 | External camera(s) | `camera` | static | Extrinsic calibration to world | world | intrinsics |
+| 8 | Gripper cam (`gripper_cam`) | `camera` | dynamic | **Hand-eye** offset from TCP | right_tcp | intrinsics |
+| 9 | Overview cam (`overview_cam`) | `camera` | static | Extrinsics to world (fixed tags) | world | intrinsics |
+| 9b | Handover cam (`handover_cam`) | `camera` | static | Extrinsics to world (fixed tags) | world | intrinsics |
 | 10 | Opentrons base | `ot_base` | static | Scan + ArUco | world | — |
 | 11 | OT deck origin | `deck` | static | Fixed offset from OT base | ot_base | — |
 | 12 | Deck slots / carrier sites | `deck_slot` | static | Fixed CAD offsets (grid) | deck | occupied? |
@@ -59,9 +60,10 @@ poses; kinematics update the moving parents.
 ```
 world (calibration board defines origin + metric scale)
 ├─ calib_ruler
-├─ left_arm_base ── left_tcp ── {left_tool, on_arm_cam? }
-├─ right_arm_base ── right_tcp ── right_tool ── on_arm_cam
-├─ external_cam
+├─ left_arm_base ── left_tcp ── left_tool
+├─ right_arm_base ── right_tcp ── right_tool ── gripper_cam
+├─ overview_cam
+├─ handover_cam
 ├─ surface
 └─ ot_base ── deck
    ├─ deck_slot[1..N]

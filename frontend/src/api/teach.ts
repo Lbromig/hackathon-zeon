@@ -21,6 +21,7 @@ export interface ArmLimits {
   max_speed_linear: number;
   max_speed_angular: number;
   max_move_to_jump: number;
+  max_move_to_rotation: number;
 }
 
 export interface PoseValues {

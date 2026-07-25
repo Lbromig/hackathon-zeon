@@ -7,12 +7,24 @@ don't detect every well/tip individually.
 from __future__ import annotations
 
 from .entities import Entity, EntityKind, WorldModel, from_xyz_rpy, identity
+from .meshes import dims_m
 
-# --- placeholder geometry (metres) ---
+# --- labware geometry (metres) ---
 TIP_BOX_COLS, TIP_BOX_ROWS, TIP_PITCH = 12, 8, 0.009      # 96 tips, 9mm pitch
-RACK_COLS, RACK_ROWS, WELL_PITCH = 6, 4, 0.018            # 24-tube rack
-TUBE_DIMS = {"diameter": 0.010, "height": 0.043}
-CAP_DIMS = {"diameter": 0.010, "height": 0.008}
+# NOTE: WELL_PITCH must exceed the tube diameter of the chosen family
+# (50 mL tube is Ø28 mm -> needs >~0.030 m pitch). Real rack CAD still pending
+# (see docs/WORLD_MODEL_REQUIREMENTS.md open questions); default sized for 50 mL.
+RACK_COLS, RACK_ROWS, WELL_PITCH = 6, 4, 0.030
+
+# Tube/cap dimensions come from the real CAD meshes (assets/cad/tubes/), keyed by family.
+TUBE_FAMILIES = {
+    "50ml": {"tube": "tube_50ml_base", "cap": "tube_50ml_cap"},
+    "15ml": {"tube": "tube_15ml_base", "cap": "tube_15ml_cap"},
+}
+DEFAULT_FAMILY = "50ml"                                   # primary demo tube
+
+TUBE_DIMS = dims_m(TUBE_FAMILIES[DEFAULT_FAMILY]["tube"])  # metres, from mesh bbox
+CAP_DIMS = dims_m(TUBE_FAMILIES[DEFAULT_FAMILY]["cap"])
 
 
 def build_skeleton(*, arm_ids=("left", "right"), n_deck_slots=11) -> WorldModel:
@@ -26,9 +38,13 @@ def build_skeleton(*, arm_ids=("left", "right"), n_deck_slots=11) -> WorldModel:
         wm.add(Entity(f"{aid}_base", EntityKind.ARM_BASE, f"{aid} xArm base", "world"))
         wm.add(Entity(f"{aid}_tcp", EntityKind.TCP, f"{aid} TCP", f"{aid}_base", static=False))
         wm.add(Entity(f"{aid}_tool", EntityKind.TOOL, f"{aid} gripper", f"{aid}_tcp", static=False))
-    # on-arm camera rides the right arm; external camera is world-fixed
-    wm.add(Entity("on_arm_cam", EntityKind.CAMERA, "On-arm camera", "right_tcp", static=False))
-    wm.add(Entity("external_cam", EntityKind.CAMERA, "External camera", "world"))
+    # three-camera rig, all resolved into the shared world frame:
+    #  - gripper_cam rides the right arm (hand-eye) -> close-up manipulation / grasp
+    #  - overview_cam is world-fixed, sees both cells -> global twin + main UI feed
+    #  - handover_cam is world-fixed on the arm->OT handover zone -> present / aspirate check
+    wm.add(Entity("gripper_cam", EntityKind.CAMERA, "Gripper (on-arm) camera", "right_tcp", static=False))
+    wm.add(Entity("overview_cam", EntityKind.CAMERA, "Overview camera", "world"))
+    wm.add(Entity("handover_cam", EntityKind.CAMERA, "Handover camera", "world"))
 
     # Opentrons: base -> deck -> slots + gantry -> pipette channel
     wm.add(Entity("ot_base", EntityKind.OT_BASE, "Opentrons base", "world"))
@@ -64,11 +80,20 @@ def add_tube_rack(wm: WorldModel, slot: str, rack_id: str = "rack_1") -> None:
                           state={"occupied": False}))
 
 
-def add_tube_with_cap(wm: WorldModel, well: str, tube_id: str) -> None:
-    """A capped tube seated in a well; cap is an independent child of the tube."""
-    wm.add(Entity(tube_id, EntityKind.TUBE, tube_id, well, static=False, dims=TUBE_DIMS,
-                  state={"capped": True, "held_by": None, "has_liquid": True}))
+def add_tube_with_cap(wm: WorldModel, well: str, tube_id: str,
+                      family: str = DEFAULT_FAMILY) -> None:
+    """A capped tube seated in a well; cap is an independent child of the tube.
+
+    `family` selects the CAD family ("50ml" default, "15ml"); dims + mesh keys are
+    taken from the real meshes so the twin, FoundationPose and render-compare agree.
+    """
+    fam = TUBE_FAMILIES[family]
+    tube_mesh, cap_mesh = fam["tube"], fam["cap"]
+    tube_dims, cap_dims = dims_m(tube_mesh), dims_m(cap_mesh)
+    wm.add(Entity(tube_id, EntityKind.TUBE, tube_id, well, static=False,
+                  dims=tube_dims, mesh=tube_mesh,
+                  state={"capped": True, "held_by": None, "has_liquid": True, "family": family}))
     wm.add(Entity(f"{tube_id}_cap", EntityKind.CAP, f"{tube_id} cap", tube_id, static=False,
-                  local=from_xyz_rpy(z=TUBE_DIMS["height"]), dims=CAP_DIMS,
+                  local=from_xyz_rpy(z=tube_dims["height"]), dims=cap_dims, mesh=cap_mesh,
                   state={"on": True, "held_by": None}))
     wm.get(well).state["occupied"] = True

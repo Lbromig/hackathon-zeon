@@ -20,6 +20,37 @@ Domain logic (world model, calibration, motion planner, verification agents,
 settings/fleet) lives in the repo-root `core/` package so it can be reused
 without importing FastAPI.
 
+## Teach / jog API (`/api/arms`)
+
+Backs the frontend's Teach tab — hand-driving an arm during bring-up.
+
+| | |
+|---|---|
+| `GET /api/arms` | arms with gripper kind, axis count, soft limits |
+| `GET /api/arms/{id}/state` | pose, joints, gripper, fault codes, busy |
+| `POST /api/arms/{id}/jog` | `{space: cartesian\|joint, axis, delta, speed?}` |
+| `POST /api/arms/{id}/move_to` | `{pose}` or `{joints}` (exactly one) |
+| `POST /api/arms/{id}/gripper` | `{action: open\|close\|set, width?}` |
+| `POST /api/arms/{id}/home` · `/enable` · `/clear_errors` · `/stop` | |
+| `GET POST /api/arms/{id}/poses`, `POST .../{name}/goto`, `DELETE .../{name}` | taught points |
+
+Handlers are sync on purpose: the SDK blocks, and FastAPI runs sync handlers in a
+threadpool, so a `wait=True` move never stalls the event loop or `/ws/state`.
+
+Safety is enforced here rather than in the client, because the client is not the
+only possible caller:
+
+* one in-flight command per arm (non-blocking lock → `409`); `/stop` bypasses it
+  by design, since an e-stop that queues behind the move it interrupts is useless
+* deltas, speeds and joint targets are validated against the arm's soft limits,
+  failing closed on non-finite values
+* motion is refused while a fault is latched, and while the fault state can't be read
+* absolute cartesian moves beyond `max_move_to_jump` (default 250 mm) are refused
+
+Taught poses persist to `data/teach_poses.json` (`HZ_TEACH_POSES_FILE`), namespaced
+per device. Go-to replays the saved **joint** angles — the arm physically reached
+them, so there's no IK branch to guess at.
+
 ## Run
 
 Dependencies live in the root `pyproject.toml` and are managed with

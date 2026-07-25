@@ -16,6 +16,11 @@ from .capabilities.camera import CameraDriver
 from .capabilities.liquid_handler import DeckLocation, LiquidHandlerDriver
 from .registry import available_types, build_driver, register
 
+# Imported last (mock/ imports .registry, so this order avoids a cycle): registers
+# the `mock_*` driver types so any fleet config — HZ_FLEET_FILE included — can ask
+# for them without the caller remembering to import the module first.
+from . import mock  # noqa: E402,F401  isort:skip
+
 __all__ = [
     "ArmDriver", "ArmLimits", "GripperInfo", "GripperKind", "Pose",
     "CameraDriver", "LiquidHandlerDriver", "DeckLocation",

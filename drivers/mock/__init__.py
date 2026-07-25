@@ -17,6 +17,16 @@ from ..capabilities.liquid_handler import DeckLocation, LiquidHandlerDriver
 from ..registry import register
 
 
+def _cv2() -> Any:
+    """OpenCV, or None. Kept lazy so the other mocks stay importable without it."""
+    try:
+        import cv2
+
+        return cv2
+    except Exception:  # pragma: no cover
+        return None
+
+
 class MockArmDriver(ArmDriver):
     """A 6-axis arm that just remembers where it was told to go."""
 
@@ -123,6 +133,90 @@ class MockCameraDriver(CameraDriver):
         return b"\xff\xd8\xff\xd9"  # minimal JPEG (SOI + EOI markers)
 
 
+class MockTagCameraDriver(CameraDriver):
+    """A camera that renders real tag36h11 markers — the overlay path, no hardware.
+
+    The markers are generated with the same dictionary `core.perception.fiducials`
+    detects, so the full chain (capture -> detect -> normalized polygon -> SVG
+    overlay) is exercised for real; only the photons are fake. Tags drift slowly
+    so a stalled MJPEG stream is obvious at a glance.
+
+    Config: {"markers": [180, 224], "width": 960, "height": 540, "motion": true}.
+    """
+
+    DEFAULT_MARKERS = (180, 183, 224)
+
+    def __init__(self, device_id: str, config: dict[str, Any] | None = None) -> None:
+        super().__init__(device_id, config)
+        self._frame_no = 0
+
+    @property
+    def info(self) -> DeviceInfo:
+        return DeviceInfo(id=self.device_id, name=self.config.get("name", self.device_id),
+                          kind=InstrumentKind.CAMERA, model="MockTagCamera", vendor="mock",
+                          meta={"markers": list(self.config.get("markers", self.DEFAULT_MARKERS))})
+
+    def status(self) -> dict[str, Any]:
+        return {"state": self._state, "connected": self._state == ConnectionState.CONNECTED,
+                "frames": self._frame_no}
+
+    def connect(self) -> None:
+        if _cv2() is None:
+            raise DriverError("opencv-contrib-python not installed")
+        self._state = ConnectionState.CONNECTED
+
+    def disconnect(self) -> None:
+        self._state = ConnectionState.DISCONNECTED
+
+    def capture(self) -> Any:
+        import numpy as np
+
+        cv2 = _cv2()
+        if cv2 is None or self._state != ConnectionState.CONNECTED:
+            raise DriverError("mock tag camera not connected")
+
+        w = int(self.config.get("width", 960))
+        h = int(self.config.get("height", 540))
+        frame = np.full((h, w, 3), 60, np.uint8)          # mid-grey bench
+        self._frame_no += 1
+
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        markers = list(self.config.get("markers", self.DEFAULT_MARKERS))
+        side = max(48, min(w, h) // 6)
+        drift = 0.0
+        if self.config.get("motion", True):
+            drift = 20.0 * np.sin(self._frame_no / 25.0)
+
+        for i, marker_id in enumerate(markers):
+            tag = cv2.aruco.generateImageMarker(dictionary, int(marker_id), side)
+            # quiet zone: the detector needs white margin around the tag
+            pad = side // 5
+            canvas = np.full((side + 2 * pad, side + 2 * pad), 255, np.uint8)
+            canvas[pad:pad + side, pad:pad + side] = tag
+            tile = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+
+            step = w // (len(markers) + 1)
+            cx = step * (i + 1)
+            cy = int(h / 2 + drift * (1 if i % 2 == 0 else -1))
+            y0, x0 = cy - tile.shape[0] // 2, cx - tile.shape[1] // 2
+            y0 = max(0, min(h - tile.shape[0], y0))
+            x0 = max(0, min(w - tile.shape[1], x0))
+            frame[y0:y0 + tile.shape[0], x0:x0 + tile.shape[1]] = tile
+
+        cv2.putText(frame, f"mock tag camera · frame {self._frame_no}", (12, h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+        return frame
+
+    def capture_jpeg(self, quality: int = 85) -> bytes:
+        cv2 = _cv2()
+        if cv2 is None:
+            raise DriverError("opencv-contrib-python not installed")
+        ok, buf = cv2.imencode(".jpg", self.capture(), [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not ok:
+            raise DriverError("jpeg encode failed")
+        return buf.tobytes()
+
+
 class MockLiquidHandlerDriver(LiquidHandlerDriver):
     """A liquid handler that tracks tip state and aspirated volume."""
 
@@ -169,6 +263,7 @@ def register_mocks() -> None:
     """(Re)register the mock drivers with the shared registry. Idempotent."""
     register("mock_arm", MockArmDriver)
     register("mock_camera", MockCameraDriver)
+    register("mock_tag_camera", MockTagCameraDriver)
     register("mock_liquid_handler", MockLiquidHandlerDriver)
 
 
@@ -176,5 +271,6 @@ def register_mocks() -> None:
 register_mocks()
 
 __all__ = [
-    "MockArmDriver", "MockCameraDriver", "MockLiquidHandlerDriver", "register_mocks",
+    "MockArmDriver", "MockCameraDriver", "MockTagCameraDriver", "MockLiquidHandlerDriver",
+    "register_mocks",
 ]

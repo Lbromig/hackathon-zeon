@@ -35,18 +35,22 @@ DEFAULT_FLEET: list[dict[str, Any]] = [
      "gripper": "auto", "limits": TEACH_LIMITS},
     {"type": "opentrons", "id": "ot", "name": "Opentrons (OT-One)", "transport": "serial",
      "port": "/dev/ttyACM0"},
-    {"type": "camera", "id": "on_arm", "name": "On-arm cam", "source": 0},
-    {"type": "camera", "id": "external", "name": "External cam", "source": 1},
+    # Three-camera rig (all resolve to the shared world frame):
+    {"type": "camera", "id": "gripper_cam",  "name": "Gripper (on-arm) cam", "source": 0},
+    {"type": "camera", "id": "overview_cam", "name": "Overview cam (both devices)", "source": 1},
+    {"type": "camera", "id": "handover_cam", "name": "Handover cam (arm->OT)", "source": 2},
 ]
 
 # Which env var overrides the IP of each xArm entry (keyed by fleet id).
 XARM_IP_ENV: dict[str, str] = {"left": "XARM_1_IP", "right": "XARM_2_IP"}
 # Which env var overrides the source of each camera entry (keyed by fleet id).
-CAM_SOURCE_ENV: dict[str, str] = {"on_arm": "CAM_ON_ARM", "external": "CAM_EXTERNAL"}
+CAM_SOURCE_ENV: dict[str, str] = {
+    "gripper_cam": "CAM_GRIPPER", "overview_cam": "CAM_OVERVIEW", "handover_cam": "CAM_HANDOVER",
+}
 
 
-# repo root is two levels up from this file: core/config.py -> repo root
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# repo root is one level up from this file: <repo>/core/config.py -> <repo>
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _camera_source(value: str) -> int | str:

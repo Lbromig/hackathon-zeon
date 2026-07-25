@@ -1,0 +1,21 @@
+[
+  {
+    "type": "mock_tag_camera",
+    "id": "external",
+    "name": "External cam (mock tags)",
+    "markers": [180, 183, 224],
+    "width": 960,
+    "height": 540
+  },
+  {
+    "type": "mock_tag_camera",
+    "id": "on_arm",
+    "name": "On-arm cam (mock tags)",
+    "markers": [186, 224],
+    "width": 640,
+    "height": 360
+  },
+  { "type": "mock_arm", "id": "left", "name": "Left arm (mock)" },
+  { "type": "mock_arm", "id": "right", "name": "Right arm (mock)" },
+  { "type": "mock_liquid_handler", "id": "ot", "name": "Opentrons (mock)" }
+]

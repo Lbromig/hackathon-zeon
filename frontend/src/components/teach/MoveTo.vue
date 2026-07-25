@@ -29,9 +29,23 @@ const travel = computed(() => {
   return Math.hypot(pose.value.x - p.x, pose.value.y - p.y, pose.value.z - p.z);
 });
 
-const overLimit = computed(
-  () => travel.value !== null && arm.value !== null && travel.value > arm.value.limits.max_move_to_jump,
-);
+/** Largest single-axis rotation, wrapped to ±180 — mirrors the backend's check. */
+const rotation = computed(() => {
+  const p = state.value?.pose;
+  if (!p) return null;
+  return Math.max(
+    ...(["roll", "pitch", "yaw"] as const).map((axis) =>
+      Math.abs((((pose.value[axis] - p[axis] + 180) % 360) + 360) % 360 - 180),
+    ),
+  );
+});
+
+const overLimit = computed(() => {
+  if (!arm.value) return false;
+  const far = travel.value !== null && travel.value > arm.value.limits.max_move_to_jump;
+  const twisted = rotation.value !== null && rotation.value > arm.value.limits.max_move_to_rotation;
+  return far || twisted;
+});
 
 function disarm() {
   armed.value = false;
@@ -100,9 +114,11 @@ watch(pose, disarm, { deep: true });
         {{ mode === "joints" ? "Go (joints)" : armed ? "Confirm move" : "Review move" }}
       </button>
       <span v-if="mode === 'pose' && travel !== null" class="text-xs" :class="overLimit ? 'text-red-400' : 'text-deck-400'">
-        travel <span class="num">{{ travel.toFixed(1) }}</span> mm
+        travel <span class="num">{{ travel.toFixed(1) }}</span> mm ·
+        rotate <span class="num">{{ (rotation ?? 0).toFixed(1) }}</span>°
         <template v-if="overLimit">
-          — over the {{ arm?.limits.max_move_to_jump }} mm limit, jog closer first
+          — over the {{ arm?.limits.max_move_to_jump }} mm / {{ arm?.limits.max_move_to_rotation }}°
+          single-move limit, jog closer first
         </template>
         <template v-else-if="armed">— click again to execute</template>
       </span>

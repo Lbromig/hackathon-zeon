@@ -1,39 +1,62 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
 import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
+import TeachPanel from "./components/teach/TeachPanel.vue";
+
+type Tab = "fleet" | "teach";
 
 const { instruments, connected } = useFleet();
+// Remembered across reloads — during bring-up you live in one tab for hours.
+const tab = ref<Tab>((localStorage.getItem("tab") as Tab) ?? "fleet");
+
+function select(next: Tab) {
+  tab.value = next;
+  localStorage.setItem("tab", next);
+}
 </script>
 
 <template>
-  <div class="app">
-    <header class="top">
-      <h1>hackathon-zeon · control</h1>
-      <span class="live" :class="{ on: connected }">{{ connected ? "live" : "offline" }}</span>
-      <button @click="connectAll">Connect all</button>
+  <div class="mx-auto max-w-[1400px] p-6">
+    <header class="flex items-center gap-3">
+      <h1 class="text-xl font-semibold text-white">hackathon-zeon · control</h1>
+      <span
+        class="text-xs uppercase tracking-wider"
+        :class="connected ? 'text-emerald-500' : 'text-deck-400'"
+      >
+        {{ connected ? "live" : "offline" }}
+      </span>
+      <button class="btn btn-primary ml-auto" @click="connectAll">Connect all</button>
     </header>
 
-    <main>
-      <section class="fleet">
-        <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
-      </section>
-      <aside>
-        <WorkflowRunner />
-      </aside>
+    <nav class="mt-5 flex gap-1 border-b border-deck-600">
+      <button
+        v-for="t in (['fleet', 'teach'] as Tab[])"
+        :key="t"
+        class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition-colors"
+        :class="
+          tab === t
+            ? 'border-blue-500 text-white'
+            : 'border-transparent text-deck-400 hover:text-deck-100'
+        "
+        @click="select(t)"
+      >
+        {{ t }}
+      </button>
+    </nav>
+
+    <main class="mt-5">
+      <div v-if="tab === 'fleet'" class="grid items-start gap-5 lg:grid-cols-[2fr_1fr]">
+        <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
+        </section>
+        <aside><WorkflowRunner /></aside>
+      </div>
+
+      <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab -->
+      <TeachPanel v-else-if="tab === 'teach'" />
     </main>
   </div>
 </template>
-
-<style>
-body { margin: 0; background: #0b1220; font-family: system-ui, sans-serif; }
-.app { max-width: 1200px; margin: 0 auto; padding: 24px; }
-.top { display: flex; align-items: center; gap: 12px; color: #fff; }
-.top h1 { font-size: 20px; margin: 0; }
-.live { font-size: 12px; color: #6b7a90; text-transform: uppercase; }
-.live.on { color: #22c55e; }
-.top button { margin-left: auto; background: #2e6bff; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
-main { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; align-items: start; }
-.fleet { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
-</style>

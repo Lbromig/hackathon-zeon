@@ -13,6 +13,15 @@ class DeviceManager:
         self._drivers: dict[str, InstrumentDriver] = {}
 
     def load_fleet(self) -> None:
+        """(Re)build the driver set from config.
+
+        Reloading disconnects the outgoing drivers first: replacing the dict alone
+        leaks controller sockets and orphans an *energized* arm with nothing holding
+        a reference to it. Reachable in normal use under `uvicorn --reload`.
+        """
+        if self._drivers:
+            self.disconnect_all()
+            self._drivers.clear()
         for cfg in settings.fleet:
             try:
                 self._drivers[cfg["id"]] = build_driver(cfg)
@@ -31,21 +40,35 @@ class DeviceManager:
         self.get(device_id).connect()
 
     def connect_all(self) -> dict[str, str]:
+        """Connect every driver, recording per-device outcomes.
+
+        Catches Exception, not just DriverError: a driver raising anything else
+        would otherwise abort the loop, leaving the already-connected arms live with
+        no record of them in the result.
+        """
         result: dict[str, str] = {}
         for d in self._drivers.values():
             try:
                 d.connect()
                 result[d.device_id] = "connected"
-            except DriverError as e:
+            except Exception as e:
                 result[d.device_id] = f"error: {e}"
         return result
 
+    def disconnect(self, device_id: str) -> None:
+        self.get(device_id).disconnect()
+
     def disconnect_all(self) -> None:
+        """Disconnect everything, best effort — one failure must not skip the rest.
+
+        For arms, driver.disconnect() is also what brakes them, so a raise here
+        would leave later arms energized.
+        """
         for d in self._drivers.values():
             try:
                 d.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[device_manager] {d.device_id} failed to disconnect cleanly: {e}")
 
     def snapshot(self) -> list[dict[str, Any]]:
         out = []
