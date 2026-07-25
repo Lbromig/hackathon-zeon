@@ -68,6 +68,7 @@ class Entity:
     static: bool = True                 # False = pose updated at runtime
     marker_id: int | None = None        # ArUco id glued to this entity, if any
     dims: dict[str, float] = field(default_factory=dict)   # CAD dimensions (m)
+    mesh: str | None = None             # mesh registry key (see worldmodel/meshes.py)
     state: dict[str, Any] = field(default_factory=dict)    # capped?, held_by, has_tip, ...
 
 
@@ -128,7 +129,8 @@ class WorldModel:
             w = self.world_pose(e.id)
             out.append({
                 "id": e.id, "kind": e.kind, "name": e.name, "parent": e.parent,
-                "static": e.static, "marker_id": e.marker_id, "state": e.state,
+                "static": e.static, "marker_id": e.marker_id, "mesh": e.mesh,
+                "dims": e.dims, "state": e.state,
                 "world_xyz": w[:3, 3].round(4).tolist(),
             })
         return out
