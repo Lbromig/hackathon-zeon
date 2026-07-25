@@ -7,7 +7,8 @@ verify every step** and retry when something fails.
 ## Architecture (three layers)
 
 ```
-frontend/   Vue 3 + Vite UI — live fleet status, camera feeds, workflow runner
+frontend/   Vue 3 + Vite + Tailwind UI — two tabs: Fleet (live status, camera feeds,
+            workflow runner) and Teach (jog axes/joints, gripper, taught poses)
 core/       Framework-agnostic domain logic (no FastAPI import). Reusable by ZEON.
   worldmodel/    digital twin — scene graph of entities + poses (world frame)
   calibration/   init + vision calibration (ArUco + 3D-printed ruler + scan adapter)
@@ -28,7 +29,24 @@ with cameras feeding the verification agents that gate each step.
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** and **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 for diagrams, and **[PROJECT_PLAN.md](PROJECT_PLAN.md)** for the 24h plan and ownership.
 
-## Quick start (uv)
+## Quick start (Docker)
+
+```bash
+cp .env.example .env        # optional — set your arm IPs / camera sources
+docker compose up           # http://localhost:5173
+```
+
+Brings up the backend (`:8000`) and the UI (`:5173`) together. Both bind-mount the
+repo and run in reload mode, so editing Python or Vue takes effect live; only
+dependency changes need `docker compose up --build`. Taught poses land in `./data`
+on the host.
+
+The arms are reached over TCP by IP, which works from the container's default
+bridge network. **USB devices do not** — the Opentrons serial port and USB cameras
+need `devices:` entries in `docker-compose.yml` (Linux hosts only; on macOS run the
+backend on the host for that work).
+
+## Quick start (uv, no Docker)
 
 This project uses **[uv](https://docs.astral.sh/uv/)** for all Python work.
 

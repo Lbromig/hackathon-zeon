@@ -1,7 +1,7 @@
 # World-Model Perception & Verification — Requirements
 
 **Scope:** the perception + world-model layer that keeps the digital twin
-(`backend/app/worldmodel/`) aligned with reality, verifies physical actions in the
+(`core/worldmodel/`) aligned with reality, verifies physical actions in the
 background, and drives closed-loop recovery **only** when an action fails. This document
 extends `docs/DIGITAL_TWIN.md` (the entity/transform-tree design) and feeds
 `docs/ARCHITECTURE.md` (updated in the same change).
@@ -50,7 +50,7 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 |----|-------------|-------------|
 | FR-CAL-1 | Each camera's intrinsics shall be calibrated (ChArUco/checkerboard) or loaded from `calib/intrinsics/`. | Reprojection error < 0.5 px on a held-out board. |
 | FR-CAL-2 | The on-arm camera → TCP transform (hand-eye, eye-in-hand) shall be recovered with `cv2.calibrateHandEye` from 15–20 diverse poses. | Round-trip AX=XB residual reported; static marker localizes to < 3 mm across arm poses. |
-| FR-CAL-3 | Fixed external camera(s) shall be extrinsically calibrated into the world frame (board or `solvePnP`). | A world-anchored marker projects to < 3 px error in each fixed cam. |
+| FR-CAL-3 | Both fixed cameras (`overview_cam`, `handover_cam`) shall be extrinsically calibrated into the world frame from fixed tags (`solvePnP`). | A world-anchored marker projects to < 3 px error in each fixed cam. |
 | FR-CAL-4 | The fixed rig and the arm camera shall resolve to **one** shared world frame; metric scale is set by the 3D-printed ruler / known board. | Same physical point localized by both cameras agrees to < 5 mm. |
 | FR-CAL-5 | Calibration artifacts shall persist under `calib/` (`intrinsics/`, `hand_eye.json`, `world_frame.json`, `extrinsics/`) and load without re-running. | Cold start loads cached calibration; no recalibration required. |
 
@@ -77,7 +77,7 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 | ID | Requirement | Verified by |
 |----|-------------|-------------|
 | FR-WM-1 | Perception poses shall be fused into the existing `WorldModel` as corrective updates to entity poses; kinematics remain the fast always-on source for arm/gantry parents. | Twin pose = kinematics when no detection; snaps to perception when confident. |
-| FR-WM-2 | Manipulation shall **reparent** entities (pick tube → parent = gripper; cap off → tube→gripper→dropzone) as already modeled in `worldmodel/entities.py`. | Reparent events logged; world pose continuous across reparent. |
+| FR-WM-2 | Manipulation shall **reparent** entities (pick tube → parent = gripper; cap off → tube→gripper→dropzone) as already modeled in `core/worldmodel/entities.py`. | Reparent events logged; world pose continuous across reparent. |
 | FR-WM-3 | Each dynamic entity shall keep a short **pose history** (ring buffer) with timestamps + source (kinematics/perception) + confidence. | History queryable; used for velocity/stability checks. |
 | FR-WM-4 | Fusion shall reject stale or low-confidence perception (gating by covariance/confidence + max age) to avoid corrupting the twin. | Stale frame does not move the entity; logged as rejected. |
 | FR-WM-5 | The twin shall be serializable to a snapshot (`entities.json`) and streamed over `/ws/state` for the UI. | Snapshot round-trips; UI reflects live poses. |
@@ -122,7 +122,7 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 
 | Concern | Primary choice | Why | Fallback / alternative | License (non-commercial) |
 |--------|----------------|-----|------------------------|--------------------------|
-| **Multi-cam calib + hand-eye** | **OpenCV** `calibrateHandEye` (TSAI/PARK) + ChArUco, `solvePnP` for fixed cams | Standard, robust, already stubbed in `calibration/pipeline.py`; nothing else needed for the shared frame | `multical` for multi-cam rig bundle-calibration | Apache/BSD ✓ |
+| **Multi-cam calib + hand-eye** | **OpenCV** `calibrateHandEye` (TSAI/PARK) + ChArUco, `solvePnP` for fixed cams | Standard, robust, already stubbed in `core/calibration/pipeline.py`; nothing else needed for the shared frame | `multical` for multi-cam rig bundle-calibration | Apache/BSD ✓ |
 | **Detect / segment tube & cap** | **Grounded-SAM 2** (Grounding DINO text prompts → SAM2 masks + video tracking) | Open-vocabulary (no retrain for new labware), SAM2 gives ~44 FPS real-time video masks with streaming memory — ideal to seed + re-seed the tracker | YOLO11 for a fast fixed-class detector (note AGPL-3.0) | Apache-2.0 ✓ (YOLO AGPL) |
 | **6-DoF pose & tracking** | **FoundationPose** (CAD-model mode) | CAD meshes of tube/cap exist; init once then refine-only *tracking* is very fast and pairs naturally with Kaolin render-compare; best fit for "track the tube" | **BundleSDF** for objects with no CAD (model-free, but neural-field training ~6.7 s/round → not hot-path) | NVIDIA Source Code License, non-commercial ✓ |
 | **Render-compare / geometry / verify** | **Kaolin** (differentiable camera + renderer, representation ops, SPC, Jupyter viewer) | Analysis-by-synthesis for `cap_removed` / pose refinement; geometry plumbing for CAD → twin | Open3D for point-cloud ops / TSDF | Apache-2.0 core; `non_commercial` NSCL ✓ |
@@ -135,7 +135,7 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 - **Perception → Twin:** `wm.update_pose(entity_id, T_world, *, source="perception", confidence, stamp)` with gating (FR-WM-4). Kinematics uses the same call with `source="kinematics"`.
 - **Verifier → Orchestrator/UI:** existing `VerificationResult{ok, confidence, detail, data}` per predicate, streamed on `/ws/state`; orchestrator polls latest verdict at step gates and the recovery gate subscribes continuously.
 - **Recovery ↔ Motion:** recovery controller drives the same capability interfaces (`drivers/capabilities/arm.py`) as nominal motion; it never imports a vendor SDK (respects the layering in `docs/ARCHITECTURE.md`).
-- **Persistence:** `calib/` for calibration artifacts; `entities.json` for twin snapshots (already produced by `calibration/pipeline.py::_freeze`).
+- **Persistence:** `calib/` for calibration artifacts; `entities.json` for twin snapshots (already produced by `core/calibration/pipeline.py::_freeze`).
 
 ---
 
@@ -161,8 +161,27 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 
 ---
 
-## 9. Open questions
+## 9. CAD assets (tube / cap meshes)
+
+Real CAD is in the repo under `assets/cad/tubes/`, registered in
+`core/worldmodel/meshes.py` and wired into `core/worldmodel/definitions.py`
+(`add_tube_with_cap(..., family=...)`, default **50 mL** — the primary demo tube).
+Meshes are watertight + winding-consistent, low-poly, and authored in **millimetres**
+(scale ×0.001 → metres for FoundationPose / the twin; `SCALE_MM_TO_M` in the registry).
+
+| Mesh key | File | Ø diameter | Height/len | Triangles |
+|----------|------|-----------|------------|-----------|
+| `tube_50ml_base` | `tube_50ml_base.stl` | 28.0 mm | 112.4 mm | 2,958 |
+| `tube_50ml_cap` | `tube_50ml_cap.stl` | 34.0 mm | 16.0 mm | 7,940 |
+| `tube_15ml_base` | `tube_15ml_base.stl` | 15.3 mm | 119.3 mm | 2,002 |
+| `tube_15ml_cap` | `tube_15ml_cap.stl` | 22.0 mm | 10.0 mm | 9,680 |
+
+This satisfies FR-POSE-1 (CAD-mode pose) — no BundleSDF model-building needed for the
+tube/cap. `Entity.mesh` now carries the registry key and is included in the twin snapshot.
+
+## 10. Open questions
 
 - Depth source on the fixed rig — RealSense per camera, or depth only on the arm cam? (Affects FoundationPose, which prefers RGB-D.)
-- Are vendor CAD meshes for the exact tube/cap available, or do we scan once with BundleSDF to build them?
+- ~~Are vendor CAD meshes for the exact tube/cap available~~ — **resolved:** 15 mL + 50 mL tube/cap STLs supplied (§9).
+- Tube-rack geometry: `WELL_PITCH` is provisionally set to 30 mm to clear the Ø28 mm 50 mL tube, but the real rack/nest CAD is still needed to fix well pitch and slot pose.
 - Recovery authority: may the recovery controller command **both** arms + OT, or arms only, for the demo?
