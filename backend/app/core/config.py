@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DEFAULT_FLEET: list[dict[str, Any]] = [
-    {"type": "xarm", "id": "left", "name": "Left arm", "ip": "192.168.1.10"},
-    {"type": "xarm", "id": "right", "name": "Right arm", "ip": "192.168.1.11"},
+    {"type": "xarm", "id": "left", "name": "Left arm", "ip": "192.168.3.13"},
+    {"type": "xarm", "id": "right", "name": "Right arm", "ip": "192.168.3.14"},  # TODO confirm 2nd arm IP
     {"type": "opentrons", "id": "ot", "name": "Opentrons (OT-One)", "transport": "serial",
      "port": "/dev/ttyACM0"},
     {"type": "camera", "id": "on_arm", "name": "On-arm cam", "source": 0},
