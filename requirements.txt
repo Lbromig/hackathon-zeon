@@ -1,0 +1,9 @@
+# xArm control — vendored in third_party/xArm-Python-SDK
+#   install with:  pip install -e third_party/xArm-Python-SDK
+#   (or from PyPI:  pip install xArm-Python-SDK)
+
+# Perception & verification
+numpy
+opencv-python
+
+# Add per-workstream deps below as needed

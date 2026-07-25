@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+websockets
+
+# perception / verification
+numpy
+opencv-python
+
+# xArm control — from repo root:  pip install -e ../third_party/xArm-Python-SDK
