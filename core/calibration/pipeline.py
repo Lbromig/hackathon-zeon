@@ -71,7 +71,7 @@ class CalibrationPipeline:
 
     def _hand_eye(self) -> str:
         # TODO: on-arm camera <-> TCP hand-eye (e.g. cv2.calibrateHandEye); cache
-        return "hand-eye on_arm_cam -> right_tcp (TODO)"
+        return "hand-eye gripper_cam -> right_tcp (TODO)"
 
     def _world_frame(self) -> str:
         # TODO: detect ArUco board + 3D-printed ruler -> world origin + metric scale
