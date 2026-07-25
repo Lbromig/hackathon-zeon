@@ -11,7 +11,7 @@ dependencies = [
     "websockets",
     # perception / verification
     "numpy",
-    "opencv-python",
+    "opencv-contrib-python",   # contrib build required for cv2.aruco (AprilTag tag36h11)
     # robot control (vendored in third_party/, see [tool.uv.sources])
     "xarm-python-sdk",
     # config
