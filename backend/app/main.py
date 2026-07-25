@@ -1,16 +1,22 @@
 """FastAPI entrypoint.
 
-    uvicorn app.main:app --reload   (run from backend/)
+    uv run uvicorn backend.app.main:app --reload   (run from the repo root)
 """
 from __future__ import annotations
 
+import math
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from core.config import settings
 
 from .api import calibration, instruments, teach, workflow
-from .core.config import settings
 from .services.device_manager import device_manager
 
 
@@ -29,6 +35,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite floats so an error body can actually be serialized."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """422s for rejected input, including the input that pydantic rejected.
+
+    The stock handler echoes the offending value back verbatim, so rejecting a
+    NaN (schemas.FiniteModel) made `json.dumps` raise *inside* the error handler
+    — turning a clean 422 into a 500 with no reason attached.
+    """
+    return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))})
+
 
 app.include_router(instruments.router)
 app.include_router(teach.router)

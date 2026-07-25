@@ -21,6 +21,7 @@ Docs: https://docs.api.ufactory.cc/xarm_python_sdk_docs/1.%20xArm-Python-SDK%20I
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 import time
 
@@ -130,10 +131,12 @@ def init_arm(ip: str, name: str = "", *, home: bool = False, gripper: str = "aut
         if arm.error_code != 0:
             raise RuntimeError(f"arm in error state after init (error_code={arm.error_code})")
 
-        # motion + safety defaults
-        arm.set_tcp_maxacc(DEFAULT_TCP_ACC)
-        arm.set_collision_sensitivity(COLLISION_SENSITIVITY)
-        arm.set_self_collision_detection(True)
+        # Motion + safety defaults. Checked, not fire-and-forget: a rejected
+        # set_collision_sensitivity would silently leave detection at the
+        # controller default while the log claims the arm is configured.
+        _ok(arm.set_tcp_maxacc(DEFAULT_TCP_ACC), "set_tcp_maxacc")
+        _ok(arm.set_collision_sensitivity(COLLISION_SENSITIVITY), "set_collision_sensitivity")
+        _ok(arm.set_self_collision_detection(True), "set_self_collision_detection")
 
         com = list(payload_com if payload_com is not None else DEFAULT_PAYLOAD_COM)
         _ok(arm.set_tcp_load(payload_kg, com, wait=True), "set_tcp_load")
@@ -153,23 +156,31 @@ def init_arm(ip: str, name: str = "", *, home: bool = False, gripper: str = "aut
             _ok(arm.move_gohome(wait=True, speed=DEFAULT_TCP_SPEED), "move_gohome")
 
         _report(arm, label)
-        return arm.error_code == 0
+        ok = arm.error_code == 0
     except Exception as e:
         print(f"  ERROR initializing '{label}': {e}")
-        return False
+        ok = False
     finally:
-        teardown(arm, label, leave_enabled=leave_enabled)
+        # teardown's verdict is part of the result: an arm we failed to brake is
+        # not a successful init, however well the bring-up went.
+        braked = teardown(arm, label, leave_enabled=leave_enabled)
+    return ok and braked
 
 
 def _wait_until_stopped(arm: XArmAPI, timeout: float = 10.0) -> bool:
-    """Block until the arm reports it is no longer moving (reported state 1 = in motion).
+    """Block until the arm is genuinely idle.
+
+    Reported state 0 *and* 1 both mean "still moving" — the SDK's own wait_move
+    treats only >= 4 as terminal — and a non-empty command queue means motion is
+    still pending. Treating 0 as stopped would let teardown brake mid-trajectory,
+    which is exactly what the settle delay exists to avoid.
 
     XArmAPI is a flat wrapper and does not expose the SDK's internal wait_move(),
     so poll the reported state instead.
     """
     end = time.time() + timeout
     while time.time() < end:
-        if arm.state != 1:
+        if arm.state not in (0, 1) and not (arm.cmd_num or 0) > 0:
             return True
         time.sleep(0.1)
     return False
@@ -193,7 +204,7 @@ def _warn_if_braking_under_load(arm: XArmAPI, label: str) -> None:
               f"re-run with --home to park folded first")
 
 
-def teardown(arm: XArmAPI, label: str, *, leave_enabled: bool = False) -> None:
+def teardown(arm: XArmAPI, label: str, *, leave_enabled: bool = False) -> bool:
     """Always leave the arm mechanically safe: STOP, servos off, brakes engaged.
 
     Runs on every exit path. Disabling the servos is what engages the holding
@@ -203,13 +214,17 @@ def teardown(arm: XArmAPI, label: str, *, leave_enabled: bool = False) -> None:
     `leave_enabled` hands the arm over still live (for the backend to drive), which
     avoids a pointless brake cycle — every engage/release costs a clunk and a little
     droop, so don't do it if something is about to re-enable the arm anyway.
+
+    Returns True if the arm was left in the intended state. A failed brake must
+    reach the exit code — printing "CHECK: not all engaged" next to a summary that
+    says OK is how an energized arm gets mistaken for a safe one.
     """
     try:
         if not arm.connected:
-            return
+            return True
         if leave_enabled:
             print(f"  [{label}] teardown: leaving arm ENABLED (brakes released) as requested")
-            return
+            return True
 
         # Best-effort pre-checks only: never let these stop us from braking below.
         try:
@@ -227,8 +242,10 @@ def teardown(arm: XArmAPI, label: str, *, leave_enabled: bool = False) -> None:
         held = all(b == 0 for b in brakes) if brakes else None
         print(f"  [{label}] teardown: state={_state(arm)} brakes={brakes}"
               f" -> {'all engaged' if held else 'CHECK: not all engaged'}")
+        return bool(held)
     except Exception as e:
         print(f"  [{label}] WARNING: teardown failed, arm may still be energized: {e}")
+        return False
     finally:
         try:
             arm.disconnect()
@@ -271,22 +288,29 @@ def _init_gripper(arm: XArmAPI, gripper: str, label: str) -> None:
 
 
 def _report(arm: XArmAPI, label: str) -> None:
-    code, pos = arm.get_position()
-    _, angles = arm.get_servo_angle()
     print(f"  [{label}] READY  state={_state(arm)} error={arm.error_code} warn={arm.warn_code}")
-    if code == 0:
+    # Both reads return (code, values); on failure `values` is None, so iterating
+    # it would raise a TypeError and fail an init that actually succeeded.
+    pos_code, pos = arm.get_position()
+    if pos_code == 0 and pos:
         print(f"           TCP pose (mm,deg): {[round(v, 1) for v in pos]}")
+    else:
+        print(f"           TCP pose unavailable (get_position code={pos_code})")
+    ang_code, angles = arm.get_servo_angle()
+    if ang_code == 0 and angles:
         print(f"           joints (deg):      {[round(v, 1) for v in angles]}")
+    else:
+        print(f"           joints unavailable (get_servo_angle code={ang_code})")
 
 
 def _fleet_ips() -> list[tuple[str, str]]:
-    """Read xArm entries from the backend fleet config, if available."""
-    sys.path.insert(0, "backend")
+    """Read xArm entries from the shared fleet config, if available."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
     try:
-        from app.core.config import settings
+        from core.config import settings
         return [(d["ip"], d.get("name", d["id"])) for d in settings.fleet if d["type"] == "xarm"]
     except Exception as e:
-        sys.exit(f"--fleet: could not read backend config ({e})")
+        sys.exit(f"--fleet: could not read fleet config ({e})")
 
 
 def main() -> int:

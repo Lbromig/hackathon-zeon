@@ -12,8 +12,9 @@ from typing import Iterator
 
 from drivers import ArmDriver, DeckLocation, LiquidHandlerDriver, Pose
 
+from core.verification.agents import AGENTS, Evidence
+
 from ..services.device_manager import DeviceManager
-from ..verification.agents import AGENTS, Evidence
 
 
 @dataclass

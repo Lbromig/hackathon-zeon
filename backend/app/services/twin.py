@@ -1,7 +1,7 @@
 """Holds the live digital-twin WorldModel once calibration has produced it."""
 from __future__ import annotations
 
-from ..worldmodel import WorldModel
+from core.worldmodel import WorldModel
 
 _world: WorldModel | None = None
 

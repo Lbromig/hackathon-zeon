@@ -5,7 +5,8 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from ..calibration import CalibrationPipeline
+from core.calibration import CalibrationPipeline
+
 from ..services import twin
 from ..services.device_manager import device_manager
 
