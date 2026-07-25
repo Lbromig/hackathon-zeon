@@ -165,3 +165,50 @@ class TaughtPose(FiniteModel):
     gripper_width: float | None = None
     note: str = ""
     saved_at: str = ""
+
+
+# --- camera preflight (see api/camera.py) ------------------------------------
+
+class CameraPreflightDevice(BaseModel):
+    """An attached camera, as seen without opening a stream."""
+    name: str
+    model: str = ""
+    serial: str | None = None
+    vendor_id: int | None = None
+    product_id: int | None = None
+    link_speed_bps: int | None = None
+    is_realsense: bool = False
+    is_usb3: bool | None = None       # None when the link speed is unknown
+    claimed_by: list[str] = []        # drivers holding the USB interfaces
+
+
+class CameraPreflightBackend(BaseModel):
+    """The outcome of trying one capture backend."""
+    backend: str                      # pyrealsense2 | opencv
+    diagnosis: str                    # ok | permission_denied | driver_claimed | ...
+    detail: str = ""
+    remedy: str = ""                  # empty when the backend works
+
+
+class CameraPreflight(BaseModel):
+    usable: bool                      # true only if frames actually flowed
+    responsible_app: str = ""         # the app a macOS camera grant attaches to
+    devices: list[CameraPreflightDevice] = []
+    backends: list[CameraPreflightBackend] = []
+
+
+class CameraSnapshot(BaseModel):
+    name: str
+    path: str                         # repo-relative, so it is safe to display
+    bytes: int = 0
+    label: str = ""
+
+
+class WebRTCOffer(BaseModel):
+    sdp: str
+    type: str = "offer"
+
+
+class WebRTCAnswer(BaseModel):
+    sdp: str
+    type: str = "answer"

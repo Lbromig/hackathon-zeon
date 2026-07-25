@@ -6,6 +6,7 @@ import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
 import OpentronsJog from "./components/OpentronsJog.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
+import CameraPreflight from "./components/CameraPreflight.vue";
 
 type Tab = "fleet" | "teach";
 
@@ -61,6 +62,7 @@ const liquidHandlers = computed(() =>
         </section>
         <aside class="grid gap-4">
           <OpentronsJog v-for="d in liquidHandlers" :key="d.id" :device-id="d.id" />
+          <CameraPreflight />
           <WorkflowRunner />
         </aside>
       </div>
