@@ -8,11 +8,14 @@ verify every step** and retry when something fails.
 
 ```
 frontend/   Vue 3 + Vite UI — live fleet status, camera feeds, workflow runner
-backend/    Python / FastAPI — API + websocket, device manager, orchestration,
-            verification agents. Depends ONLY on drivers/ interfaces.
-  app/worldmodel/    digital twin — scene graph of entities + poses (world frame)
-  app/calibration/   init + vision calibration (ArUco + 3D-printed ruler + scan adapter)
-  app/motion/        safe pick/place planner + anti-flip (upright) guard
+core/       Framework-agnostic domain logic (no FastAPI import). Reusable by ZEON.
+  worldmodel/    digital twin — scene graph of entities + poses (world frame)
+  calibration/   init + vision calibration (ArUco + 3D-printed ruler + scan adapter)
+  motion/        safe pick/place planner + anti-flip (upright) guard
+  verification/  the "did it work?" agents (cap/grasp/pose/aspiration)
+  config.py      settings + fleet definition (env-driven, see .env.example)
+backend/    Python / FastAPI — API + websocket, device manager, orchestration.
+            Depends on core/ and drivers/ interfaces only.
 drivers/    Instrument abstraction — capability interfaces + one driver per instrument,
             built via a registry. No vendor SDK leaks above this layer.
 third_party/xArm-Python-SDK/   vendored vendor SDK
@@ -35,8 +38,8 @@ uv sync                     # create .venv + install deps (incl. vendored xArm S
 # initialize the arm
 uv run python scripts/init_xarm.py --ip 192.168.3.13
 
-# backend
-cd backend && PYTHONPATH=.. uv run uvicorn app.main:app --reload
+# backend (from the repo root)
+uv run uvicorn backend.app.main:app --reload
 
 # frontend (separate shell)
 cd frontend && npm install && npm run dev

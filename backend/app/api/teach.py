@@ -20,6 +20,7 @@ trying to interrupt would be useless. Do not "fix" that.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -30,7 +31,8 @@ from fastapi import APIRouter, HTTPException
 
 from drivers import ArmDriver, ConnectionState, DriverError, InstrumentKind, Pose
 
-from ..core.config import settings
+from core.config import settings
+
 from ..schemas import (
     ArmActionResult,
     ArmLimitsModel,
@@ -124,8 +126,14 @@ def _state(arm: ArmDriver, *, read_gripper: bool = True) -> ArmState:
     if not state.connected:
         return state
     try:
+        # PoseModel rejects non-finite values; do the same for joints by hand so a
+        # garbage reading surfaces as `detail` instead of failing to serialize and
+        # 500-ing the 2 Hz poller.
         state.pose = PoseModel(**arm.get_pose().__dict__)
-        state.joints = arm.get_joints()
+        joints = arm.get_joints()
+        if not all(math.isfinite(j) for j in joints):
+            raise ValueError(f"non-finite joint reading {joints}")
+        state.joints = joints
     except Exception as e:
         state.detail = str(e)
     status = _status(arm)

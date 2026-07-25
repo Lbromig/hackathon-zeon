@@ -5,7 +5,7 @@ from typing import Any
 
 from drivers import DriverError, InstrumentDriver, build_driver
 
-from ..core.config import settings
+from core.config import settings
 
 
 class DeviceManager:

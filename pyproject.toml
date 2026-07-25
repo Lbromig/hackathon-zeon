@@ -33,4 +33,4 @@ xarm-python-sdk = { path = "third_party/xArm-Python-SDK", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
-pythonpath = ["backend", "."]
+pythonpath = ["."]

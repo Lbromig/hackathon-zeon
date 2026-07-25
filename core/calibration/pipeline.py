@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, Protocol
 
-from ..services.device_manager import DeviceManager
 from ..worldmodel import WorldModel, add_tip_box, add_tube_rack, add_tube_with_cap, build_skeleton
 from .markers import MARKER_MAP
 from .scan import OrbitPlanner, PlaceholderScanAdapter, ScanAdapter
@@ -29,8 +28,21 @@ from .scan import OrbitPlanner, PlaceholderScanAdapter, ScanAdapter
 CALIB_DIR = Path("calib")
 
 
+class DeviceManagerLike(Protocol):
+    """Just the device-manager surface this pipeline needs.
+
+    ``core`` must not import the backend, so instead of depending on
+    ``backend.app.services.device_manager.DeviceManager`` we accept anything that
+    can connect the fleet and hand back a driver by id.
+    """
+
+    def connect_all(self) -> dict[str, str]: ...
+
+    def get(self, device_id: str) -> Any: ...
+
+
 class CalibrationPipeline:
-    def __init__(self, dm: DeviceManager, scan: ScanAdapter | None = None,
+    def __init__(self, dm: DeviceManagerLike, scan: ScanAdapter | None = None,
                  calib_dir: Path = CALIB_DIR) -> None:
         self.dm = dm
         self.scan = scan or PlaceholderScanAdapter()
