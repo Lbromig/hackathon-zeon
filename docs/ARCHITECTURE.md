@@ -17,19 +17,25 @@ flowchart TB
   end
 
   subgraph BE[Backend · Python / FastAPI]
-    REST[REST · /api/instruments]:::be
-    WS[WebSocket · /ws/state, /ws/workflow]:::be
+    REST[REST · /api/instruments, /api/teach]:::be
+    WS[WebSocket · /ws/state, /ws/workflow, /ws/agent]:::be
     DM[DeviceManager]:::be
-    WF[Workflow orchestrator<br/>capability → driver]:::be
-    subgraph PER[Perception subsystem]
-      CAL[Calibration<br/>OpenCV hand-eye + extrinsics]:::be
+    WF[Workflow orchestrator<br/>hardcoded PLAN · capability → driver]:::be
+    subgraph AG[Agent loop · P0 IMPLEMENTED]
+      ENG[Engine · spine<br/>observe→decide→execute→verify]:::be
+      POL[Policy · brain<br/>RuleBased · Claude-gated]:::be
+      TB[Toolbox<br/>skills · twin · verify]:::be
+    end
+    VER[Verify agents · STUBS<br/>core/verification · return ok=True]:::be
+    subgraph PER[Perception subsystem · PLANNED — no code yet]
+      CAL[Calibration<br/>OpenCV hand-eye + extrinsics · stubs]:::be
       DET[Detect / segment<br/>Grounded-SAM 2]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD]:::be
       RC[Render-compare<br/>Kaolin diff-render]:::be
     end
-    WM[World model · twin<br/>scene graph + pose history]:::be
-    BV[Background verifier<br/>predicates @ 5–15 Hz]:::be
-    REC[Recovery controller<br/>closed-loop ON ERROR only]:::be
+    WM[World model · twin<br/>core/worldmodel + services/twin<br/>entity model real · not yet populated]:::be
+    BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
+    REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
 
   subgraph DR[Drivers · abstraction]
@@ -57,7 +63,13 @@ flowchart TB
   REST --> DM
   WS --> DM
   WS --> WF
+  WS --> ENG
   WF --> DM
+  ENG --> POL
+  ENG --> TB
+  TB --> DM
+  TB --> VER
+  WF --> VER
   DM --> REG --> CAP
   CAP --> XA
   CAP --> OT
@@ -86,6 +98,22 @@ flowchart TB
   REC -->|hand back on success| WF
 ```
 
+## Implementation status (reflects code on disk)
+
+The diagram is the **target** architecture; nodes are annotated with what is real today.
+
+- **Real:** the driver layer + registry, `DeviceManager`, the hardcoded `WF` orchestrator, the
+  **P0 agent loop** (`backend/app/agent/`, streamed on `/ws/agent`), the world-model *entity model*
+  (`core/worldmodel/` + CAD tube/cap meshes) and the `services/twin.py` holder, and the REST/WS API.
+  The xArm driver runs the real vendor SDK; other drivers have mock counterparts.
+- **Stub / no-op:** every `core/verification` agent returns `ok=True, confidence=0.0` — so the
+  verify→retry loop cannot currently fail. The hero workflow's `_execute` has its driver calls
+  commented out.
+- **Planned, no code yet:** the entire **perception subsystem** (Grounded-SAM 2 / FoundationPose /
+  Kaolin render-compare), the **background verifier**, and the **recovery controller**; `core/calibration`
+  is scaffolding with `TODO` steps, so the twin is not yet populated (`services/twin.get_world()` is
+  `None` until calibration runs). None of the perception model dependencies are installed.
+
 ## Layer responsibilities
 
 - **frontend/** — presentation only; talks to the backend over REST + websockets. Also
@@ -99,7 +127,8 @@ flowchart TB
 
 ## Perception subsystem → twin → verify → recover
 
-This is the world-model loop. It extends the twin design in `docs/DIGITAL_TWIN.md` and is
+This is the world-model loop **as designed** — it is the target, not yet built (see
+Implementation status above). It extends the twin design in `docs/DIGITAL_TWIN.md` and is
 specified in `docs/WORLD_MODEL_REQUIREMENTS.md`. Two principles shape it:
 
 - **Verification is a background process** — it runs continuously, not per workflow step.
@@ -108,7 +137,7 @@ specified in `docs/WORLD_MODEL_REQUIREMENTS.md`. Two principles shape it:
 
 Data flow:
 
-1. **Calibration** (`backend/app/calibration/`, OpenCV) fixes intrinsics, the on-arm
+1. **Calibration** (`core/calibration/`, OpenCV) fixes intrinsics, the on-arm
    **hand-eye** transform, and fixed-camera **extrinsics** into one shared world frame with
    metric scale. Artifacts persist under `calib/`.
 2. **Detect / segment** (Grounded-SAM 2 — Grounding DINO text prompts → SAM2 masks) finds

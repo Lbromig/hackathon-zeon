@@ -20,14 +20,24 @@ interfaces, so work proceeds in parallel against mocks.
 - Drivers implement the capability ABCs in `drivers/capabilities/` — nothing above the
   driver layer imports a vendor SDK.
 - The orchestrator only calls capability methods + verification agents.
-- Devices are declared in `backend/app/core/config.py` (`DEFAULT_FLEET`); use mocks by
+- Devices are declared in `core/config.py` (`DEFAULT_FLEET`); use mocks by
   registering a fake factory under the same type name.
+
+## Orchestration (landed since scaffold)
+
+Beyond the hardcoded chain in `workflows/uncap_aspirate.py`, a **P0 agent loop** now exists
+(`backend/app/agent/` — `engine.py` spine, `policy.py` brain, `tools.py` toolbox; streamed over
+`/ws/agent`). It observes → decides → executes a vetted skill → verifies → repeats, defaulting to
+an offline `RuleBasedPolicy` (no API key/hardware needed) with a gated `ClaudePolicy` behind
+`ANTHROPIC_API_KEY`. It reuses the same skills, twin, and verification agents, so it does not
+replace the plan — it realizes the P0 rung of `docs/AGENT_ORCHESTRATION.md`. Caveat: it can only
+be as honest as the verifiers, which are still stubs (see Risks).
 
 ## Timeline
 
-- [ ] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [ ] **H+6** — Each owner: driver connects + one real action (arm moves / OT homes / camera streams). Backend boots, UI lists the fleet.
-- [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline)
+- [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). *OT + camera drivers exist but their one real action (OT home / camera stream) is not yet verified in git/on-disk.*
+- [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
 - [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
 - [ ] **H+22** — Freeze features, rehearse demo, record backup video
@@ -41,6 +51,13 @@ interfaces, so work proceeds in parallel against mocks.
 
 ## Risks
 
+- **Verification is entirely stubbed (top risk).** All four agents in `core/verification/agents.py`
+  return `ok=True, confidence=0.0, detail="stub"`, so the verify→retry loop can never fail or
+  retry — the "physical verification" half of Track C is currently theater. Make **one** verifier
+  real (e.g. `cap_removed` from gripper-torque drop or a simple vision/marker cue) before polishing
+  anything else.
 - Dual-arm unscrew is the long pole → Dale starts first; snap-cap fallback ready.
 - Arm↔OT alignment → wide-mouth tube / funnel lead-in for slack.
 - Live chaining → the verify→retry loop is the safety net; prefer deliberate failure injection in the demo.
+- The hero workflow `_execute` is still empty (commented TODOs); wire at least the floor path so the
+  chain and the agent loop drive real hardware, not no-ops.
