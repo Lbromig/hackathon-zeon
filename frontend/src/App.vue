@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
 import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
+import OpentronsJog from "./components/OpentronsJog.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
 
 type Tab = "fleet" | "teach";
@@ -16,6 +17,12 @@ function select(next: Tab) {
   tab.value = next;
   localStorage.setItem("tab", next);
 }
+
+// Jog pads for every liquid handler in the fleet. Driven off the fleet list
+// rather than a hard-coded id so it appears for whatever is actually connected.
+const liquidHandlers = computed(() =>
+  instruments.value.filter((d) => d.kind === "liquid_handler"),
+);
 </script>
 
 <template>
@@ -52,7 +59,10 @@ function select(next: Tab) {
         <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
         </section>
-        <aside><WorkflowRunner /></aside>
+        <aside class="grid gap-4">
+          <OpentronsJog v-for="d in liquidHandlers" :key="d.id" :device-id="d.id" />
+          <WorkflowRunner />
+        </aside>
       </div>
 
       <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab -->
