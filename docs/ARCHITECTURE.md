@@ -116,14 +116,22 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   end-to-end and **publishes the twin** (`twin.set_world`): it connects the fleet, registers skeleton
   geometry (tip box + tube rack) and seeds a demo tube, so `services/twin.get_world()` is populated
   after a calibrate run. The xArm driver runs the real vendor SDK; other drivers have mock counterparts.
+  The **camera path is now live end-to-end:** `main.py` mounts `cameras.router`
+  (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) backed by a
+  worker-threaded `services/camera_hub.py`, and its per-camera detections ride `/ws/state`; a
+  RealSense RGB-D driver (`drivers/camera/realsense.py`) exists on disk (uncommitted WIP) covering all
+  three fixed viewpoints. The **workflow orchestrator streams** over `/ws/workflow` with a
+  `/api/workflow/plan` endpoint, and the **teach layer** (jog / move-to / pose library) is hardened and
+  tested (`backend/tests/test_teach_api.py`).
 - **Stub / no-op:** every `core/verification` agent returns `ok=True, confidence=0.0` — so the
-  verify→retry loop cannot currently fail. The hero workflow's `_execute` has its driver calls
-  commented out. Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`,
-  so twin poses are placeholder (the `PlaceholderScanAdapter`), and `MARKER_MAP` uses **example** ids
-  with `identity()` marker→entity offsets — real alignment needs measured values. A **cameras router**
-  (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) and a `camera_hub`
-  exist on disk but are **not yet mounted** — `main.py` includes only instruments, teach, calibration,
-  workflow, and agent, so the camera feed/overlay is unreachable until wired in.
+  verify→retry loop cannot currently fail. The hero workflow's `_execute` (also reused by the agent
+  toolbox's `Skill.run`) has its driver calls commented out, so both the hardcoded chain and the agent
+  loop "pass" against empty actions and no autonomous motion occurs. Calibration's `hand_eye` /
+  `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are placeholder (the
+  `PlaceholderScanAdapter`); `MARKER_MAP` now uses **real** printed stock ids (`tag36h11` 180–224) but
+  keeps `identity()` marker→entity offsets (0.02 placeholder) — real alignment still needs measured
+  values. The OT-One driver's `connect()` / `_send()` remain `TODO` (a `feat/ot-one-serial-driver`
+  branch exists on `origin` but is not merged here), so no real aspirate has run.
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only

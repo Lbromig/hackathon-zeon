@@ -16,11 +16,37 @@ differentiator over "another pick-and-place" is the closed **verify → retry** 
 **Verification substrate is now marker-based, not learned:** a real AprilTag detector +
 6-DoF pose (`core/perception/fiducials.py`) feeding a live twin is the pragmatic sensing
 layer for verdicts — the heavy learned-perception stack (SAM 2 / FoundationPose / Kaolin)
-stays a post-hackathon ambition, off the demo path.
+stays a post-hackathon ambition, off the demo path. **As of this cycle the last infra gap is
+closed:** the camera transport is mounted (`cameras.router` + `camera_hub`, detections on
+`/ws/state`) and marker ids are the real printed stock (180–224). Nothing structural now stands
+between the repo and a real verdict — what remains is a threshold on an already-computed pose and
+one wired motion path, i.e. the two blockers that have persisted for two cycles: a real verifier
+and a non-empty `_execute`. The vision is no longer bottlenecked by capability; it is bottlenecked
+by choosing to spend a block on the scored half instead of more substrate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T00:14Z — The infra gap closed; the scored gap didn't move (a wasted cycle for Track C's theme)
+
+**Demo-readiness score: 3.5/10 for the *stated* PoC (verified uncap→aspirate) — flat vs last review; ~7/10 for a live teleop + streaming-UI show, up from ~6.** The headline number is unchanged **on purpose**: the one thing that would move it — a verifier that can return `ok=False` — was not touched. What improved is the demo's *supporting cast*, not its thesis.
+
+**What changed since the last review.** A genuinely productive infra cycle: the **cameras router is mounted** (`main.py:67`, closing last review's #1 ADD item), backed by a 293-line worker-threaded `camera_hub`, with detections streaming on `/ws/state`; a **RealSense RGB-D driver** covers all three fixed cams (uncommitted WIP); the **teach layer is hardened and tested** (`test_teach_api.py`, 278 lines; `TeachPanel.vue`); the **workflow orchestrator streams** over `/ws/workflow` with a `/api/workflow/plan` endpoint; `MARKER_MAP` now uses **real** stock ids (`tag36h11` 180–224); and there's **docker packaging**, a **mock fleet**, and **motion-validation scripts** (`validate_motion.py`, `gripper_sequence.py`). This is real, useful engineering — a much better teleop/streaming demo than yesterday.
+
+**What did NOT change — and it is, again, the whole ballgame.** All four `core/verification/agents.py` agents **still** `return VerificationResult(ok=True, confidence=0.0, detail="stub")`. `uncap_aspirate.py::_execute` **still** has every driver call commented out — and now demonstrably so does the agent path, since `agent/tools.py::Skill.run` just calls `uncap_aspirate._execute`. So after a full cycle the *verified* claim is exactly as unbacked as it was, and both orchestration paths still "pass" against empty actions.
+
+**The single biggest threat — this cycle it's prioritization, not capability.** Last review the threat was "the verifier is a no-op but the substrate just landed." Now the substrate has sat complete for a full cycle and *nobody wrote the threshold*. The team had every input needed — marker pose (`entity_world_pose`), reachable detections (`/ws/state`), real motion primitives (`pick_place.plan/execute`) — and spent the cycle building around the two blockers instead of through them. `tube_aligned` is still one subtraction and a threshold; `cap_removed` is still "marker 224 gone or torque drop." The risk has shifted from *can we?* to *will we choose to?* — and every cycle that ends with `ok=True` hardcoded is a cycle proving motion (easy, unscored differentiator) and none of verification (hard, scored differentiator). A judge asking "what happens if the cap doesn't come off?" still gets no live answer.
+
+**Refine scope for the time remaining.**
+- **CUT (unchanged):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — zero code, keep as post-hackathon docs. Also **freeze infra**: cameras, teach, docker, and mock fleet are now good enough for the demo — further polishing them is displacement activity.
+- **KEEP:** real single-arm motion via teach; the P0 agent loop as orchestrator; the hardcoded `PLAN`; fiducial detection + calibration twin + the now-live camera transport as the verification substrate.
+- **ADD, in strict priority (same list as last cycle because it wasn't done):** (1) make **one** verifier real off the existing fiducial pose — `tube_aligned` (pose-error threshold) or `cap_removed` (marker-gone) — so the loop can genuinely fail; (2) wire `_execute` for the **floor** path (snap-cap → present → OT aspirate), calling the real `pick_place` primitives; (3) script **one deliberate failure injection** on that verifier for the reveal. Note the reordering: last cycle put "mount the router" first — that's done, so the verifier is now the top ADD. One real `ok=False` beats another 500 lines of infra.
+- **DECIDE (Q-PRIORITY-1):** if the team is deliberately betting on the screw-cap dexterity ceiling over verification, say so — but that leaves the *scored* Track C theme on a slide while the demo proves the unscored one.
+
+**Opposing view (steelman).** The infra wasn't wasted: a mounted camera hub + RealSense depth is exactly what a vision verifier consumes, and a rock-solid teleop/streaming UI is the stage the reveal will play on. If the verifier truly is "one subtraction," it can be done in the final hour with the substrate now fully in place — so front-loading the stage isn't irrational. Fair — but "one subtraction" left undone for two cycles is a pattern, not a schedule; treat the verifier as the *next* commit, not the *last* one.
+
+**Verdict:** A strong infra cycle that widened the stage and didn't advance the plot. The repo has had everything needed to stop being theater for two cycles running. The next block has exactly one job: *make one verifier return a real `ok=False`.* Until then, Track C's scored half is a stub with excellent lighting.
 
 ### 2026-07-25T23:32Z — The substrate for a real verifier now exists; the verifier still doesn't
 

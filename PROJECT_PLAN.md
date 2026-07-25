@@ -36,9 +36,9 @@ be as honest as the verifiers, which are still stubs (see Risks).
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). *OT + camera drivers exist but their one real action (OT home / camera stream) is not yet verified in git/on-disk.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
 - [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
-- [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose) and the calibration pipeline now runs and publishes the twin (`/ws/calibrate`). Still open: verification agents remain stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder.*
+- [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose), the calibration pipeline now runs and publishes the twin (`/ws/calibrate`), the camera transport is now mounted (`cameras.router` + `camera_hub`, detections on `/ws/state`), and `MARKER_MAP` now carries real stock ids (180–224). Still open — unchanged this cycle: verification agents remain `ok=True` stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder; marker→entity offsets unmeasured.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
 - [ ] **H+22** — Freeze features, rehearse demo, record backup video
 - [ ] **H+24** — Present
@@ -61,9 +61,14 @@ be as honest as the verifiers, which are still stubs (see Risks).
 - Live chaining → the verify→retry loop is the safety net; prefer deliberate failure injection in the demo.
 - The hero workflow `_execute` is still empty (commented TODOs); wire at least the floor path so the
   chain and the agent loop drive real hardware, not no-ops.
-- Camera feed is one wire away but currently dead: `backend/app/api/cameras.py` + `camera_hub` exist,
-  but `main.py` never `include_router(cameras.router)`, so `/api/cameras/*` (MJPEG stream + detections)
-  is unreachable. A real vision verifier and the camera-overlay demo both depend on mounting it.
-- Fiducial poses will be wrong until measured: `core/calibration/markers.py::MARKER_MAP` uses example
-  ids + `identity()` marker→entity offsets, and the world-frame board ids (0–3) aren't in the printed
-  tag36h11 stock (180–224). Measure offsets / assign real board tags before trusting twin poses.
+- Camera feed is now wired (was the top infra gap last cycle): `main.py` mounts `cameras.router`, so
+  `/api/cameras/{id}/stream` (MJPEG) + `/detections` are reachable and per-camera detections ride
+  `/ws/state`. The vision-verifier path is no longer blocked at the transport — what's missing is the
+  verifier itself (see top risk), not the plumbing.
+- Fiducial poses will still be wrong until measured: `core/calibration/markers.py::MARKER_MAP` now uses
+  **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity offsets
+  (0.02 placeholder). Measure the marker→entity offsets before trusting twin poses for any verifier.
+- **Prioritization risk (this cycle).** The last two reviews named exactly two blockers — real verifiers
+  and a wired `_execute`. This cycle shipped infra around them (camera hub, teach hardening, docker,
+  mock fleet, motion-validation scripts) but touched **neither**. Everything needed to make one verifier
+  real has been on disk for a full cycle; the next block must spend on the verdict, not more substrate.
