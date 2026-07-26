@@ -10,9 +10,13 @@ thread allowed to read each device.
 """
 from __future__ import annotations
 
+import json
+import urllib.request
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
+from core.config import settings
 from drivers import CameraDriver, ConnectionState, InstrumentKind
 
 from ..schemas import CameraDetections, CameraDevices, CameraSummary, RealSenseDevice
@@ -22,6 +26,22 @@ from ..services.device_manager import device_manager
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 
 BOUNDARY = "frame"
+REMOTE_TIMEOUT_S = 5.0
+
+
+def _remote_devices(host: str) -> CameraDevices:
+    """`GET {host}/api/cameras/devices`, with failures reported as `error`.
+
+    Same contract as local enumeration: an unreachable bench is a normal state to be
+    displayed, not a 500 — and the message carries the URL, because that is the part
+    that is usually wrong.
+    """
+    url = f"{host}/api/cameras/devices"
+    try:
+        with urllib.request.urlopen(url, timeout=REMOTE_TIMEOUT_S) as resp:
+            return CameraDevices(**json.loads(resp.read().decode()))
+    except Exception as e:
+        return CameraDevices(error=f"cannot reach {url}: {e}")
 
 
 def _camera(device_id: str) -> CameraDriver:
@@ -68,7 +88,14 @@ def devices() -> CameraDevices:
     Enumeration is a live SDK call and fails in ordinary ways (SDK absent, no USB
     permission, nothing plugged in) — those are reported as `error`, not raised,
     because "no cameras yet" is the normal state during bring-up.
+
+    Under HZ_CAMERA_HOST it forwards to that backend instead: the frames come from
+    there, so the hardware worth enumerating is there too. This is the one camera
+    endpoint that needs saying explicitly — the rest are driver-mediated, so the
+    remote driver already puts them on the far machine's cameras.
     """
+    if settings.camera_host:
+        return _remote_devices(settings.camera_host)
     try:
         import pyrealsense2 as rs
     except Exception as e:

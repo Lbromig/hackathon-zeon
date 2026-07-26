@@ -507,10 +507,6 @@ PROBE_INDICES = 6   # fallback index count when device names cannot be enumerate
 # misconfiguration look like a working camera.
 LAB_DEVICE_MARKER = "realsense"
 
-# Every fleet type that backs a camera slot. Kept as one list so adding a driver does not
-# silently drop a slot from validation — a slot that is never checked reads as "fine".
-CAMERA_TYPES = ("camera", "realsense", "still", "mock_camera", "mock_tag_camera")
-
 
 def avfoundation_devices() -> "list[tuple[int, str]] | None":
     """[(index, name)] for AVFoundation video devices, or None if it cannot be determined.
@@ -707,7 +703,10 @@ def stage_fleet(frames: int, persist: bool = False) -> int:
     on macOS the metric path needs root while the UVC path does not, so a real bench often
     runs a mix, and a RealSense-only check would either skip or wrongly fail those slots.
     """
-    from core.config import Settings
+    # CAMERA_TYPES comes from core.config rather than a local copy: a driver added there
+    # must not need a matching edit here, or a new slot type silently drops out of
+    # validation — and a slot that is never checked reads as "fine".
+    from core.config import CAMERA_TYPES, Settings
     from drivers import build_driver
 
     entries = [e for e in Settings.load().fleet if e.get("type") in CAMERA_TYPES]
