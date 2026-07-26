@@ -33,12 +33,73 @@ class VerificationAgent(ABC):
 
 
 class CapRemovedAgent(VerificationAgent):
-    """Cap off? torque drop on the turning arm + threads visible in frame."""
+    """Cap off? Measured as a height delta at the tube mouth.
+
+    Uncapping uncovers a surface roughly 15 to 20 mm further from the camera.
+    That is geometry, so unlike a threads-visible classifier it does not depend
+    on lighting, on a marker surviving a wet bench, or on the cap not being
+    shiny. See core/verification/depth_height.py.
+
+    Needs two things in evidence:
+
+        evidence.frames["depth"]        uint16 depth image from the camera
+        evidence.telemetry["depth_scale"]   metres per count, from the device
+        evidence.telemetry["cap_roi"]       (x, y, w, h) at the tube mouth
+        evidence.telemetry["cap_reference"] HeightStat captured while capped
+
+    Anything missing returns not-ok with zero confidence. This agent never
+    reports success because it had nothing to look at.
+    """
     name = "cap_removed"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        # TODO: vision (threads/cap-gone classifier) + force telemetry fusion.
-        return VerificationResult(ok=True, confidence=0.0, detail="stub")
+        from .depth_height import HeightStat, compare, measure_region
+
+        depth = evidence.frames.get("depth")
+        scale = evidence.telemetry.get("depth_scale")
+        roi = evidence.telemetry.get("cap_roi")
+        reference = evidence.telemetry.get("cap_reference")
+
+        missing = [
+            label
+            for label, value in (
+                ("depth frame", depth),
+                ("depth_scale", scale),
+                ("cap_roi", roi),
+                ("cap_reference", reference),
+            )
+            if value is None
+        ]
+        if missing:
+            return VerificationResult(
+                ok=False, confidence=0.0,
+                detail=f"cannot verify, missing: {', '.join(missing)}",
+            )
+        if not isinstance(reference, HeightStat):
+            return VerificationResult(
+                ok=False, confidence=0.0,
+                detail="cap_reference must be a HeightStat captured while capped",
+            )
+
+        try:
+            observed = measure_region(depth, float(scale), tuple(roi))  # type: ignore[arg-type]
+        except Exception as exc:
+            return VerificationResult(
+                ok=False, confidence=0.0, detail=f"measurement failed: {exc}"
+            )
+
+        check = compare(reference, observed)
+        return VerificationResult(
+            ok=check.ok,
+            confidence=check.confidence,
+            detail=check.detail,
+            data={
+                "verdict": check.verdict.value,
+                "delta_mm": round(check.delta_mm, 2),
+                "observed": observed.describe(),
+                "valid_fraction": round(observed.valid_fraction, 3),
+            },
+        )
 
 
 class GraspSecureAgent(VerificationAgent):
@@ -46,7 +107,11 @@ class GraspSecureAgent(VerificationAgent):
     name = "grasp_secure"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(ok=True, confidence=0.0, detail="stub")
+        return VerificationResult(
+            ok=False, confidence=0.0,
+            detail="not implemented; fails closed so an unwritten check "
+                   "cannot report success",
+        )
 
 
 class TubeAlignedAgent(VerificationAgent):
@@ -54,7 +119,11 @@ class TubeAlignedAgent(VerificationAgent):
     name = "tube_aligned"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(ok=True, confidence=0.0, detail="stub")
+        return VerificationResult(
+            ok=False, confidence=0.0,
+            detail="not implemented; fails closed so an unwritten check "
+                   "cannot report success",
+        )
 
 
 class AspirationAgent(VerificationAgent):
@@ -62,7 +131,11 @@ class AspirationAgent(VerificationAgent):
     name = "aspiration_ok"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(ok=True, confidence=0.0, detail="stub")
+        return VerificationResult(
+            ok=False, confidence=0.0,
+            detail="not implemented; fails closed so an unwritten check "
+                   "cannot report success",
+        )
 
 
 AGENTS: dict[str, VerificationAgent] = {

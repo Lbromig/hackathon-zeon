@@ -20,6 +20,7 @@ Subcommands:
     probe      try every capture backend and report exactly what blocked
     capture    grab frames and write them to disk
     serve      MJPEG viewer on localhost, so you can actually see the camera
+    capcheck   measure the tube mouth and say whether the cap is on or off
 
 `detect` imports nothing outside the standard library, so it runs on a bare
 interpreter with no venv. `capture` and `serve` use pyrealsense2 and cv2 when
@@ -998,17 +999,108 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
     return 0
 
 
+_REF_FILE = "cap_reference.json"
+
+
+def capcheck(roi: tuple[int, int, int, int], save_ref: bool = False,
+             expected_mm: float = 15.0) -> int:
+    """Measure the tube mouth and say whether the cap is on or off.
+
+    Two-step by design. Record a reference with the cap ON, then check. There is
+    no absolute "a cap is 15 mm" rule that survives a different tube, a different
+    standoff or a moved camera, so the reference is what makes the number mean
+    something, and it is cheap to retake.
+
+        python3 camera_probe.py capcheck --roi 600,300,80,80 --save-ref  # cap on
+        python3 camera_probe.py capcheck --roi 600,300,80,80             # now
+    """
+    import numpy as np
+
+    from core.verification.depth_height import (  # noqa: PLC0415
+        HeightStat, compare, measure_region,
+    )
+
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        print("capcheck needs pyrealsense2. `pip install pyrealsense2-macosx`.")
+        return 1
+
+    pipe = rs.pipeline()
+    cfg = rs.config()
+    cfg.enable_stream(rs.stream.depth, rs.format.z16, 30)
+    try:
+        profile = pipe.start(cfg)
+    except Exception as exc:
+        print(f"cannot start the camera: {exc}")
+        preflight()
+        return 1
+
+    try:
+        scale = profile.get_device().first_depth_sensor().get_depth_scale()
+        # Discard the first frames: exposure and the depth filters have not
+        # settled, and an unsettled frame is exactly the kind of plausible-but-
+        # wrong reading this whole module exists to avoid.
+        for _ in range(15):
+            pipe.wait_for_frames(5000)
+        frames = pipe.wait_for_frames(5000)
+        depth = np.asanyarray(frames.get_depth_frame().get_data())
+    finally:
+        pipe.stop()
+
+    print(f"depth scale {scale:.3e} m/count")
+    stat = measure_region(depth, scale, roi)
+    print(f"region {roi}: {stat.describe()}")
+
+    if not stat.usable:
+        print("\nNot enough valid depth in that region to measure.")
+        print("Move the region onto the tube mouth, or check the standoff:")
+        print("  the D405 needs at least 100 mm at 720p.")
+        return 1
+
+    if save_ref:
+        with open(_REF_FILE, "w") as fh:
+            json.dump({"roi": list(roi), "scale": scale, "stat": asdict(stat)}, fh)
+        print(f"\nreference saved to {_REF_FILE} (cap ON)")
+        print("Now take the cap off and re-run without --save-ref.")
+        return 0
+
+    try:
+        with open(_REF_FILE) as fh:
+            saved = json.load(fh)
+    except FileNotFoundError:
+        print(f"\nNo {_REF_FILE}. Record one first with the cap ON:")
+        print(f"  python3 camera_probe.py capcheck --roi {','.join(map(str, roi))} --save-ref")
+        return 1
+
+    reference = HeightStat(**saved["stat"])
+    result = compare(reference, stat, expected_delta_mm=expected_mm)
+
+    print(f"\nreference: {reference.describe()}")
+    print(f"verdict:   {result.verdict.value.upper()}  confidence {result.confidence:.2f}")
+    print(f"delta:     {result.delta_mm:+.1f} mm")
+    print(f"           {result.detail}")
+    # UNKNOWN is not a pass. Exit non-zero so a runner stops rather than
+    # continuing on a measurement that did not resolve.
+    return 0 if result.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "command",
         nargs="?",
         default="preflight",
-        choices=["preflight", "detect", "probe", "capture", "serve"],
+        choices=["preflight", "detect", "probe", "capture", "serve", "capcheck"],
     )
     parser.add_argument("--json", action="store_true", help="machine readable output")
     parser.add_argument("--out", default="frame", help="output prefix for capture")
     parser.add_argument("--port", type=int, default=8765, help="port for serve")
+    parser.add_argument("--roi", default="", help="x,y,w,h region for capcheck")
+    parser.add_argument("--save-ref", action="store_true",
+                        help="record the cap-ON reference instead of comparing")
+    parser.add_argument("--expected-mm", type=float, default=15.0,
+                        help="expected height delta when the cap comes off")
     parser.add_argument(
         "--synthetic",
         action="store_true",
@@ -1019,6 +1111,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         return serve(port=args.port, synthetic=args.synthetic)
+
+    if args.command == "capcheck":
+        if not args.roi:
+            print("capcheck needs --roi x,y,w,h at the tube mouth.")
+            print("Use `serve` to find the pixel coordinates first.")
+            return 2
+        try:
+            parts = tuple(int(v) for v in args.roi.split(","))
+        except ValueError:
+            print("--roi must be four integers, x,y,w,h")
+            return 2
+        if len(parts) != 4:
+            print("--roi must be four integers, x,y,w,h")
+            return 2
+        return capcheck(parts, save_ref=args.save_ref, expected_mm=args.expected_mm)
 
     if args.command == "detect":
         devices = detect()
