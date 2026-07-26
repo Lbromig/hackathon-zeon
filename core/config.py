@@ -86,6 +86,25 @@ def _camera_source(value: str) -> int | str:
     return int(value) if value.lstrip("-").isdigit() else value
 
 
+def _excluded_indices(raw: str) -> frozenset:
+    """Parse CAM_EXCLUDE_INDICES ("3" or "3,4") into a set of ints.
+
+    Junk is dropped with a warning rather than raising: an unparseable entry here must not
+    stop the backend booting, but it must not silently widen access either — a typo that
+    quietly dropped an exclusion would re-enable the camera it was meant to block.
+    """
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            print(f"[config] ignoring CAM_EXCLUDE_INDICES entry {part!r}: not an integer")
+    return frozenset(out)
+
+
 def _apply_env_overrides(fleet: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Overlay per-device env vars onto a fleet, using the same names as .env.example."""
     out = [dict(entry) for entry in fleet]  # shallow copy so defaults stay intact
@@ -124,14 +143,15 @@ def _apply_camera_type(entry: dict[str, Any], eid: str) -> str:
     given unit is not. On macOS librealsense needs root, while the same D4xx also
     enumerates as a plain UVC device that any user can open — so `camera` + a
     device index keeps a viewpoint live where `realsense` cannot open at all.
-    Values: realsense (RGB-D) | camera (UVC/OpenCV) | mock_tag_camera.
+    Values: realsense (RGB-D) | camera (UVC/OpenCV) | still (a saved frame replayed from
+    disk, for a viewpoint whose hardware is temporarily unplugged) | mock_tag_camera.
     """
     var = CAM_ENV.get(eid)
     requested = (os.getenv(f"{var}_TYPE") if var else None) or ""
     requested = requested.strip().lower()
     if not requested or requested == entry.get("type"):
         return str(entry.get("type"))
-    if requested not in ("realsense", "camera", "mock_tag_camera", "mock_camera"):
+    if requested not in ("realsense", "camera", "still", "mock_tag_camera", "mock_camera"):
         print(f"[config] ignoring {var}_TYPE={requested!r}: unknown camera driver type")
         return str(entry.get("type"))
     entry["type"] = requested
@@ -173,6 +193,12 @@ class Settings:
     # Kept because the property that matters — the flag can never force a pass on a
     # real checker — is pinned by backend/tests/test_verifier_gate.py.
     allow_unimplemented_verifiers: bool = False
+    # UVC indices this machine must never open (CAM_EXCLUDE_INDICES, comma-separated).
+    # A built-in laptop camera is always present, so a mis-set index streams the operator
+    # instead of the bench — and the slot still looks healthy, which is worse than a slot
+    # that plainly fails. Device *names* cannot be used for this: ffmpeg and OpenCV
+    # enumerate AVFoundation in different orders, so a name never identifies a cv2 index.
+    camera_exclude_indices: frozenset = frozenset()
 
     @classmethod
     def load(cls) -> "Settings":
@@ -196,6 +222,7 @@ class Settings:
         s.allow_unimplemented_verifiers = os.getenv(
             "HZ_ALLOW_UNIMPLEMENTED_VERIFIERS", ""
         ).strip().lower() in ("1", "true", "yes")
+        s.camera_exclude_indices = _excluded_indices(os.getenv("CAM_EXCLUDE_INDICES", ""))
         return s
 
 

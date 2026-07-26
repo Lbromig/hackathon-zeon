@@ -31,21 +31,22 @@ Beyond the hardcoded chain in `workflows/uncap_aspirate.py`, a **P0 agent loop**
 an offline `RuleBasedPolicy` (no API key/hardware needed) with a gated `ClaudePolicy` behind
 `ANTHROPIC_API_KEY`. It reuses the same skills, twin, and verification agents, so it does not
 replace the plan — it realizes the P0 rung of `docs/AGENT_ORCHESTRATION.md`. **Both named blockers are
-now closed on disk:** the verifiers are real (previous cycle) *and* `_execute` now drives real motion
-this cycle — it runs a data-driven `CHOREOGRAPHY` table via `_run_act` (capability calls: `move_joints`/
+closed and now committed:** the verifiers are real (`409f562`) *and* `_execute` drives real motion
+(`ae94f94`) — it runs a data-driven `CHOREOGRAPHY` table via `_run_act` (capability calls: `move_joints`/
 `move_to` gated by `check_joint_target`/`check_pose_target`, `grip`/`release`, OT `aspirate`), replaying
 **taught poses** with a loud `preflight` that refuses to start on any untaught pose. `run()` now genuinely
-executes → verifies → retries per step (`backend/tests/test_workflow_execute.py`). Remaining caveats: it is
-now **committed and pushed** (Q-COMMIT-1 closed), and the OT serial transport is real and
-hardware-verified on this branch (Q-OT-1: transport answered, a real *aspirate* still pending plunger
-calibration — Q-OT-PLUNGER-1). What remains is a taught real bench to move (Q-POSES-1) — see Risks.
+executes → verifies → retries per step (`backend/tests/test_workflow_execute.py`). **The whole stack landed
+in git this cycle** (commits `2b0ed34`..`e641f56`; HEAD `e641f56`), so a clean checkout of `agent-loop-p0`
+runs the real thing — the multi-cycle "uncommitted WIP" gap is closed (Q-COMMIT-1). Remaining caveats are now
+hardware, not code: the OT transport is still a no-op (Q-OT-1) and it needs a taught real bench to move
+(Q-POSES-1) — see Risks.
 
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. The **xArm safety/teaching layer** landed in git this cycle (commit `3800c2c`): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model. The **measured J5 override is now in config for both arms** (`FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}`, measured 2026-07-25 on one arm and reused for the other, since both carry a flange camera — the second arm is still unmeasured, see Q-JLIMIT-1). Genuine dexterity groundwork, and this cycle it is committed. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
-- [~] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Code-complete on disk this cycle: `uncap_aspirate.py::_execute` is now wired — a data-driven `CHOREOGRAPHY` (left clamps the tube; right pulls the cap straight up, parks it, takes the tube, presents it under the OT tip; OT aspirates) driven through the capability interfaces against **taught poses**, with a `preflight` that refuses to run on any untaught pose and a `run()` that executes→verifies→retries. Asserted by `backend/tests/test_workflow_execute.py`. **Not yet demonstrable end-to-end** because: it is uncommitted WIP (Q-COMMIT-1), the OT `aspirate` transport is a no-op so the pipette never draws (Q-OT-1), and the 12 choreography poses must be taught on the real bench (Q-POSES-1).*
-- [~] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Both halves have now landed on disk. Verifiers (previous cycle): all four `core/verification/agents.py` agents return **real verdicts** — `cap_removed` (cap reparented off the tube + separation gate, torque-drop telemetry bonus), `grasp_secure` (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to the pipette nozzle < 15 mm), `aspiration_ok` (positive aspirated volume) — each with a dedicated `ok=False`/`ok=True` test (`backend/tests/test_verification.py`). Wiring (this cycle): `_execute` now drives the choreography for real, so the real verdicts finally **gate real motion** in `run()`. A **perception→twin fusion loop** feeds the verifiers: `core/perception/fusion.py::TwinFuser` composes marker detections with the camera's twin pose to correct entity positions, driven by `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), with a RealSense RGB-D driver (`drivers/camera/realsense.py`) on disk; new `projection.py` (twin→image overlay) and `shapes.py` (Hough-circle detection of untagged labware) round out perception. **Caveat (critical):** all of the above is **uncommitted WIP** — HEAD (`3800c2c`) still contains the old `ok=True` stubs *and* the empty `_execute`. Still open: OT transport no-op (Q-OT-1); calibration hand-eye/world-frame/scan steps TODO so world poses are placeholder (Q-CALIB-1); marker→entity offsets unmeasured; right-arm J5 override unmeasured (Q-JLIMIT-1); dual-arm ratchet-unscrew (TARGET rung) not encoded — the wired path is the snap-cap FLOOR.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver now committed (`368efba`). The **xArm safety/teaching layer** landed in git (commit `3800c2c`): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model. The **measured J5 override is now in config for both arms** (`FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}`, measured 2026-07-25 on one arm and reused for the other, since both carry a flange camera — the second arm is still unmeasured, see Q-JLIMIT-1). Genuine dexterity groundwork, and this cycle it is committed. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
+- [~] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Code-complete **and committed** this cycle (`ae94f94`): `uncap_aspirate.py::_execute` is wired — a data-driven `CHOREOGRAPHY` (left clamps the tube; right pulls the cap straight up, parks it, takes the tube, presents it under the OT tip; OT aspirates) driven through the capability interfaces against **taught poses**, with a `preflight` that refuses to run on any untaught pose and a `run()` that executes→verifies→retries. Asserted by `backend/tests/test_workflow_execute.py`; a clean checkout now runs it. **Not yet demonstrable end-to-end** for two hardware reasons only: the OT `aspirate` transport is a no-op so the pipette never draws (Q-OT-1), and only 2 of the 12 choreography poses are taught so far (`data/teach_poses.json` now on disk, right arm) — the rest and the left arm must still be taught on the real bench before `preflight` will run (Q-POSES-1).*
+- [~] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Both halves have now landed on disk. Verifiers (previous cycle): all four `core/verification/agents.py` agents return **real verdicts** — `cap_removed` (cap reparented off the tube + separation gate, torque-drop telemetry bonus), `grasp_secure` (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to the pipette nozzle < 15 mm), `aspiration_ok` (positive aspirated volume) — each with a dedicated `ok=False`/`ok=True` test (`backend/tests/test_verification.py`). Wiring (this cycle): `_execute` now drives the choreography for real, so the real verdicts finally **gate real motion** in `run()`. A **perception→twin fusion loop** feeds the verifiers: `core/perception/fusion.py::TwinFuser` composes marker detections with the camera's twin pose to correct entity positions, driven by `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), with a RealSense RGB-D driver (`drivers/camera/realsense.py`) on disk; new `projection.py` (twin→image overlay) and `shapes.py` (Hough-circle detection of untagged labware) round out perception. **All of the above is now committed** (commits `2b0ed34`..`e641f56`; HEAD `e641f56`) — a clean checkout runs the real verifiers and wired motion, closing the multi-cycle uncommitted-WIP gap (Q-COMMIT-1). Still open (hardware/calibration, not code): OT transport no-op (Q-OT-1); calibration hand-eye/world-frame/scan steps TODO so world poses are placeholder (Q-CALIB-1); marker→entity offsets unmeasured; right-arm J5 override unmeasured (Q-JLIMIT-1); the parent-based verifiers (`grasp_secure`, `cap_removed` reparent clause) are hollow on the live bench because `reparent`/motion→twin updates exist only in tests, never in `_execute`/`twin_fusion` (Q-TWIN-COUPLING); dual-arm ratchet-unscrew (TARGET rung) not encoded — the wired path is the snap-cap FLOOR.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
 - [ ] **H+22** — Freeze features, rehearse demo, record backup video
 - [ ] **H+24** — Present
@@ -58,27 +59,33 @@ calibration — Q-OT-PLUNGER-1). What remains is a taught real bench to move (Q-
 
 ## Risks
 
-- ~~**The entire working demo is uncommitted WIP.**~~ **Closed** — committed in 14 targeted commits
-  (`3800c2c..e641f56`) and merged to `initial-setup-and-repo-structure`; 126 tests pass. Original note: Both named blockers
-  are now fixed *on disk* — real verifiers (last cycle) and a wired `_execute` (this cycle) — but the last team
-  code commit, HEAD (`3800c2c`), still ships the `ok=True` stubs **and** the empty `_execute`. A clean checkout
-  of HEAD is pure theater. The `_execute` wiring, the four verifiers, `TwinFuser`, the `twin_fusion` loop, the
-  RealSense driver, `projection`/`shapes`/`capture`, `teach_poses`, and all their tests must be committed onto
-  the demo branch before freeze. This is the single highest-leverage action left and it writes no new code
-  (Q-COMMIT-1).
-- **The Opentrons reveal is currently mimed (honesty risk on the narrative climax).** `_execute` now calls
-  `ot.aspirate(...)` for real, but the OT-One `connect()`/`_send()` are **still** `TODO` (`connect()` stores
-  `object()`, `_send()` returns `None`), so the pipette never physically draws. `aspiration_ok` would then judge
-  a twin/telemetry value with no real aspirate behind it. Merge/cherry-pick `origin/feat/ot-one-serial-driver`
-  or the demo's climax passes green while nothing moves (Q-OT-1).
-- **The wired floor path needs a taught bench to move (demo-day risk latent behind the win).** `_execute` replays
-  12 named taught poses; the unit suite uses a fixture, but the real bench library (`data/teach_poses.json`,
-  gitignored) may be empty on the demo machine — `preflight` will then correctly *refuse to run*. A green test
-  suite is not a moving demo; the poses must be hand-taught on the two-arm + OT rig (Q-POSES-1).
+- ~~**The Opentrons reveal is currently mimed.**~~ **Falsified by this merge.** The real serial driver came in from the integration side: `drivers/opentrons/driver.py` has **zero** `TODO`s and opens a real `serial.Serial`, verified on hardware (all six axes jog, 53 mm tip pickup, a closed 200 mm XY tour back to 0.00/0.00). What is still missing is a real **aspirate** — the plunger axes have never moved and there is no volume calibration, so `aspirate` refuses by design (Q-OT-PLUNGER-1).
+- **The wired floor path needs a taught bench to move (co-#1 risk — demo-day, requires hardware; teaching now
+  STARTED).** `_execute` replays 12 named taught poses; the unit suite uses a fixture, and the real bench library
+  (`data/teach_poses.json`, gitignored) is **now present on disk with 2 of 12 poses taught** on the real arm
+  (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z). The remaining 10 poses and the **entire
+  left arm** are untaught, so `preflight` will still correctly *refuse to run* the full choreography. Real forward
+  motion — a bench is connected and being taught — but a green unit suite is not yet a moving demo; the rest must
+  be hand-taught on the two-arm + OT rig, which cannot be pre-staged from a laptop (Q-POSES-1).
+- **The working demo is now committed (former #1 risk — RESOLVED this cycle).** The wired `_execute`, the four
+  verifiers, `TwinFuser`, the `twin_fusion` loop, the RealSense driver, `projection`/`shapes`/`capture`,
+  `teach_poses`, and all their tests are committed onto `agent-loop-p0` (commits `2b0ed34`..`e641f56`; HEAD
+  `e641f56`). A clean checkout no longer runs theater. Do **not** reopen this by branching the demo off an older
+  SHA (Q-COMMIT-1 ANSWERED).
 - **Verifiers/fusion gate twin geometry until calibration is real (honesty risk).** The agents query a twin
   populated by calibration seeding + kinematics + camera fusion; hand-eye/world-frame calibration is still `TODO`
   (Q-CALIB-1), so fused world poses are camera-frame until calibrated. A green `tube_aligned` proves the twin is
   consistent, not that the arm physically placed the tube — decide the *minimum* real calibration for the demo.
+- **The verify loop's parent-based half is hollow on the live bench (NEW — verification honesty).** `reparent()`
+  and motion-driven twin pose updates are exercised **only in tests** — there are **zero** `reparent` calls in
+  production `backend/app/` or `core/` code, and neither the choreography/`_execute` nor `twin_fusion` mutates
+  parent links on manipulation. So `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s reparent clause
+  can never turn true from a real grasp until arm-FK pose + manipulation-time reparenting are wired into the live
+  loop; the retry loop then degrades to perception-geometry-only for those steps. For Track C — whose *other* half
+  is physical verification — this is as on-theme a threat as the OT no-op. Wire a minimal reparent-on-grasp/place
+  into `_execute` (mirroring what the tests already do), or scope the demo's verify moment onto a geometry-only
+  predicate (`tube_aligned`/`cap_removed` separation) that perception can actually drive (Q-TWIN-COUPLING; team
+  `docs/INTEGRATION_PLAN.md`).
 - Dual-arm unscrew is the long pole → Dale starts first; the wired path is the snap-cap **floor** (straight-up
   cap lift, no ratchet); dual-arm ratchet-unscrew (TARGET) is not yet encoded in the choreography.
 - Arm↔OT alignment → wide-mouth tube / funnel lead-in for slack.
@@ -91,10 +98,9 @@ calibration — Q-OT-PLUNGER-1). What remains is a taught real bench to move (Q-
 - Fiducial poses will still be wrong until measured: `core/calibration/markers.py::MARKER_MAP` now uses
   **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity offsets
   (0.02 placeholder). Measure the marker→entity offsets before trusting twin poses for any verifier.
-- **Prioritization risk — substantively resolved; the residual is a git problem, not a code one.** Three
-  straight reviews named two blockers (real verifiers, a wired `_execute`). Both are now fixed on disk:
-  verifiers went real last cycle, `_execute` was wired this cycle, so real verdicts now gate real motion in
-  `run()`. Q-PRIORITY-1 is answered *in substance*. The one residual is mechanical and sits at the git
-  boundary: the win is uncommitted (Q-COMMIT-1). The next block's job is unambiguous and unglamorous —
-  **commit the WIP**, teach the bench (Q-POSES-1), wire the OT serial transport (Q-OT-1); do **not** open new
-  substrate.
+- **Prioritization risk — now fully resolved.** Three straight reviews named two code blockers (real verifiers,
+  a wired `_execute`); both went real and, this cycle, both got **committed** — so real verdicts gate real motion
+  on a clean checkout. Q-PRIORITY-1 and Q-COMMIT-1 are both answered. The remaining work is purely hardware
+  bring-up on the critical path: **teach the bench** (Q-POSES-1) and **wire the OT serial transport / merge
+  `feat/ot-one-serial-driver`** (Q-OT-1). Do **not** open new substrate — spend the remaining time on the two-arm
+  + OT rig, not the codebase.

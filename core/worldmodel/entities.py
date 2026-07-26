@@ -6,6 +6,7 @@ its world pose fixed. Verification queries this model instead of doing bespoke v
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -73,57 +74,81 @@ class Entity:
 
 
 class WorldModel:
-    """Scene graph of entities. Single source of truth for the twin."""
+    """Scene graph of entities. Single source of truth for the twin.
+
+    Thread-safe: a 10 Hz fusion thread and per-camera projection threads mutate/read
+    concurrently with the API and the verifiers, so every graph op takes a re-entrant
+    lock. It is re-entrant because reads nest (distance -> world_pose, reparent ->
+    set_world_pose -> world_pose). For a multi-step atomic sequence, hold `wm.lock`
+    around the block (nested acquisitions are free with an RLock).
+    """
 
     def __init__(self) -> None:
         self.entities: dict[str, Entity] = {}
+        self._lock = threading.RLock()
         self.add(Entity("world", EntityKind.WORLD, "World origin", parent=None))
+
+    @property
+    def lock(self) -> "threading.RLock":
+        """Expose the lock so callers can make a multi-op sequence atomic."""
+        return self._lock
 
     # --- graph ops ---------------------------------------------------------
     def add(self, e: Entity) -> Entity:
-        self.entities[e.id] = e
+        with self._lock:
+            self.entities[e.id] = e
         return e
 
     def get(self, eid: str) -> Entity:
         return self.entities[eid]
 
     def children(self, eid: str) -> list[Entity]:
-        return [e for e in self.entities.values() if e.parent == eid]
+        with self._lock:
+            return [e for e in self.entities.values() if e.parent == eid]
 
     def by_kind(self, kind: EntityKind) -> list[Entity]:
-        return [e for e in self.entities.values() if e.kind == kind]
+        with self._lock:
+            return [e for e in self.entities.values() if e.kind == kind]
 
     # --- transforms --------------------------------------------------------
     def world_pose(self, eid: str) -> Transform:
-        e = self.entities[eid]
-        T = e.local
-        p = e.parent
-        while p is not None:
-            parent = self.entities[p]
-            T = parent.local @ T
-            p = parent.parent
-        return T
+        with self._lock:
+            e = self.entities[eid]
+            T = e.local
+            p = e.parent
+            while p is not None:
+                parent = self.entities[p]
+                T = parent.local @ T
+                p = parent.parent
+            return T
 
     def set_world_pose(self, eid: str, world_T: Transform) -> None:
-        e = self.entities[eid]
-        parent_world = self.world_pose(e.parent) if e.parent else identity()
-        e.local = np.linalg.inv(parent_world) @ world_T
+        with self._lock:
+            e = self.entities[eid]
+            parent_world = self.world_pose(e.parent) if e.parent else identity()
+            e.local = np.linalg.inv(parent_world) @ world_T
 
     def reparent(self, eid: str, new_parent: str, keep_world_pose: bool = True) -> None:
         """Attach/detach: e.g. tube well->gripper on pick, cap tube->dropzone on remove."""
-        e = self.entities[eid]
-        if keep_world_pose:
-            w = self.world_pose(eid)
-            e.parent = new_parent
-            self.set_world_pose(eid, w)
-        else:
-            e.parent = new_parent
+        with self._lock:
+            e = self.entities[eid]
+            if keep_world_pose:
+                w = self.world_pose(eid)
+                e.parent = new_parent
+                self.set_world_pose(eid, w)
+            else:
+                e.parent = new_parent
 
     def distance(self, a: str, b: str) -> float:
-        return float(np.linalg.norm(self.world_pose(a)[:3, 3] - self.world_pose(b)[:3, 3]))
+        with self._lock:
+            return float(np.linalg.norm(self.world_pose(a)[:3, 3] - self.world_pose(b)[:3, 3]))
 
     # --- persistence -------------------------------------------------------
     def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> list[dict[str, Any]]:
         out = []
         for e in self.entities.values():
             w = self.world_pose(e.id)

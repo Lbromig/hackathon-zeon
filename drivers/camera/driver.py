@@ -46,14 +46,14 @@ class OpenCVCameraDriver(CameraDriver):
         # particular overlaps old and new workers for a moment — so retry briefly
         # before giving up, and name that cause, because OpenCV's own answer is a
         # bare False with no reason attached.
-        attempts = int(self.config.get("open_attempts", 3))
+        attempts = int(self.config.get("open_attempts", 6))
         for attempt in range(attempts):
             self._cap = cv2.VideoCapture(source)
             if self._cap.isOpened():
                 break
             self._cap.release()
             if attempt < attempts - 1:
-                time.sleep(0.7)
+                time.sleep(1.0)
         else:
             self._state = ConnectionState.ERROR
             raise DriverError(

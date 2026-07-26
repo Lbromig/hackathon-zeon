@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .base import InstrumentDriver
-from .camera import OpenCVCameraDriver, RealSenseCameraDriver
+from .camera import OpenCVCameraDriver, RealSenseCameraDriver, StillImageCameraDriver
 from .opentrons import OpentronsDriver
 from .xarm import XArmDriver
 
@@ -18,6 +18,7 @@ _REGISTRY: dict[str, Callable[[str, dict[str, Any]], InstrumentDriver]] = {
     "opentrons": OpentronsDriver,
     "camera": OpenCVCameraDriver,       # plain UVC webcam / mock
     "realsense": RealSenseCameraDriver,  # Intel RealSense RGB-D
+    "still": StillImageCameraDriver,    # a saved frame replayed as a camera (hardware away)
 }
 
 

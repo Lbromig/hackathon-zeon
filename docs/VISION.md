@@ -19,24 +19,66 @@ the heavy learned-perception stack (SAM 2 / FoundationPose / Kaolin) stays a pos
 off the demo path. **Both named blockers are now closed in code.** Verification went real last cycle — all four
 agents in `core/verification/agents.py` return graded twin-query verdicts fused with driver telemetry
 (`cap_removed`, `grasp_secure`, `tube_aligned`, `aspiration_ok`), each with a test asserting a genuine `ok=False`
-and `ok=True` — and this cycle the hero workflow's `_execute` was **wired**: a data-driven `CHOREOGRAPHY`
+and `ok=True` — and the hero workflow's `_execute` was **wired**: a data-driven `CHOREOGRAPHY`
 (left clamps the tube, right pulls the cap straight up and parks it, takes the tube, presents it under the OT
 tip, OT aspirates) drives real capability calls against **taught poses**, guarded by a loud `preflight`, so
 `run()` now genuinely executes → verifies → retries. For the first time the real verdicts **gate real motion**,
-not just twin geometry (`backend/tests/test_workflow_execute.py`). The bottleneck has moved from *code* to
-*shipping*: (1) the entire working demo — wired `_execute`, the four verifiers, the fusion loop, the new
-perception modules — is **uncommitted WIP**; HEAD (`3800c2c`) still ships the stubs *and* the empty `_execute`,
-so a clean checkout runs theater; (2) the Opentrons `aspirate` transport is still a no-op (`_send` TODO), so the
-narrative climax is currently mimed; and (3) the floor path needs its 12 poses hand-taught on the real bench or
-`preflight` correctly refuses to run. The **dexterity half remains the strong half**: the arm is teachable
-(free-drive mode), self-collision-safe (joint soft-limit enforcement + `check_pose_target`, left-arm J5
-clearance measured into config), and re-runnable. The next block's job is narrow and unglamorous: **commit the
-WIP, wire the OT serial transport, teach the bench** — then one real `ok=False` stops one real aspirate. No new
-substrate.
+not just twin geometry (`backend/tests/test_workflow_execute.py`). The whole stack is in git
+(commits `2b0ed34`..`e641f56`; HEAD `e641f56`) and a clean checkout of `agent-loop-p0` runs the real thing.
+**The remaining gap is three items, and — corrected this cycle — not all of it is hardware.** (1) The Opentrons
+`aspirate` transport is still a no-op (`connect`/`_send` TODO), so the narrative climax is mimed until
+`origin/feat/ot-one-serial-driver` is merged. (2) Bench teaching has **started** — `data/teach_poses.json` is now
+on disk with 2 of 12 poses taught on the real right arm — but the rest and the whole left arm are untaught, so
+`preflight` still refuses the full choreography. (3) **New, and the honest correction to last cycle's optimism:**
+the verify→retry loop — Track C's *verification* half — is **partially hollow on the real bench**, because
+`reparent()` and motion→twin updates live only in tests; nothing in `_execute` or `twin_fusion` mutates the twin
+on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
+true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
+half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. The next block's job is
+narrow and mostly at the bench — **merge the OT transport, finish teaching the poses, and wire a minimal
+reparent-on-grasp** (or scope the demo's verify moment onto a geometry-only predicate perception can drive) —
+then one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T02:11Z — A bench is being taught — and a hole opened under the verify loop: its parent-based half is a no-op on real hardware.
+
+**Demo-readiness score: 7.0/10 for the *stated* PoC (verified uncap→aspirate) — a deliberate half-point *down* from 7.5, not because anything regressed but because last review over-credited the verify loop.** ~8/10 for the teleop + streaming-UI + safe-motion show (unchanged). Two things moved the needle this cycle in opposite directions: real bench-teaching **started** (a genuine plus), and a closer read of the code exposed that the verify→retry loop — the half of Track C that isn't dexterity — is **hollow for the grasp step on the live bench** (a correction that lowers the honest number). No new commits landed since `d6f06da`; the change is on disk and in the reading, not in git history.
+
+**What genuinely moved forward — the bench is live.** `data/teach_poses.json`, absent every prior cycle, is now on disk with 2 of 12 poses taught on the real **right** arm (`cap_grasp_approach`, `cap_grasp`, saved 02:00Z — *after* the last review at 01:42Z). This is the first hard evidence that a real arm is connected and being taught, not just simulated. Q-POSES-1 moves from "not started, hardware-only" to "in progress, 2/12." The team also added two untracked planning docs (`docs/INTEGRATION_PLAN.md`, `docs/NEXT_STEPS.md`) that are sharp and code-checked — the integration plan is the one that surfaced the finding below.
+
+**The single biggest threat this cycle — the verify loop's parent-based predicates can't fire on real hardware (Q-TWIN-COUPLING).** `grep` finds **zero** `reparent` calls in production `backend/app/` or `core/`; `WorldModel.reparent()` and every motion→twin pose update are exercised *only* in tests (`test_worldmodel`, `test_integration_loop`, `test_verification`). Neither `_execute`/`CHOREOGRAPHY` nor `twin_fusion` mutates parent links when the arm actually manipulates something. Consequence: `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s reparent clause can **never turn true from a real grasp** — the twin is a correct topology over placeholder geometry. Last review said the real verdicts "gate real motion, not just twin geometry." On the mock that's true; on the bench, for the parent-based steps, it is not. For a track literally titled *"…and Physical Verification,"* a verify loop that greens over an unmutated twin is the most on-theme way to fail. It sits *co-equal* with the long-standing Q-OT-1 (the OT `aspirate` is still a physical no-op — `connect`/`_send` remain `TODO`), and together they are the same shape of risk: a green tick over nothing. Two green ticks over nothing is worse than one honest failure.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only.
+- **KEEP:** the committed `_execute` + choreography; the real verifiers + fusion loop; the P0 agent loop; the teach + safe-motion layer; fiducial detection + live camera transport.
+- **ADD, in strict priority:** (1) **wire a minimal reparent-on-grasp/place into `_execute`** — the tests already show the exact call (`wm.reparent("tube_1", "right_tool")`); lifting that one line into the execution path is a few hours and makes `grasp_secure` honest, *or* deliberately scope the demo's verify moment onto `tube_aligned`/`cap_removed`-separation, which perception can drive today (Q-TWIN-COUPLING). (2) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws (Q-OT-1). (3) **finish teaching the 12 poses on both arms** (Q-POSES-1) — now 2/12, in progress. (4) script **one deliberate failure injection** on whichever predicate is genuinely live after (1) (Q-DEMO-1).
+- **DECIDE:** which single verify moment is the demo's hero. If reparent-wiring slips, pick a geometry-only predicate *now* and rehearse to it — don't discover on stage that `grasp_secure` is stuck.
+
+**Opposing view (steelman).** Reparenting is one line the tests already spell out, and pose-teaching is underway — so this looks like a half-day of wiring plus a teaching session, and the score arguably shouldn't drop at all. Fair on effort. But the point of a critical review is honesty about *what would run if the demo were called now*, and right now a real grasp would not flip `grasp_secure`, and the pipette would not draw — two of the three beats the narrative promises. The half-point down is a truth adjustment, not a morale statement: the fix is cheap, but until it's in, the demo's two climaxes are both mimed. Wire the reparent line and merge the serial driver first; they convert the most narrative per hour.
+
+### 2026-07-26T01:42Z — It shipped: the working demo is committed. Only the bench and a serial port stand between here and real.
+
+**Demo-readiness score: 7.5/10 for the *stated* PoC (verified uncap→aspirate) — up from 6.5, and from a flat 3.5 across the first three reviews; ~8/10 for the teleop + streaming-UI + safe-motion show (unchanged).** The number moved because the threat I named "sharper than any we've called" for two straight reviews — *they built it twice over and it could still ship nothing because it's uncommitted* — is gone. The team committed the entire stack this cycle. It is not 8.5+ only because the pipette still doesn't physically draw and the choreography has never run on a taught bench; both are hardware, not code.
+
+**What changed since the last review — the win is now in git.** Last cycle the wired `_execute`, the four real verifiers, `TwinFuser`, the fusion loop, the RealSense driver, and `projection`/`shapes`/`capture` were all on one person's disk against a HEAD (`3800c2c`) that still shipped stubs. This cycle they are **committed**: `2b0ed34` (perception), `4c6573a` (twin fusion service), `409f562` (real verifiers replace the stubs), `ae94f94` (wire `_execute` via choreography), `368efba` (RealSense + camera UI), `e31a7fc`/`69168e4` (teach checklist + tests), through `e641f56` (J5 clearance for both arms). HEAD is `e641f56`; I verified every hero module is present in HEAD, `py_compile`-clean, and that `agents.py` contains zero `"stub"` strings. A clean checkout of `agent-loop-p0` now runs the real verifiers gating real motion. Q-COMMIT-1, Q-EXEC-1, Q-PRIORITY-1, Q-CAMERAS-MOUNT all move to ANSWERED. This is the cycle the project stopped being invisible.
+
+**What did NOT change — and it is now the entire remaining gap.** The OT-One `connect()`/`_send()` are **still** `TODO` (confirmed in HEAD: `connect()` stores a bare `object()`, `_send()` returns `None`). Calibration hand-eye/world-frame is **still** `TODO`, so fused/projected world poses are camera-frame. And `data/teach_poses.json` is **absent on disk**, so `preflight` will refuse to run the choreography until the bench is taught. None of these three is a code-authoring task on the critical path — one is a merge (`feat/ot-one-serial-driver`), one is a calibration decision, one is hands-on-hardware teaching.
+
+**The single biggest threat — the climax is mimed.** With the WIP committed, the sharpest remaining risk is Q-OT-1: `_execute` calls `ot.aspirate(...)` for real, but the OT transport does nothing, so the Opentrons reveal — the moment that lands *both* Track-C themes in one motion — physically does not happen, and `aspiration_ok` would pass a green check over a twin/telemetry value with no aspirate behind it. A demo whose narrative climax is a no-op with a green tick is worse than one that visibly fails: it reads as staged. Merge the serial driver, or cut the aspirate from the *claimed* result and frame it honestly as "verified present + planned draw." Co-equal threat: Q-POSES-1 — the bench teaching can only be done on the physical rig and cannot be pre-staged, so it will eat the final hour if left late.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (hold the line):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only, untouched. The codebase is now *feature-frozen for the demo*: the critical path has no more code on it. Any new `.py` this cycle that isn't the OT serial transport is a distraction.
+- **KEEP:** the committed `_execute` + choreography; the real verifiers + fusion loop; the P0 agent loop as orchestrator; the hardcoded `PLAN`; the strong teach + safe-motion layer; fiducial detection + calibration twin + live camera transport.
+- **ADD, in strict priority:** (1) **merge `origin/feat/ot-one-serial-driver`** into `agent-loop-p0` so the aspirate physically draws (Q-OT-1) — the highest-value item left; (2) **teach the 12 choreography poses** on the real two-arm + OT bench (Q-POSES-1) — the only thing standing between a green suite and a moving demo; (3) script **one deliberate failure injection** on `cap_removed` or `tube_aligned` (Q-DEMO-1) — now fully real, since a verifier can fail about a committed, wired motion.
+- **DECIDE (Q-CALIB-1 / Q-FUSE-1):** choose the *minimum* real calibration — taught poses + kinematics likely make `_execute` + the verifiers honest for the floor without a full fiducial world frame; don't build more calibration than the demo needs.
+
+**Opposing view (steelman).** With the commit landed, the two remaining blockers are a one-line merge and a teaching session — arguably the demo is now all but done, and the team has de-risked as well as any hackathon team could with time in hand. Fair. But the OT serial driver has sat unmerged on `origin` for multiple cycles while everything else converged, which suggests it is either harder or lower-priority than it looks; and pose-teaching on a two-arm rig with a flange-camera J5 constraint is fiddly and untested end-to-end. "One merge and a teaching session" is exactly the kind of tail that looks trivial from a laptop and consumes the last two hours. Merge the serial driver *now* to find out if it's actually one line; treat the bench as the real schedule.
+
+**Verdict:** The best cycle of the project. The Track-C thesis — a real verdict gating a real motion — is not just in code with tests, it's in git on the demo branch. The PoC has crossed from *proof-pending-a-commit* to *proof-pending-a-bench*: what remains is a serial-port merge and an hour on the hardware, not engineering. Merge the OT driver and teach the poses and this is a real, honest Track-C demo; skip the OT merge and the climax is a mime with a green light.
 
 ### 2026-07-26T01:09Z — The last blocker fell: real verdicts now gate real motion. The demo is a commit, a serial port, and a taught bench from being real.
 

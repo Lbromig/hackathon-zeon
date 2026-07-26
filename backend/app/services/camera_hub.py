@@ -14,6 +14,7 @@ because it booted.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -24,8 +25,14 @@ from drivers import CameraDriver, ConnectionState, InstrumentDriver, InstrumentK
 CAPTURE_FPS = 15.0
 DETECT_EVERY = 3          # detect on every Nth frame -> ~5 Hz at 15 fps
 JPEG_QUALITY = 80
-IDLE_LINGER_S = 10.0      # keep the device open this long after the last viewer
+# Seconds to keep a camera open after the last viewer; <= 0 means "never release".
+# Default is never: on macOS, repeatedly opening and closing the same UVC device
+# within one process degrades it (frame grabs start failing while a *fresh* process
+# still reads the same camera fine). A bench feed is wanted continuously anyway, so
+# open once per backend lifetime and let shutdown do the closing.
+IDLE_LINGER_S = float(os.getenv("HZ_CAMERA_IDLE_LINGER_S", "0"))
 ERROR_BACKOFF_S = 1.0
+REOPEN_AFTER_FAILURES = 5   # consecutive grab failures before cycling the device
 
 
 @dataclass
@@ -200,6 +207,7 @@ class CameraWorker(threading.Thread):
 
     def _pump(self) -> None:
         frame_no = 0
+        failures = 0
         detections: list[Detection] = []
         fps_mark, fps_count, fps = time.monotonic(), 0, 0.0
 
@@ -219,9 +227,18 @@ class CameraWorker(threading.Thread):
                 # Keep the worker alive: a USB camera that hiccups should recover,
                 # and the UI needs the reason rather than a dead stream.
                 self._publish_error(str(e))
+                failures += 1
+                # A capture session can break for good (observed: "frame grab
+                # failed" for every read after ~5000 frames). Re-reading a dead
+                # handle never recovers, so cycle the device instead of spinning
+                # on it — the alternative is a feed that is "streaming" forever
+                # and delivers nothing.
+                if failures % REOPEN_AFTER_FAILURES == 0:
+                    self._reopen()
                 self._stop.wait(ERROR_BACKOFF_S)
                 continue
 
+            failures = 0
             fps_count += 1
             if started - fps_mark >= 1.0:
                 fps = fps_count / (started - fps_mark)
@@ -238,8 +255,22 @@ class CameraWorker(threading.Thread):
 
             self._stop.wait(max(0.0, self.period - (time.monotonic() - started)))
 
+    def _reopen(self) -> None:
+        """Close and reopen the device after repeated grab failures."""
+        print(f"[camera_hub] {self.driver.device_id}: reopening after repeated grab failures")
+        try:
+            self.driver.disconnect()
+        except Exception:
+            pass
+        try:
+            self.driver.connect()
+        except Exception as e:
+            self._publish_error(f"reopen failed: {e}")
+
     def _expired(self, now: float) -> bool:
         with self._new_frame:
+            if IDLE_LINGER_S <= 0:
+                return False          # hold the device for the process lifetime
             idle = self._subscribers == 0 and self._idle_since is not None
             return idle and (now - self._idle_since) > IDLE_LINGER_S
 
