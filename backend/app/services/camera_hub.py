@@ -30,7 +30,16 @@ ERROR_BACKOFF_S = 1.0
 
 @dataclass
 class Detection:
-    """One highlighted thing in the image. Polygon is normalized to [0, 1]."""
+    """One highlighted thing in the image. Polygon is normalized to [0, 1].
+
+    Metric fields are populated only when the camera can supply them, and stay
+    None otherwise rather than being guessed:
+
+    * `distance_m` — from the tag's solvePnP pose; needs intrinsics.
+    * `depth_m`    — measured by the depth sensor at the tag centre; RGB-D only.
+    * `camera_xyz` — the tag centre in the camera frame (metres), back-projected
+      from depth when available, else taken from the tag pose.
+    """
     kind: str                       # apriltag | tube | cap | well ...
     polygon: list[list[float]]
     center: list[float]
@@ -39,13 +48,16 @@ class Detection:
     entity_id: str | None = None
     confidence: float = 1.0
     distance_m: float | None = None
+    depth_m: float | None = None
+    camera_xyz: list[float] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind, "polygon": self.polygon, "center": self.center,
             "source": self.source, "marker_id": self.marker_id,
             "entity_id": self.entity_id, "confidence": self.confidence,
-            "distance_m": self.distance_m,
+            "distance_m": self.distance_m, "depth_m": self.depth_m,
+            "camera_xyz": self.camera_xyz,
         }
 
 
@@ -57,28 +69,63 @@ class CameraSnapshot:
     fps: float = 0.0
     detections: list[Detection] = field(default_factory=list)
     error: str = ""
+    has_depth: bool = False
+    intrinsics: dict[str, Any] | None = None   # factory K on RealSense; None otherwise
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "w": self.width, "h": self.height, "seq": self.seq,
             "fps": round(self.fps, 1), "error": self.error,
+            "has_depth": self.has_depth, "intrinsics": self.intrinsics,
             "detections": [d.as_dict() for d in self.detections],
         }
 
 
-def _detector() -> Any:
+def _detector(camera_matrix: Any = None) -> Any:
     """FiducialDetector, or None when OpenCV/contrib isn't available.
 
     Imported lazily: the backend must still boot on a machine without cv2, it just
-    won't detect anything.
+    won't detect anything. Passing the camera matrix is what upgrades detection
+    from "here is a quadrilateral" to a full 6-DoF tag pose — which is why a
+    RealSense (factory intrinsics, no ChArUco pass) gives distances for free.
     """
     try:
         from core.perception.fiducials import FiducialDetector
 
-        return FiducialDetector()
+        return FiducialDetector(camera_matrix=camera_matrix)
     except Exception as e:  # pragma: no cover - depends on the install
         print(f"[camera_hub] fiducial detection unavailable: {e}")
         return None
+
+
+def _shape_detector(intrinsics: dict[str, Any] | None = None) -> Any:
+    """ShapeDetector (classical CV for un-tagged round labware), or None without cv2."""
+    try:
+        from core.perception.shapes import ShapeDetector
+
+        return ShapeDetector(intrinsics)
+    except Exception as e:  # pragma: no cover - depends on the install
+        print(f"[camera_hub] shape detection unavailable: {e}")
+        return None
+
+
+def _intrinsics(driver: CameraDriver) -> dict[str, Any] | None:
+    """Pinhole intrinsics {fx, fy, cx, cy, ...} if the camera reports them."""
+    try:
+        return driver.intrinsics()
+    except Exception:
+        return None
+
+
+def _camera_matrix(driver: CameraDriver) -> Any:
+    """The driver's 3x3 K, if it has one. Only valid once connected."""
+    getter = getattr(driver, "camera_matrix", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None            # e.g. RealSense before the pipeline has started
 
 
 class CameraWorker(threading.Thread):
@@ -97,7 +144,14 @@ class CameraWorker(threading.Thread):
         self._snapshot = CameraSnapshot()
         self._subscribers = 0
         self._idle_since: float | None = time.monotonic()
-        self._detector = _detector()
+
+        # Intrinsics only exist after connect(), and the hub connects before
+        # starting us, so it is safe to read them here.
+        self._intrinsics = _intrinsics(driver)
+        self._K = _camera_matrix(driver)
+        self._has_depth = bool(getattr(driver, "has_depth", False))
+        self._detector = _detector(self._K)
+        self._shapes = _shape_detector(self._intrinsics)
 
     # --- consumer side -----------------------------------------------------
     @property
@@ -132,6 +186,19 @@ class CameraWorker(threading.Thread):
 
     # --- producer side -----------------------------------------------------
     def run(self) -> None:
+        try:
+            self._pump()
+        finally:
+            # Hand the device back. A UVC camera admits one owner, and an open
+            # VideoCapture survives the thread that made it — so without this the
+            # first viewer holds the camera for the life of the process, and every
+            # later open (ours or anyone else's) fails with a bare "cannot open".
+            try:
+                self.driver.disconnect()
+            except Exception as e:  # pragma: no cover - teardown must not raise
+                print(f"[camera_hub] {self.driver.device_id} disconnect failed: {e}")
+
+    def _pump(self) -> None:
         frame_no = 0
         detections: list[Detection] = []
         fps_mark, fps_count, fps = time.monotonic(), 0, 0.0
@@ -141,12 +208,12 @@ class CameraWorker(threading.Thread):
             if self._expired(started):
                 break
             try:
-                frame = self.driver.capture()
+                frame, depth = self._grab()
                 jpeg = self.driver.capture_jpeg(JPEG_QUALITY) if not _HAS_ENCODER else _encode(frame)
                 h, w = frame.shape[:2]
                 frame_no += 1
                 if frame_no % self.detect_every == 0:
-                    detections = self._detect(frame, w, h)
+                    detections = self._detect(frame, depth, w, h)
                 error = ""
             except Exception as e:
                 # Keep the worker alive: a USB camera that hiccups should recover,
@@ -162,8 +229,11 @@ class CameraWorker(threading.Thread):
 
             with self._new_frame:
                 self._jpeg = jpeg
-                self._snapshot = CameraSnapshot(width=w, height=h, seq=frame_no,
-                                                fps=fps, detections=detections, error=error)
+                self._snapshot = CameraSnapshot(
+                    width=w, height=h, seq=frame_no, fps=fps,
+                    detections=detections, error=error,
+                    has_depth=self._has_depth, intrinsics=self._intrinsics,
+                )
                 self._new_frame.notify_all()
 
             self._stop.wait(max(0.0, self.period - (time.monotonic() - started)))
@@ -177,10 +247,26 @@ class CameraWorker(threading.Thread):
         with self._new_frame:
             self._snapshot = CameraSnapshot(width=self._snapshot.width,
                                             height=self._snapshot.height,
-                                            seq=self._snapshot.seq, error=message)
+                                            seq=self._snapshot.seq, error=message,
+                                            has_depth=self._has_depth,
+                                            intrinsics=self._intrinsics)
             self._new_frame.notify_all()
 
-    def _detect(self, frame: Any, w: int, h: int) -> list[Detection]:
+    def _grab(self) -> tuple[Any, Any]:
+        """One frameset: colour, plus aligned depth on an RGB-D camera.
+
+        `capture_rgbd()` takes both from the *same* frameset, so the depth sampled
+        under a tag belongs to the frame that tag was detected in. Falling back to
+        two separate calls would silently pair mismatched frames.
+        """
+        if self._has_depth:
+            try:
+                return self.driver.capture_rgbd()
+            except NotImplementedError:
+                pass                        # claims depth but doesn't implement it
+        return self.driver.capture(), None
+
+    def _detect(self, frame: Any, depth: Any, w: int, h: int) -> list[Detection]:
         if self._detector is None or not w or not h:
             return []
         try:
@@ -192,13 +278,97 @@ class CameraWorker(threading.Thread):
         for d in found:
             # Normalize to [0,1] so the frontend can scale the overlay to any size.
             polygon = [[float(x) / w, float(y) / h] for x, y in d.corners]
+            u, v = d.center
+            depth_m = _sample_depth(depth, u, v)
             out.append(Detection(
                 kind="apriltag", polygon=polygon,
-                center=[d.center[0] / w, d.center[1] / h],
+                center=[u / w, v / h],
                 marker_id=d.marker_id, entity_id=d.entity_id,
                 distance_m=d.distance_m,
+                depth_m=depth_m,
+                camera_xyz=self._camera_point(u, v, depth_m, d),
             ))
+        out.extend(self._project_twin(w, h))
+        out.extend(self._detect_shapes(frame, depth, w, h))
         return out
+
+    def _detect_shapes(self, frame: Any, depth: Any, w: int, h: int) -> list[Detection]:
+        """Classical-CV circles for un-tagged labware (source='cv'), depth-back-projected."""
+        if self._shapes is None:
+            return []
+        try:
+            shapes = self._shapes.detect(frame, depth)
+        except Exception as e:  # a CV fault must not kill the video/detection
+            print(f"[camera_hub] {self.driver.device_id} shape detect failed: {e}")
+            return []
+        return [Detection(**s.as_detection_kwargs()) for s in shapes]
+
+    def _project_twin(self, w: int, h: int) -> list[Detection]:
+        """Overlay outlines for calibrated twin entities (source='projection').
+
+        Needs the camera's intrinsics and its pose in the twin; degrades to nothing
+        (fiducials still show) when either is missing, e.g. before calibration or on a
+        camera that reports no intrinsics.
+        """
+        if self._K is None:
+            return []
+        try:
+            from core.perception.projection import project_twin
+
+            from . import twin
+            wm = twin.get_world()
+            if wm is None or self.driver.device_id not in wm.entities:
+                return []
+            polys = project_twin(wm, self.driver.device_id, self._K, w, h)
+        except Exception as e:  # projection must never kill the video/detection
+            print(f"[camera_hub] {self.driver.device_id} projection failed: {e}")
+            return []
+        return [Detection(kind=p["kind"], polygon=p["polygon"], center=p["center"],
+                          source="projection", entity_id=p["entity_id"]) for p in polys]
+
+    def _camera_point(self, u: float, v: float, depth_m: float | None,
+                      det: Any) -> list[float] | None:
+        """Tag centre in camera coordinates (metres), or None if unknowable.
+
+        Depth is preferred over the tag pose: a 20 mm tag subtends few pixels, so
+        its solvePnP range is far noisier than a direct depth reading. Falls back
+        to the pose translation when there's no depth (or the pixel reads 0, which
+        is what a RealSense returns for "no return", not "at the sensor").
+        """
+        i = self._intrinsics
+        if depth_m and i and i.get("fx") and i.get("fy"):
+            return [
+                round((u - i["cx"]) * depth_m / i["fx"], 4),
+                round((v - i["cy"]) * depth_m / i["fy"], 4),
+                round(depth_m, 4),
+            ]
+        T = getattr(det, "T_cam_marker", None)
+        if T is not None:
+            return [round(float(x), 4) for x in T[:3, 3]]
+        return None
+
+
+def _sample_depth(depth: Any, u: float, v: float, patch: int = 2) -> float | None:
+    """Median non-zero depth (metres) in a small patch around (u, v).
+
+    A single pixel on a tag edge often reads 0 (no return). The median over a
+    patch, ignoring zeros, is far steadier — and returns None rather than a
+    confident 0.0 when the whole patch is invalid.
+    """
+    if depth is None:
+        return None
+    try:
+        import numpy as np
+
+        h, w = depth.shape[:2]
+        cu, cv = int(round(u)), int(round(v))
+        if not (0 <= cu < w and 0 <= cv < h):
+            return None
+        window = depth[max(0, cv - patch):cv + patch + 1, max(0, cu - patch):cu + patch + 1]
+        valid = window[np.isfinite(window) & (window > 0)]
+        return float(np.median(valid)) if valid.size else None
+    except Exception:
+        return None
 
 
 try:  # encoding here avoids a second capture() inside capture_jpeg()
