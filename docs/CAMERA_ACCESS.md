@@ -64,25 +64,20 @@ repeatedly reopening a UVC device on macOS degrades it).
 
 ## Which host and port
 
-This matters more than anything else below, because the two ways of running the stack
-have completely different network exposure.
+This matters more than anything else below, because the two processes have completely
+different network exposure. There is no Docker stack any more — the USB devices cannot be
+passed into a VM on macOS, so the compose file was dropped.
 
-**Host stack** (`just dev` + `just frontend`) — **loopback only**:
+**Backend** (`just dev`) — **loopback only**: `127.0.0.1:8000`, uvicorn's default host,
+no `--host` flag in the justfile. Confirmed: a request to `192.168.1.174:8000` from the
+LAN interface is refused. Reaching it directly from the network takes an explicit
+`--host 0.0.0.0`.
 
-- backend `127.0.0.1:8000` (uvicorn's default host; no `--host` flag in the justfile)
-- frontend `[::1]:5173` (Vite's default; no `--host` flag in `package.json`)
-
-Nothing on the network can reach either. Confirmed: a request to `192.168.1.174:8000`
-from the LAN interface is refused.
-
-**Docker stack** (`docker compose up`) — **published on every interface**:
-
-- backend `0.0.0.0:8100 -> 8000`
-- frontend `0.0.0.0:5273 -> 5173`, and its Vite dev proxy forwards `/api` and `/ws`
-  straight to the backend, so `:5273/api/...` is a second door to the same API
-
-So with compose up, `http://<bench-ip>:8100/api/cameras` answers to anyone who can route
-to the bench. Confirmed working from the LAN address while writing this doc.
+**Frontend** (`just frontend`, `npm run dev`) — **every interface**: `0.0.0.0:5173`,
+because `package.json`'s `dev` script is `vite --host`. Its dev proxy forwards `/api` and
+`/ws` to the backend from the *server* side, so a loopback-only backend is still fully
+reachable through it: `http://<bench-ip>:5173/api/cameras` answers to anyone who can route
+to the bench. `npm run dev:local` (plain `vite`) is the loopback-only variant.
 
 ## Security: there is none
 
@@ -96,46 +91,55 @@ ffmpeg, or a Python script. Verified: a request with `Origin: http://evil.local:
 returns 200 with the full body — it just comes back without an `Access-Control-Allow-Origin`
 header, which only the browser cares about.
 
-So, to answer the question directly: **while `docker compose up` is running, anyone on the
+So, to answer the question directly: **while the frontend dev server is up, anyone on the
 same network can list the cameras, pull snapshots, and watch the MJPEG streams without
-credentials** — and, through the same unauthenticated API, hit the teach, workflow, motion
-and agent endpoints, which command real arms.
-
-The one thing that limits the damage today is USB, not any control we wrote: on macOS the
-container gets no USB passthrough, so inside the container the RealSense and UVC slots
-read as `error`/`disconnected` and stream nothing. That is an accident of the platform,
-not a boundary. Two caveats:
-
-- The repo is bind-mounted into the container, so a `still`-type slot (which replays a
-  saved PNG from `temp/captures/`) *would* serve real bench imagery over the LAN.
-- The arms are reached by TCP over the bridge network and work fine from the container.
-  The exposed motion endpoints are the actual risk, not the video.
+credentials** — and, through the same unauthenticated API on `:5173`, hit the teach,
+workflow, motion and agent endpoints, which command real arms. Nothing limits this now
+that the stack runs on the host: the cameras and the arms are both genuinely attached, so
+the feeds served over the LAN are the real bench.
 
 Mitigations, cheapest first:
 
-1. `docker compose down` when you are not using it. The host stack is loopback-only.
-2. Bind the published ports to loopback: `"127.0.0.1:8100:8000"` and
-   `"127.0.0.1:5273:5173"` in `docker-compose.yml`. Costs nothing, keeps compose usable.
+1. `npm run dev:local` instead of `npm run dev` unless a second machine actually needs the
+   UI. That puts both processes back on loopback.
+2. Stop the dev server when it is not in use — it is the only thing bound to the network.
 3. If a second machine genuinely needs the feeds, put a shared-secret header check in
    front of the app (a one-function middleware) rather than relying on the network.
 
 ## Pointing a second machine at these cameras
 
-There is **no env var for "local hardware vs. remote API" today.** `CAM_<SLOT>_TYPE`
-selects a *driver*, and every option is local:
+Set **`HZ_CAMERA_HOST`** to the bench backend and start the second machine's backend
+normally:
+
+```bash
+HZ_CAMERA_HOST=http://192.168.1.174:8000 uv run uvicorn backend.app.main:app --reload
+```
+
+It rewrites *every* camera slot to the `remote` driver (`core/config.py`
+`_apply_camera_host`), which consumes the far end's `/stream` pixels and its intrinsics.
+All-or-nothing by design, and it wins over `CAM_*` and `HZ_FLEET_FILE` alike — a machine
+either has the cameras or it borrows them. The slot ids must match on both ends.
+
+Frames enter at the driver layer exactly like local ones, so detection, twin fusion and
+the Cameras tab all work unchanged, and the local backend re-serves its own MJPEG to its
+own frontend. Detection deliberately runs again locally rather than copying the remote's
+results. Two limits: MJPEG carries no depth (tag *distance* still resolves from solvePnP,
+`depth_m` and `camera_xyz` stay null), and never point it at its own backend — it would
+proxy its own cameras forever.
+
+The other slot types, all local:
 
 | `CAM_<SLOT>_TYPE` | Source | `CAM_<SLOT>` value |
 | --- | --- | --- |
 | `realsense` | librealsense, RGB-D (needs root on macOS) | device serial |
 | `camera` | `cv2.VideoCapture`, UVC / path / RTSP | OpenCV index, file path, or RTSP URL |
 | `still` | a saved PNG replayed as a frame | path to `*_color.png` |
+| `remote` | another backend's MJPEG endpoint | its base URL (usually set via `HZ_CAMERA_HOST`) |
 | `mock_tag_camera`, `mock_camera` | synthetic | — |
 
-`camera` accepts a URL string, which looks like the remote path — but as noted above
-OpenCV will not open this backend's MJPEG endpoint, so it does not work. A clone that
-wants these feeds needs either a small `http`-type camera driver that pulls
-`/stream` + `/detections` from another backend, or to consume the endpoints directly
-without going through the driver layer.
+Note that `camera` also accepts a URL string, which looks like it would do the same job —
+but as noted above OpenCV will not open this backend's MJPEG endpoint, which is why the
+`remote` driver parses the multipart itself.
 
 ## Current per-camera state (2026-07-25, host stack)
 

@@ -127,13 +127,16 @@ def test_detects_the_rendered_tags(client):
     assert {d["marker_id"] for d in tags(body)} == {180, 183, 224}
 
 
-def test_markers_resolve_to_twin_entities(client):
-    """The marker map is what makes the overlay say 'tube_1_cap' instead of '224'."""
+def test_a_fiducial_no_longer_claims_a_twin_entity(client):
+    """A tag id is a pose source and a label, not a name for a scene-graph entity.
+
+    The twin is gone; `core/perception/markers.py` keeps only the tag *size* registry.
+    A detection that still asserted an `entity_id` would be re-introducing the coupling
+    by the back door, so this pins the field to None on the fiducial path.
+    """
     running_worker(client)
-    found = {d["marker_id"]: d["entity_id"] for d in
-             client.get("/api/cameras/external/detections").json()["detections"]}
-    assert found[224] == "tube_1_cap"
-    assert found[180] == "left_base"
+    for d in tags(client.get("/api/cameras/external/detections").json()):
+        assert d["entity_id"] is None
 
 
 def test_polygons_are_normalized(client):
@@ -245,4 +248,4 @@ def test_ws_state_carries_camera_detections(client):
     assert "instruments" in msg and "cameras" in msg
     external = msg["cameras"]["external"]
     assert external["w"] == 640
-    assert {d["entity_id"] for d in external["detections"]} >= {"tube_1_cap", "left_base"}
+    assert {d["marker_id"] for d in external["detections"]} >= {180, 183, 224}

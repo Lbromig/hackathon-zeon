@@ -76,6 +76,14 @@ press-and-hold continuous jog, which would need servo-streaming mode and a deadm
 cd frontend
 npm install
 npm run dev          # http://localhost:5173  (proxies /api + /ws to :8000)
+npm run dev:local    # same, but loopback only
 ```
 
-Start the backend first (`backend/README.md`).
+`dev` is `vite --host`, so it binds every interface and the machine's LAN address serves
+the UI — and, through the proxy, the whole unauthenticated API with it. `dev:local` is the
+plain-`vite` variant for when no second machine needs it.
+
+The proxy target is `BACKEND_URL` (default `http://127.0.0.1:8000`) — set it to run against
+a backend on another host. Start the backend first (`backend/README.md`).
+
+`npm run build` type-checks with `vue-tsc` and emits `dist/`; `npm run preview` serves it.

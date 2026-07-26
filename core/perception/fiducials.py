@@ -1,15 +1,14 @@
-"""Fiducial marker detection + pose for validating object positions in the twin.
+"""Fiducial marker detection + pose.
 
 The lab stickers are **AprilTag `tag36h11` @ 20 mm** (confirmed empirically from the
 hackathon photos: IDs 180-224 were recovered exactly, with no coherent match under any
 ArUco dictionary). OpenCV's `aruco` module detects this family natively via
 `DICT_APRILTAG_36h11`, so we don't need a separate AprilTag dependency.
 
-What this gives the world model (see docs/DIGITAL_TWIN.md, FR-CAL / FR-WM):
+What this gives a caller:
   - detect(image)            -> [Detection] with ids + image corners + centre
-  - detect(image) w/ K       -> each Detection also carries T_cam_marker (4x4, metres)
-  - entity_world_pose(...)   -> compose camera extrinsics + marker->entity offset to place
-                                the entity in the world frame (the corrective pose source)
+  - detect(image) w/ K       -> each Detection also carries T_cam_marker (4x4, metres),
+                                which is the primary signal for the tip/tube offset solve
 
 Package note: `cv2.aruco` lives in **opencv-contrib-python** (not plain opencv-python).
 Alternative: `pupil-apriltags` (canonical AprilTag detector) if we want the official
@@ -27,8 +26,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..calibration.markers import spec_for
-from ..worldmodel.entities import Transform
+from .geometry import Transform
+from .markers import spec_for
 
 # --- family / defaults -------------------------------------------------------
 TAG_FAMILY_NAME = "DICT_APRILTAG_36h11"
@@ -48,7 +47,6 @@ class Detection:
     center: tuple[float, float]
     size_m: float = DEFAULT_TAG_SIZE_M
     T_cam_marker: Transform | None = None        # 4x4 cam<-marker, set when K given
-    entity_id: str | None = None                 # from MARKER_MAP, if assigned
 
     @property
     def distance_m(self) -> float | None:
@@ -145,7 +143,6 @@ class FiducialDetector:
                 corners=pts,
                 center=(float(pts[:, 0].mean()), float(pts[:, 1].mean())),
                 size_m=size,
-                entity_id=spec.entity_id if spec else None,
             )
             if self.K is not None:
                 det.T_cam_marker = self._estimate_pose(pts, size)
@@ -175,8 +172,6 @@ class FiducialDetector:
             pts = d.corners.astype(np.int32)
             cv2.polylines(out, [pts], True, (0, 255, 0), 3)
             label = f"id={d.marker_id}"
-            if d.entity_id:
-                label += f" [{d.entity_id}]"
             if d.distance_m is not None:
                 label += f" {d.distance_m*1000:.0f}mm"
             cv2.putText(out, label, tuple(pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
@@ -186,19 +181,6 @@ class FiducialDetector:
                 cv2.drawFrameAxes(out, self.K, self.dist, rvec,
                                   d.T_cam_marker[:3, 3], d.size_m * 0.75)
         return out
-
-
-def entity_world_pose(det: Detection, T_world_cam: Transform) -> Transform | None:
-    """Place the marker's entity in the world frame.
-
-    T_world_entity = T_world_cam @ T_cam_marker @ T_marker_to_entity
-    Requires: the detection has a pose (K was provided) and the id is in MARKER_MAP.
-    This is the corrective pose that gets fused into the twin via WorldModel.set_world_pose.
-    """
-    spec = spec_for(det.marker_id)
-    if spec is None or det.T_cam_marker is None:
-        return None
-    return T_world_cam @ det.T_cam_marker @ spec.T_marker_to_entity
 
 
 def identify_family(image: np.ndarray) -> list[tuple[str, list[int]]]:

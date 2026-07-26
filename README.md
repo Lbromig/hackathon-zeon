@@ -30,35 +30,79 @@ with cameras feeding the verification agents that gate each step.
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** and **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 for diagrams, and **[PROJECT_PLAN.md](PROJECT_PLAN.md)** for the 24h plan and ownership.
 
-## Quick start
+## Running the apps
 
-Everything runs directly on the host. This project uses
-**[uv](https://docs.astral.sh/uv/)** for all Python work.
+Two long-running processes, both started from the repo root. Python work goes through
+**[uv](https://docs.astral.sh/uv/)**; the frontend through npm.
+
+| App | Command | Listens on |
+|---|---|---|
+| **backend** — FastAPI REST + websockets | `uv run uvicorn backend.app.main:app --reload` | `127.0.0.1:8000` |
+| **frontend** — Vue 3 / Vite dev server | `cd frontend && npm run dev` | `0.0.0.0:5173` |
+
+First time only:
 
 ```bash
-cp .env.example .env        # optional — set your arm IPs / camera sources
-uv sync                     # create .venv + install deps (incl. vendored xArm SDK)
-
-# initialize the arm
-uv run python scripts/init_xarm.py --ip 192.168.3.13
-
-# backend (from the repo root)
-uv run uvicorn backend.app.main:app --reload
-
-# frontend (separate shell)
-cd frontend && npm install && npm run dev
+cp .env.example .env         # optional — arm IPs, camera serials, fleet overrides
+uv sync                      # create .venv + install deps (incl. vendored xArm SDK)
+cd frontend && npm install   # frontend deps
 ```
 
-The bench runs on the host and not in a container on purpose: the cameras are USB
-(UVC/RealSense) and the Opentrons is on a serial port, and macOS cannot pass either
-into a Linux VM. A containerised backend reports every camera as `disconnected`.
+Then, in two shells:
 
-Both services bind to loopback by default. To reach the UI from another machine on
-the bench WiFi, start Vite with `--host` — but note that its proxy exposes the whole
-unauthenticated API along with it, arms included. See
-**[docs/CAMERA_ACCESS.md](docs/CAMERA_ACCESS.md)**.
+```bash
+uv run uvicorn backend.app.main:app --reload   # shell 1 — from the repo root
+cd frontend && npm run dev                     # shell 2
+```
 
-Boots without hardware — drivers that can't init are skipped; SDK/opencv imports are optional.
+Open **http://localhost:5173**. There is no single "start everything" command and no
+container (see below) — the two processes are independent, and either can be restarted
+without the other. Start the backend first: Vite proxies `/api` and `/ws` to it
+(`BACKEND_URL`, default `http://127.0.0.1:8000`), so until it answers the UI shows every
+device as disconnected.
+
+Run the backend **from the repo root**, not from `backend/` — `core/`, `drivers/` and
+`backend/` share one import root.
+
+The same commands are wrapped in the [justfile](justfile) ([just](https://github.com/casey/just)):
+
+| Recipe | Does |
+|---|---|
+| `just sync` | `uv sync` |
+| `just dev` | the backend |
+| `just frontend` | `npm install` + the frontend dev server |
+| `just test` | `uv run pytest backend/tests -q` — no hardware required |
+| `just init-arm ip=192.168.3.13` | initialize one arm (see below) |
+
+Each arm needs one initialization pass per power cycle — enable servos, clear latched
+faults, home — before the API can move it:
+
+```bash
+uv run python scripts/init_xarm.py --ip 192.168.3.13
+```
+
+Building the frontend for a non-dev serve is `npm run build` (type-checks, emits
+`frontend/dist/`) then `npm run preview`; nothing in the stack requires it.
+
+### What happens at backend start
+
+The lifespan in [backend/app/main.py](backend/app/main.py) loads the fleet from
+`core/config.py` + `.env`, writes one boot frame per camera slot to
+`temp/captures/<slot>/`, then starts the FK→twin and camera→twin fusion threads. Drivers
+that fail to init are skipped and the SDK/opencv imports are optional, so the backend
+**boots with no hardware attached** — a laptop gets the full API with every device
+disconnected. On macOS the `realsense` slots are the one exception: they need root, which
+the backend deliberately does not run as (see *RealSense cameras on macOS* below).
+
+Start-time switches worth knowing:
+
+| Variable | Effect |
+|---|---|
+| `HZ_FLEET_FILE=fleet.mock.json` | replaces the whole fleet with synthetic devices |
+| `HZ_CAMERA_HOST=http://<bench>:8000` | borrow every camera feed from another backend, all-or-nothing (that backend needs `--host 0.0.0.0` to be reachable; MJPEG carries no depth) |
+| `HZ_STARTUP_SNAPSHOT=0` | skip the boot frame capture |
+| `HZ_CAPTURE_DIR` | relocate `temp/captures/` |
+| `BACKEND_URL` | frontend only — proxy target when the backend is on another host or port |
 
 For camera/vision work with no bench, run against the synthetic fleet: it renders real
 AprilTag `tag36h11` markers that the detector genuinely detects, so the Cameras tab is
@@ -67,6 +111,28 @@ fully live.
 ```bash
 HZ_FLEET_FILE=fleet.mock.json uv run uvicorn backend.app.main:app --reload
 ```
+
+### Ports and who can reach them
+
+The two processes differ, and the difference is easy to miss:
+
+- **backend** — uvicorn's default bind, so **loopback only**. Nothing on the network
+  reaches `:8000` unless you add `--host 0.0.0.0`.
+- **frontend** — `npm run dev` is `vite --host`, so it listens on **every interface**,
+  reachable as `http://<this-machine>:5173` from the bench WiFi.
+
+That combination is deliberate but sharp-edged: the Vite proxy runs server-side, so
+anyone who loads `:5173` also gets `/api` and `/ws` — the *whole* unauthenticated API,
+teach and motion endpoints included, arms included. CORS does not gate this (the browser
+sees one origin), and there is no auth anywhere in the app. Use `npm run dev:local` for
+a loopback-only dev server when you don't need a second machine. See
+**[docs/CAMERA_ACCESS.md](docs/CAMERA_ACCESS.md)**.
+
+### Why on the host, and not in a container
+
+The cameras are USB (UVC/RealSense) and the Opentrons is on a serial port, and macOS
+cannot pass either into a Linux VM. A containerised backend reports every camera as
+`disconnected`, so there is no compose file to run.
 
 ### RealSense cameras on macOS
 

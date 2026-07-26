@@ -53,6 +53,8 @@ class Detection:
     center: list[float]
     source: str = "apriltag"        # apriltag | cv | projection
     marker_id: int | None = None
+    # Only the twin-projection source still fills this in; a fiducial no longer names an
+    # entity (the marker registry is a tag-size registry now — core/perception/markers.py).
     entity_id: str | None = None
     confidence: float = 1.0
     distance_m: float | None = None
@@ -325,7 +327,7 @@ class CameraWorker(threading.Thread):
             out.append(Detection(
                 kind="apriltag", polygon=polygon,
                 center=[u / w, v / h],
-                marker_id=d.marker_id, entity_id=d.entity_id,
+                marker_id=d.marker_id,
                 distance_m=d.distance_m,
                 depth_m=depth_m,
                 camera_xyz=self._camera_point(u, v, depth_m, d),
