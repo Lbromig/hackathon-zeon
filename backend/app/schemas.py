@@ -54,6 +54,23 @@ class CameraSummary(BaseModel):
     height: int = 0
     fps: float = 0.0
     error: str = ""
+    has_depth: bool = False       # RGB-D (RealSense) vs plain colour
+    serial: str = ""              # pinned unit, from CAM_* in .env
+    configured: dict[str, Any] = {}   # requested width/height/fps from the fleet config
+    intrinsics: dict[str, Any] | None = None   # factory K, once connected
+
+
+class RealSenseDevice(BaseModel):
+    """A physically attached RealSense, for filling in the CAM_* serials."""
+    serial: str
+    name: str = ""
+    firmware: str = ""
+    assigned_to: str | None = None   # fleet id already pinned to this serial
+
+
+class CameraDevices(BaseModel):
+    devices: list[RealSenseDevice] = []
+    error: str = ""               # why enumeration failed (SDK missing, USB perms)
 
 
 class CameraDetections(BaseModel):
@@ -66,6 +83,8 @@ class CameraDetections(BaseModel):
     seq: int = 0
     fps: float = 0.0
     error: str = ""
+    has_depth: bool = False
+    intrinsics: dict[str, Any] | None = None
     detections: list[dict[str, Any]] = []
 
 
@@ -111,6 +130,9 @@ class ArmState(BaseModel):
     gripper: GripperModel = GripperModel()
     error_code: int | None = None
     warn_code: int | None = None
+    # Hand-guiding is active (xArm mode 2). Surfaced so the UI can show that the arm
+    # is back-drivable — commanded motion does not behave normally in that mode.
+    free_drive: bool = False
     detail: str = ""              # why pose/joints are missing, if they are
 
 
@@ -129,6 +151,27 @@ class ArmActionResult(BaseModel):
     ok: bool
     detail: str = ""
     state: ArmState | None = None
+
+
+class FreeDriveRequest(BaseModel):
+    on: bool = True
+
+
+class RequiredPose(BaseModel):
+    """A pose the hero workflow needs, and whether it has been taught yet."""
+    device: str
+    name: str
+    step: str                     # which workflow step consumes it
+    order: int                    # position within that step's choreography
+    note: str = ""                # why the choreography visits it
+    taught: bool = False
+    saved_at: str = ""
+
+
+class PreflightResult(BaseModel):
+    ok: bool
+    problems: list[str] = []
+    required: list[RequiredPose] = []
 
 
 class JogRequest(FiniteModel):

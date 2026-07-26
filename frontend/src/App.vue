@@ -5,10 +5,11 @@ import { connectAll } from "./api/client";
 import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
+import CameraTab from "./components/cameras/CameraTab.vue";
 
-type Tab = "fleet" | "teach";
+type Tab = "fleet" | "teach" | "cameras";
 
-const { instruments, connected } = useFleet();
+const { instruments, cameras, connected } = useFleet();
 // Remembered across reloads — during bring-up you live in one tab for hours.
 const tab = ref<Tab>((localStorage.getItem("tab") as Tab) ?? "fleet");
 
@@ -33,7 +34,7 @@ function select(next: Tab) {
 
     <nav class="mt-5 flex gap-1 border-b border-deck-600">
       <button
-        v-for="t in (['fleet', 'teach'] as Tab[])"
+        v-for="t in (['fleet', 'teach', 'cameras'] as Tab[])"
         :key="t"
         class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition-colors"
         :class="
@@ -55,8 +56,10 @@ function select(next: Tab) {
         <aside><WorkflowRunner /></aside>
       </div>
 
-      <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab -->
+      <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab,
+           and drops the MJPEG connections so the backend can release the cameras -->
       <TeachPanel v-else-if="tab === 'teach'" />
+      <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
     </main>
   </div>
 </template>

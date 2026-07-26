@@ -39,6 +39,7 @@ from ..schemas import (
     ArmState,
     ArmSummary,
     EnableRequest,
+    FreeDriveRequest,
     GripperModel,
     GripperRequest,
     JogRequest,
@@ -57,6 +58,8 @@ GRIPPER_CACHE_S = 1.0    # width is a Modbus round-trip; the UI polls at 2 Hz
 # Cap on orientation change for one absolute move. Bounding translation alone lets
 # a same-position target whip the wrist through 180 deg at full speed.
 MAX_MOVE_TO_ROTATION_DEG = 90.0
+# xArm mode 2 = joint teaching. The arm reports this as its mode while hand-guiding.
+FREE_DRIVE_MODE = 2
 
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -146,6 +149,7 @@ def _state(arm: ArmDriver, *, read_gripper: bool = True) -> ArmState:
     status = _status(arm)
     state.error_code = status.get("error_code")
     state.warn_code = status.get("warn_code")
+    state.free_drive = status.get("mode") == FREE_DRIVE_MODE
     return state
 
 
@@ -386,6 +390,30 @@ def enable(device_id: str, req: EnableRequest) -> ArmActionResult:
     def action(arm: ArmDriver) -> str:
         arm.enable(req.on)
         return "motors enabled" if req.on else "motors disabled (brakes engaged)"
+    return _command(device_id, action)
+
+
+@router.post("/{device_id}/free_drive", response_model=ArmActionResult)
+def free_drive(device_id: str, req: FreeDriveRequest) -> ArmActionResult:
+    """Hand-guiding: make the arm back-drivable so an operator can position it.
+
+    This is how the first teach of a pose happens — push the arm where you want it,
+    then save. Two caveats the UI must surface:
+
+    * The arm holds against gravity using the configured payload. If that is wrong
+      the arm sinks (or climbs) when released — support it before enabling.
+    * Programmed motion does not behave normally while it is on, so it is turned
+      off again before any commanded move.
+    """
+    def action(arm: ArmDriver) -> str:
+        if arm.state != ConnectionState.CONNECTED:
+            raise DriverError(f"{arm.device_id} is not connected")
+        try:
+            arm.set_free_drive(req.on)
+        except NotImplementedError as e:
+            raise DriverError(str(e)) from e
+        return ("hand-guiding ON — arm is back-drivable, support it"
+                if req.on else "hand-guiding off — back in position control")
     return _command(device_id, action)
 
 
