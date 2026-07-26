@@ -13,8 +13,13 @@ where the tube actually is.**
 That is the target. It decomposes into four steps, and they are strictly ordered
 because each one is meaningless without the one before it.
 
-1. **Move every axis under software control.** X, Z and A jog from the UI today
-   (`/api/liquid-handlers/{id}/jog`). **Y does not move** — see the blocker below.
+1. **Move every axis under software control.** **Done.** All six axes jog from the
+   UI (`/api/liquid-handlers/{id}/jog`): X, Y, Z, A plus both plungers B and C.
+   Y turned out to be joggable all along — the fault was specific to *homing*
+   (`G28.2 Y` searches for an endstop that never reports and grinds); a bounded
+   relative move does no search. Homing stays Z-only. Motion is continuous, not
+   stepped: coordinated multi-axis `G0`s queued as one path, measured at +6 ms
+   per leg of overhead over an 806 mm 3D sweep that closed to 0.00 on all axes.
 2. **Establish a coordinate frame.** Perceive the deck and express positions in a
    frame shared with the world model.
 3. **Depth perception.** Recover the tube's position in 3D, not just in the image
@@ -54,9 +59,11 @@ There are two ways through, and one has to be chosen:
 
 | Step | State |
 |------|-------|
-| X / Z / A relative jog, from UI and REST | working, on hardware |
+| All six axes relative jog (X Y Z A B C), from UI and REST | working, on hardware |
+| Continuous multi-axis motion | working — 806 mm 3D sweep, +6 ms/leg overhead |
 | Tip pickup | working — 53 mm engagement, measured |
-| Y axis | **blocked** — drives looking for a switch that never reports, and grinds |
+| Y axis | jogs fine; **never home it** — `G28.2 Y` grinds against a hard stop |
+| Aspirate / dispense | **blocked on one measurement** — see Q-OT-PLUNGER-1 |
 | Absolute positioning / any coordinate frame | **blocked** — no datum exists |
 | Depth perception → tube pose | not started, blocked on a frame |
 | Agent-directed move-to-tube | not started, blocked on the above |
