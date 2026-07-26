@@ -16,6 +16,12 @@ trusted to be the only client:
 
 `/stop` deliberately skips the busy lock: an e-stop that waits for the move it is
 trying to interrupt would be useless. Do not "fix" that.
+
+The pose library doubles as the **waypoint** library: the 15 canonical workflow waypoints
+are ordinary taught poses whose names are pinned by `core.waypoints` (R-WP-1…5). Saving or
+replaying one is checked against that spec here, so a waypoint can never be taught — or
+replayed — on an arm that does not own it. Ad-hoc names stay allowed; they just do not
+appear on the checklist.
 """
 from __future__ import annotations
 
@@ -28,9 +34,11 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from drivers import ArmDriver, ConnectionState, DriverError, InstrumentKind, Pose
 
+from core import speeds, waypoints
 from core.config import settings
 from core.obs import get_logger
 
@@ -234,6 +242,20 @@ def _speed(arm: ArmDriver, requested: float | None, *, angular: bool) -> float |
         raise ValueError(f"speed must be a finite number, got {requested!r}")
     cap = arm.limits.max_speed_angular if angular else arm.limits.max_speed_linear
     return max(1.0, min(float(requested), cap))
+
+
+def _tier_speed(arm: ArmDriver, tier: str | None, requested: float | None, *,
+                angular: bool) -> float | None:
+    """A named tier if one was given, otherwise the raw request — both soft-limit capped.
+
+    A tier is resolved by `core.speeds`, which clamps against this arm's `max_speed_*`, so
+    naming a tier can never widen a configured soft limit. An unknown tier resolves to
+    `medium` with a warning rather than failing the move (see `speeds.normalize`).
+    """
+    if tier is None:
+        return _speed(arm, requested, angular=angular)
+    resolved = speeds.for_arm(tier, arm.limits)
+    return resolved.angular if angular else resolved.linear
 
 
 def _assert_reachable_in_one_move(arm: ArmDriver, target: Pose) -> float:
@@ -470,6 +492,106 @@ def stop(device_id: str, req: StopRequest) -> ArmActionResult:
     return ArmActionResult(ok=ok, detail=detail, state=_state(arm, read_gripper=False))
 
 
+# --- workflow waypoints ------------------------------------------------------
+#
+# The replacement for the deleted `required_poses` endpoint, which derived its list from
+# the choreography that no longer exists. The list now comes from `core.waypoints.SPEC`,
+# which is also what the engine pre-flights against — one source, so the checklist an
+# operator works through on the bench cannot drift from what the plan will ask for.
+
+
+class WaypointRow(BaseModel):
+    """One line of the operator's checklist."""
+    device: str
+    name: str
+    step: int
+    """The workflow step this waypoint serves — the order it makes sense to teach in."""
+    speed: str
+    """Intended speed tier (`slow`/`medium`/`fast`), resolved to numbers by core.speeds."""
+    note: str
+    taught: bool
+    saved_at: str | None = None
+    has_joints: bool = False
+    """Joints were captured, so replay uses the angles the arm physically reached."""
+
+
+class WaypointProblemModel(BaseModel):
+    kind: str            # missing | wrong_device | name_mismatch | ad_hoc | unusable
+    device: str
+    name: str
+    detail: str
+    blocking: bool
+
+
+class ArmWaypoints(BaseModel):
+    """One arm's checklist. `taught`/`total` is the "7 of 10 taught" the UI shows."""
+    device: str
+    taught: int
+    total: int
+    complete: bool
+    waypoints: list[WaypointRow]
+    extra: list[str] = Field(default_factory=list)
+    """Taught names that are **not** spec waypoints for this arm — scratch points, kept
+    separate so the checklist means something."""
+
+
+class WaypointReport(BaseModel):
+    devices: list[ArmWaypoints]
+    problems: list[WaypointProblemModel]
+    total: int
+    taught: int
+
+
+def _row(s: waypoints.WaypointStatus) -> WaypointRow:
+    return WaypointRow(device=s.device, name=s.name, step=s.step, speed=s.speed,
+                       note=s.note, taught=s.taught, saved_at=s.saved_at,
+                       has_joints=s.has_joints)
+
+
+def _arm_waypoints(device_id: str) -> ArmWaypoints:
+    p = _readable(lambda: waypoints.progress(device_id))
+    return ArmWaypoints(device=p.device, taught=p.taught, total=p.total,
+                        complete=p.complete, extra=p.extra,
+                        waypoints=[_row(s) for s in p.waypoints])
+
+
+def _readable(read: Callable[[], Any]) -> Any:
+    """Turn an unreadable pose library into a stated reason, not a 500 — and never into
+    "nothing is taught", which reads as a bench nobody has taught yet."""
+    try:
+        return read()
+    except LookupError as e:      # teach_poses.MissingPose on a corrupt/unreadable file
+        raise HTTPException(503, f"the taught-pose library is unreadable: {e}") from e
+
+
+@router.get("/waypoints", response_model=WaypointReport)
+def waypoint_report() -> WaypointReport:
+    """Every workflow waypoint, per arm, taught or not — plus what is wrong with the library.
+
+    Declared before the `/{device_id}/...` routes purely for readability; the paths cannot
+    collide (different segment counts).
+    """
+    devices = [_arm_waypoints(d) for d in waypoints.DEVICES]
+    problems = [WaypointProblemModel(kind=p.kind, device=p.device, name=p.name,
+                                     detail=p.detail, blocking=p.blocking)
+                for p in _readable(waypoints.problems)]
+    return WaypointReport(
+        devices=devices, problems=problems,
+        total=sum(d.total for d in devices), taught=sum(d.taught for d in devices),
+    )
+
+
+@router.get("/{device_id}/waypoints", response_model=ArmWaypoints)
+def arm_waypoints(device_id: str) -> ArmWaypoints:
+    """One arm's checklist. Only that arm's own waypoints — never the other arm's (R-WP-3).
+
+    Deliberately not gated on `_arm()`: the operator needs the checklist while the arm is
+    still disconnected, and an unknown device answers with an empty list rather than a 404
+    so the UI can say "nothing owned by that id".
+    """
+    return _arm_waypoints(device_id)
+
+
 # --- taught poses ------------------------------------------------------------
 
 @router.get("/{device_id}/poses", response_model=list[TaughtPose])
@@ -484,10 +606,19 @@ def save_pose(device_id: str, req: TaughtPose) -> list[TaughtPose]:
 
     Both spaces are stored, but go-to replays the *joints*: those were physically
     reached, so there's no IK branch to guess at.
+
+    A name belonging to the canonical waypoint spec is **refused unless this arm owns it**
+    (R-WP-2). Teaching `CAP_GRAB` on the right arm would otherwise produce a pose that
+    looks taught, is never used by any move, and leaves the left arm silently untaught —
+    caught at teach time, when the operator is standing there and can fix it.
     """
     arm = _arm(device_id)
     if arm.state != ConnectionState.CONNECTED:
         raise HTTPException(400, f"{device_id} is not connected")
+    try:
+        waypoints.assert_owned(device_id, req.name.strip())
+    except waypoints.WaypointNotOwned as e:
+        raise HTTPException(400, str(e)) from e
     try:
         entry = TaughtPose(
             name=req.name.strip(),
@@ -518,7 +649,22 @@ def delete_pose(device_id: str, name: str) -> list[TaughtPose]:
 
 
 @router.post("/{device_id}/poses/{name}/goto", response_model=ArmActionResult)
-def goto_pose(device_id: str, name: str, speed: float | None = None) -> ArmActionResult:
+def goto_pose(device_id: str, name: str, speed: float | None = None,
+              tier: str | None = None) -> ArmActionResult:
+    """Replay a taught pose on the arm that owns it.
+
+    `tier` (`slow`/`medium`/`fast`) resolves through `core.speeds` and wins over a raw
+    `speed`, so the checklist's Go button can replay a waypoint at the tier the workflow
+    will use rather than at whatever the jog slider happens to be set to.
+
+    Ownership is re-checked here even though the lookup is already device-scoped: a spec
+    waypoint mistakenly taught under the wrong arm exists on disk, and without this check
+    it would be replayable — which is exactly the wrong-arm move R-WP-2 forbids.
+    """
+    try:
+        waypoints.assert_owned(device_id, name)
+    except waypoints.WaypointNotOwned as e:
+        raise HTTPException(400, str(e)) from e
     saved = _load_poses().get(device_id, {}).get(name)
     if saved is None:
         raise HTTPException(404, f"no taught pose {name!r} for {device_id}")
@@ -528,7 +674,7 @@ def goto_pose(device_id: str, name: str, speed: float | None = None) -> ArmActio
         _require_movable(arm)
         if entry.joints and len(entry.joints) == arm.axis_count:
             _preflight_joints(arm, entry.joints)
-            arm.move_joints(entry.joints, speed=_speed(arm, speed, angular=True))
+            arm.move_joints(entry.joints, speed=_tier_speed(arm, tier, speed, angular=True))
             return f"went to {name!r} (joint replay)"
         if entry.pose is None:
             raise ValueError(f"taught pose {name!r} has no usable target")
@@ -537,7 +683,7 @@ def goto_pose(device_id: str, name: str, speed: float | None = None) -> ArmActio
         # different axis count), so it must not be the one route that skips the guard.
         target = Pose(**entry.pose.model_dump())
         jump = _assert_reachable_in_one_move(arm, target)
-        arm.move_to(target, speed=_speed(arm, speed, angular=False))
+        arm.move_to(target, speed=_tier_speed(arm, tier, speed, angular=False))
         return f"went to {name!r} (cartesian, {jump:.1f} mm travelled)"
 
     return _command(device_id, action)
