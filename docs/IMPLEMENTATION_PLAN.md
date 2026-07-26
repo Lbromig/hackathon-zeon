@@ -11,6 +11,37 @@ Companion docs: `WORLD_MODEL_REQUIREMENTS.md` (the FR-* this implements),
 
 ---
 
+## Status — updated 2026-07-25
+
+Parallel work has moved fast. Reconciling the plan with what's actually in the repo:
+
+**Built ✓**
+- Fiducials: `core/perception/fiducials.py` (AprilTag tag36h11 @ 20 mm, IDs 180-224 confirmed
+  from photos) + tests. CAD tube/cap meshes + real dims in `core/worldmodel/`.
+- Cameras: three **RealSense RGB-D** in the fleet (`core/config.py`), `drivers/camera/realsense.py`
+  (aligned colour+depth, factory intrinsics). Live **MJPEG** via `backend/app/api/cameras.py`
+  + `services/camera_hub.py` (one worker/camera, runs the fiducial detector at ~5 Hz, publishes
+  normalized detections). Frontend `components/cameras/CameraView.vue` + `CameraTab.vue` overlay.
+  `mock_tag_camera` renders tags so the whole pipeline runs **with no hardware**.
+- Orchestration: `backend/app/agent/` engine (observe→decide→execute→verify→emit, human
+  checkpoints) with `RuleBasedPolicy` + `ClaudePolicy` — this is the home for the verify/recover
+  logic (the two-mode design in `AGENT_ORCHESTRATION.md`).
+
+**The critical path now: calibration + the perception→twin loop.** Detection works, but nothing
+turns detections into *world poses* yet, so the twin, projection overlays, distances, and
+move-to-grip are all still open. Specifically:
+- `core/calibration/pipeline.py` is still 11 TODO stubs (intrinsics, hand-eye, fixed-cam
+  extrinsics, world frame). **Blocks everything 3D.**
+- `camera_hub` builds `FiducialDetector()` with **no intrinsics**, so poses/distances are empty.
+- No one calls `entity_world_pose()` → `wm.set_world_pose()`: the twin is never corrected.
+- `core/verification/agents.py` are still 4 stubs (`ok=True, confidence=0.0`).
+- No `projection.py` / `shapes.py`; no move-and-grip skill; `MARKER_MAP` uses example IDs.
+
+**Next up (ordered) — see the task list.** The unlock sequence is: (1) feed RealSense intrinsics
+to the detectors → real pose/distance; (2) real calibration → `T_world_cam` per camera;
+(3) fuse detections into the twin; (4) real verifier predicates; then projection overlay,
+move-and-grip, and classical CV. Everything can be built against `mock_tag_camera` first.
+
 ## 0. Decisions locked
 
 - **Pose stack: FoundationPose standalone (NVlabs repo + Docker), called as a service.**
@@ -74,7 +105,8 @@ the twin via `WorldModel.set_world_pose(...)`; agents return `VerificationResult
 
 Fill the stubbed steps with OpenCV:
 
-- `_camera_intrinsics`: ChArUco capture → `cv2.calibrateCamera`; cache `calib/intrinsics/*.json`.
+- `_camera_intrinsics`: read **RealSense factory intrinsics** via `CameraDriver.intrinsics()`
+  (all three are RGB-D) → cache `calib/intrinsics/*.json`; ChArUco only if we want to refine.
 - `_hand_eye`: 15–20 arm poses viewing a fixed ChArUco → `cv2.calibrateHandEye` (TSAI) →
   `gripper_cam → right_tcp`; cache `calib/hand_eye.json`.
 - `_world_frame`: detect ArUco board + printed ruler → world origin + metric scale.

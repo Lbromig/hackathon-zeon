@@ -22,9 +22,11 @@ it exposes and closes the loop that calibration → twin → verification alread
 
 ## 0b. The three-camera rig
 
-All three resolve into one shared world frame; each owns a job and a set of verification
-predicates. Redundant coverage (the same event seen by two cameras) is a feature — it lets
-the verifier cross-check and pick the best viewpoint per step.
+All three are **Intel RealSense (RGB-D)** and resolve into one shared world frame; each owns a
+job and a set of verification predicates. Redundant coverage (the same event seen by two
+cameras) is a feature — it lets the verifier cross-check and pick the best viewpoint per step.
+Depth on every camera means factory intrinsics (no ChArUco needed), metric 3D for any pixel,
+and FoundationPose RGB-D on whichever view tracks the tube.
 
 | Camera (twin id / fleet id) | Mount | Frame / calibration | Best at | Owns predicates |
 |-----------------------------|-------|---------------------|---------|-----------------|
@@ -142,7 +144,10 @@ Normalized coords mean the frontend scales cleanly to any displayed size.
 
 - `fiducials.py` — **done** (tag36h11 detect + pose + entity resolution).
 - `shapes.py` — **new**, classical OpenCV: `cv2.HoughCircles` for tube openings / cap discs,
-  contour + colour for the green rack; returns normalized polygons + a guessed `kind`.
+  contour + colour for the green rack; returns normalized polygons + a guessed `kind`. Because
+  every camera is **RealSense RGB-D**, each detection's centroid can be back-projected with the
+  aligned depth to a metric 3D point — so even un-tagged objects get a real world position, not
+  just a 2D box.
 - `projection.py` — **new**: `project_entity(wm, entity_id, cam)` → image polygon for a twin
   entity using `T_world_cam` + intrinsics + the entity's `dims`/mesh bbox. Drives the
   reliable overlay for calibrated geometry.
@@ -193,8 +198,8 @@ No new subsystem — the overlay JSON and the verifier are the same detections v
 
 | Block | Exit criteria | Owner | Tier |
 |-------|---------------|-------|------|
-| **C1 (~1 h)** | `GET /api/cameras/:id/stream` shows live MJPEG in a bare `<img>` | Lukas/Di | T0 |
-| **C2 (~1 h)** | `/ws/state` carries `cameras.detections`; `CameraView.vue` overlays AprilTag polygons + ids | Di | T0 |
+| **C1** ✅ done | `GET /api/cameras/:id/stream` shows live MJPEG in a bare `<img>` | Lukas/Di | T0 |
+| **C2** ✅ done | `/ws/state` carries `cameras.detections`; `CameraView.vue` overlays AprilTag polygons + ids | Di | T0 |
 | **C3 (~1 h)** | `projection.py` draws calibrated wells/rack/tube from the twin (needs intrinsics + `T_world_cam`) | Di | T0 |
 | **C4 (~1 h)** | Click a highlighted tube → `POST /api/robot/pick` → arm moves + grips using dims → `grasp_secure` verifies | Dale/Lukas | T0 |
 | **C5 (~1 h)** | Overlay colour reflects live verdicts; drift shows amber, mismatch red | Di | T0/T1 |
@@ -202,6 +207,16 @@ No new subsystem — the overlay JSON and the verifier are the same detections v
 
 Depends on the main plan's **B2** (intrinsics + `T_world_cam`); C1–C2 can be built against a
 mock camera driver + recorded frames before hardware is free.
+
+**C1–C2 shipped** (`backend/app/api/cameras.py`, `backend/app/services/camera_hub.py`,
+`frontend/src/components/cameras/`). The hub owns one frame-reader thread per device and
+runs detection on every Nth frame, so the detector rate is already decoupled from video
+fps (open question 3, answered). `drivers/mock`'s `mock_tag_camera` renders genuine
+tag36h11 markers — see `fleet.mock.json` — so C3–C5 can be developed without the bench.
+Everything downstream still waits on intrinsics: `distance_m` and world poses are `null`
+until `_camera_intrinsics` / `_world_frame` in `core/calibration/pipeline.py` are real.
+Note the RGB-D path added since: `CameraDriver.intrinsics()` means a RealSense reports
+factory intrinsics, which would satisfy B2 for that camera without a ChArUco pass.
 
 ## 8. Contracts to freeze early
 
