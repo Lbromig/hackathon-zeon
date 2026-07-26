@@ -119,7 +119,7 @@ SPEC: tuple[WaypointSpec, ...] = (
     # --- left arm: cap off and stored ----------------------------------------------
     WaypointSpec(
         "APPROACH_CAP_GRAB", LEFT, 5, "fast",
-        "left tool brought in beside the cap while the right arm holds the tube",
+        "left tool beside the cap; the right arm holds the tube SEATED IN THE RACK, which is what takes the unscrewing torque",
     ),
     WaypointSpec(
         "CAP_GRAB", LEFT, 6, "slow",
@@ -136,7 +136,7 @@ SPEC: tuple[WaypointSpec, ...] = (
     # --- right arm: carry the open tube to the deck ---------------------------------
     WaypointSpec(
         "APPROACH_TUBE_TRANSFER", RIGHT, 13, "medium",
-        "open tube lifted clear of the rack, ready to traverse; medium — it is carrying",
+        "tube lifted clear of the rack — only AFTER the cap is off, stored and released. Teach with a tube in the jaws; medium, it is carrying",
     ),
     WaypointSpec(
         "TRANSITION_ROBOT_TABLE", RIGHT, 14, "fast",

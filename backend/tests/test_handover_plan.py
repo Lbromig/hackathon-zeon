@@ -76,15 +76,76 @@ def test_both_grippers_open_before_anything_moves():
     assert not any(isinstance(a, (ArmWaypoint, ArmTraverse)) for a in plan[:2])
 
 
+def _step_indices(plan):
+    """`(kind, waypoint-or-state)` per action, for ordering assertions."""
+    return [(type(a).__name__, getattr(a, "waypoint", getattr(a, "state", ""))) for a in plan]
+
+
 def test_the_tube_is_gripped_before_it_is_lifted():
-    """Ordering check: close on the tube at TUBE, and only then go to the transfer pose."""
+    """Close on the tube at TUBE, and only then go to the transfer pose."""
     plan = handover.build()
-    kinds = [(type(a).__name__, getattr(a, "waypoint", getattr(a, "state", ""))) for a in plan]
+    kinds = _step_indices(plan)
     at_tube = kinds.index(("ArmWaypoint", "TUBE"))
     close = next(i for i, (n, v) in enumerate(kinds)
                  if n == "ArmGripper" and v == "close" and plan[i].device == "right")
     lift = kinds.index(("ArmWaypoint", "APPROACH_TUBE_TRANSFER"))
     assert at_tube < close < lift
+
+
+def test_the_tube_stays_seated_in_the_rack_until_the_cap_is_off_and_stored():
+    """The tube must not leave the rack until uncapping is finished and the cap is stored.
+
+    Operator-specified, and a safety constraint rather than a preference — two independent
+    reasons, either of which is sufficient:
+
+    **Torque reaction.** Unscrewing applies torque to the cap and the tube has to resist it.
+    Seated in the rack, the rack takes that reaction load. Lifted to the transfer pose first,
+    the only thing resisting four 90° bites is the right arm's grip on a smooth tube at 35 %
+    — so the tube twists in the jaws, the cap does not come off, and the arm is side-loaded
+    through the whole ratchet.
+
+    **Arm-to-arm clearance.** `APPROACH_CAP_STORE -> CAP_STORE` is a 416 mm sweep across the
+    bench. Raising the tube into that path risks a collision neither controller can predict:
+    each models only its own links, which is the same blind spot that made the flange-camera
+    J5 limit necessary.
+
+    This test would have failed on the original plan, where the lift was step 7.
+    """
+    plan = handover.build()
+    kinds = _step_indices(plan)
+
+    lift = kinds.index(("ArmWaypoint", "APPROACH_TUBE_TRANSFER"))
+    decap = next(i for i, a in enumerate(plan) if isinstance(a, ArmDecap))
+    cap_store = kinds.index(("ArmWaypoint", "CAP_STORE"))
+    cap_released = next(i for i, a in enumerate(plan)
+                        if i > decap and isinstance(a, ArmGripper)
+                        and a.device == "left" and a.state == "open")
+
+    assert decap < lift, "the tube was lifted before the cap was unscrewed"
+    assert cap_store < lift, "the tube was lifted before the cap reached its store"
+    assert cap_released < lift, "the tube was lifted before the left arm let the cap go"
+
+
+def test_nothing_the_right_arm_does_happens_between_the_cap_grab_and_the_cap_release():
+    """While the left arm works on the cap, the right arm holds still.
+
+    Any right-arm motion in that window is either the tube moving under an applied torque or
+    two arms moving in a shared volume. The right arm's next action after the grip must be the
+    lift, and that must come after the cap is released.
+    """
+    plan = handover.build()
+    kinds = _step_indices(plan)
+    first_cap = kinds.index(("ArmWaypoint", "APPROACH_CAP_GRAB"))
+    cap_released = next(i for i, a in enumerate(plan)
+                        if i > first_cap and isinstance(a, ArmGripper)
+                        and a.device == "left" and a.state == "open")
+
+    moved = [i for i in range(first_cap, cap_released)
+             if plan[i].device == "right"
+             and isinstance(plan[i], (ArmWaypoint, ArmTraverse, ArmDecap))]
+    assert not moved, (
+        f"the right arm moves at index {moved} while the left arm is working on the cap"
+    )
 
 
 def test_the_cap_is_gripped_before_decap_and_released_after_the_store_move():

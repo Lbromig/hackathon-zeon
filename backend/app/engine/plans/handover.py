@@ -145,20 +145,18 @@ def build() -> list[Action]:
         ArmWaypoint(device=right, waypoint="APPROACH_TUBE_GRAB", speed="fast"),
         ArmWaypoint(device=right, waypoint="TUBE", speed="slow"),
 
-        # 6 — the tube is now held, at 35 % of full opening.
+        # 6 — the tube is now held, at 35 % of full opening. It stays SEATED IN THE RACK
+        # from here until the cap is off and stored — see the ordering note below.
         ArmGripper(device=right, state="close", width=GRIP_COUNTS,
                    label=f"right gripper close on the tube ({GRIP_FRACTION:.0%})"),
 
-        # 7 — lift it clear of the rack. `medium`: loaded, but nothing is near it.
-        ArmWaypoint(device=right, waypoint="APPROACH_TUBE_TRANSFER", speed="medium"),
-
-        # 8-10 — left arm takes the cap, while the right arm holds the tube steady.
+        # 7-9 — left arm takes the cap while the right arm holds the tube steady and low.
         ArmWaypoint(device=left, waypoint="APPROACH_CAP_GRAB", speed="fast"),
         ArmWaypoint(device=left, waypoint="CAP_GRAB", speed="slow"),
         ArmGripper(device=left, state="close", width=GRIP_COUNTS,
                    label=f"left gripper close on the cap ({GRIP_FRACTION:.0%})"),
 
-        # 11 — decap: 360° in 90° bites, rewinding the wrist between each so net wrist
+        # 10 — decap: 360° in 90° bites, rewinding the wrist between each so net wrist
         # travel is zero. Without the rewind, every run walks the tool joint another 360°
         # toward its limit; with it, the operation is repeatable (R-ARM-5, D12).
         # `grip_counts` is the width it re-grips to between bites — the same 35 %, so the
@@ -166,13 +164,30 @@ def build() -> list[Action]:
         ArmDecap(device=left, step_deg=90.0, turns=1.0, speed="slow",
                  grip_counts=GRIP_COUNTS, label="unscrew cap · 4 × 90°"),
 
-        # 12-13 — cap up and away. SLOW then FAST, not the other way round: the slow move is
+        # 11-13 — cap up and away. SLOW then FAST, not the other way round: the slow move is
         # the one lifting the loosened cap clear of the tube mouth.
         ArmWaypoint(device=left, waypoint="APPROACH_CAP_STORE", speed="slow"),
         ArmWaypoint(device=left, waypoint="CAP_STORE", speed="fast"),
         ArmGripper(device=left, state="open", label="release the cap into its store"),
 
-        # 14-16 — the long carry, as ONE traverse action rather than three moves, so the
+        # 14 — ONLY NOW lift the tube clear of the rack.
+        #
+        # Ordering is a safety constraint, not a preference (operator-specified 2026-07-26).
+        # Unscrewing applies torque to the cap, and the tube has to resist it. Seated in the
+        # rack, the rack takes that reaction load. Held in mid-air at the transfer pose, the
+        # only thing resisting four 90° bites is the right arm's grip on a smooth tube at
+        # 35 % — so the tube twists in the jaws, the cap does not come off, and the arm gets
+        # side-loaded through the whole ratchet.
+        #
+        # It also has to wait for the LEFT arm to be clear: the cap-store move is 416 mm
+        # across the bench, and lifting the tube into that path risks an arm-to-arm
+        # collision that neither controller can see coming — each models only its own links.
+        #
+        # So the tube rises only after the cap is off AND stored AND released. `medium`:
+        # loaded, but nothing is near it by then.
+        ArmWaypoint(device=right, waypoint="APPROACH_TUBE_TRANSFER", speed="medium"),
+
+        # 15-17 — the long carry, as ONE traverse action rather than three moves, so the
         # controller can blend through the waypoints instead of stopping at each. Owned by
         # `right` despite the brief's LEFT_ARM_ prefix — see the note above.
         ArmTraverse(
@@ -182,7 +197,7 @@ def build() -> list[Action]:
             blend_deg=5.0, speed="fast", label="traverse to the liquid-handler table",
         ),
 
-        # 17-18 — onto the deck. Standoff outside the envelope, then the slow precision move
+        # 18-19 — onto the deck. Standoff outside the envelope, then the slow precision move
         # the servo loop starts from.
         ArmWaypoint(device=right, waypoint="LIQUID_HANDLER_APPROACH_DECK", speed="fast"),
         ArmWaypoint(device=right, waypoint="LIQUID_HANDLER_DECK", speed="slow"),
