@@ -411,6 +411,141 @@ def test_a_failing_row_inside_a_loop_halts_the_run_with_the_loop_recorded(handle
     assert any(r.parent_aid == loop_aid for r in failed_rows)
 
 
+# --- recovering from a failure *inside* the loop ------------------------------
+#
+# The review reproduced both halves of this and both were unacceptable: injecting a fix after
+# the failed step was refused as "in the past" — the single headline promise of the feature
+# (D22) — and `resume()` skipped the rest of the loop and executed the action *after* it, which
+# on the handover plan retracts the pipette while the tube may still be misaligned.
+
+
+def _three_row_loop(**kw) -> dict:
+    """A loop body shaped like the real servo loop: capture, correct, measure."""
+    return _loop(body=[{"kind": "camera.snapshot", "device": "handover_cam"},
+                       {"kind": "lh.move_relative", "device": "ot", "dz": -1.0},
+                       {"kind": "vision.solve_offset"}], **kw)
+
+
+def _failing_in_iteration(world: World, handlers, iteration: int, ran: list) -> None:
+    """Trace every row of the body, and make `lh.move_relative` raise on one iteration.
+
+    `ran` records `(kind, iteration)` per call, which is the only way to tell "the loop carried
+    on" from "the run walked out of the region and did the next thing".
+    """
+    def snapshot(action, ctx):
+        ran.append((action.kind, action.iteration))
+        ctx.blackboard.set("frame", {"path": "f.png"}, device=action.device)
+        return A.SnapshotOutputs(width=4, height=4, captured_at="now")
+
+    def move(action, ctx):
+        ran.append((action.kind, action.iteration))
+        if action.iteration == iteration:
+            raise RuntimeError("deck envelope refused the move")
+        world.moves += 1
+        world.offset = max(0.0, world.offset - world.gain)
+        return A.LHMoveOutputs(applied_mm={"z": -world.gain})
+
+    solve = A._HANDLERS["vision.solve_offset"]
+
+    def traced_solve(action, ctx):
+        ran.append((action.kind, action.iteration))
+        return solve(action, ctx)
+
+    handlers("camera.snapshot", snapshot)
+    handlers("lh.move_relative", move)
+    handlers("vision.solve_offset", traced_solve)
+
+
+def test_a_failure_inside_a_loop_leaves_the_cursor_on_the_failed_row(handlers,
+                                                                     runner_factory):
+    """B4's first half. The cursor is where the run stopped, and where the run stopped is the
+    row that failed — not the end of the loop's region, and certainly not the retract that
+    follows it. Everything else about recovery follows from this: `refusal_for_insert` compares
+    against the cursor, and so does `resume()`."""
+    world = World(offset=8.0, gain=2.0).install(handlers)
+    ran: list = []
+    _failing_in_iteration(world, handlers, 2, ran)
+    runner = runner_factory([_three_row_loop(threshold_mm=1.5, max_iterations=8),
+                             {"kind": "lh.move_relative", "device": "ot", "dz": 40.0}])
+    loop_aid, retract_aid = runner.plan.aids()
+    assert runner.run_to_completion(timeout=10.0) == "failed"
+
+    failed = [r for r in runner.plan.rows() if r.state == "failed" and r.parent_aid == loop_aid]
+    assert [r.iteration for r in failed] == [2], "iteration 2's move is the one that failed"
+    start, end = runner.plan.region_of(loop_aid)
+    assert runner.cursor == failed[0].index
+    assert start <= runner.cursor < end, "inside the region, not past it"
+    assert runner.plan.state(retract_aid) == "planned", "the retract was not reached"
+
+    # And therefore the one injection that matters is accepted rather than refused as "in the
+    # past" (D22): a fix immediately after the step that failed.
+    injected = runner.inject({"kind": "camera.snapshot", "device": "handover_cam"},
+                             after_aid=failed[0].aid)[0]
+    assert injected.index == runner.cursor + 1
+    assert injected.parent_aid == loop_aid and injected.iteration == 2, "part of iteration 2"
+
+
+def test_resuming_a_mid_loop_failure_continues_the_loop_instead_of_running_past_it(
+        handlers, runner_factory):
+    """B4's second half, and the dangerous one. An operator sees a red row inside the loop and
+    presses the Resume the design offers. The answer must be "carry on with the loop", not
+    "skip the rest of it and retract the pipette"."""
+    world = World(offset=8.0, gain=2.0).install(handlers)
+    ran: list = []
+    _failing_in_iteration(world, handlers, 2, ran)
+    runner = runner_factory([_three_row_loop(threshold_mm=1.5, max_iterations=8),
+                             {"kind": "lh.move_relative", "device": "ot", "dz": 40.0}])
+    loop_aid, retract_aid = runner.plan.aids()
+    assert runner.run_to_completion(timeout=10.0) == "failed"
+    assert ran == [("camera.snapshot", 1), ("lh.move_relative", 1), ("vision.solve_offset", 1),
+                   ("camera.snapshot", 2), ("lh.move_relative", 2)]
+
+    failed = [r for r in runner.plan.rows()
+              if r.state == "failed" and r.parent_aid == loop_aid][0]
+    injected = runner.inject({"kind": "camera.snapshot", "device": "handover_cam"},
+                             after_aid=failed.aid)[0]
+
+    assert runner.resume() is True
+    assert wait_until(lambda: runner.state in ("failed", "complete"), timeout=15.0)
+
+    # The fix ran, then the rest of iteration 2, then further iterations — and the retract
+    # after the loop ran last, once the loop had actually converged.
+    assert runner.plan.state(injected.aid) == "complete"
+    assert ran[5:8] == [("camera.snapshot", 2), ("vision.solve_offset", 2),
+                        ("camera.snapshot", 3)]
+    assert [r for r in ran if r[1] is None] == [("lh.move_relative", None)], \
+        "the retract ran exactly once, and only after the loop"
+    assert ran[-1] == ("lh.move_relative", None)
+    outputs = runner.plan.result(loop_aid).outputs
+    assert outputs.outcome == "converged"
+    assert outputs.iterations >= 4, "the loop kept iterating after the recovery"
+    assert runner.plan.state(retract_aid) == "complete"
+    assert runner.cursor == len(runner.plan)
+
+
+def test_a_resumed_loop_does_not_re_materialize_the_iteration_it_stopped_in(handlers,
+                                                                            runner_factory):
+    """Re-entering `_run_loop` must rebuild its iteration counter from the rows that exist.
+    Starting from zero again would materialize a second copy of iteration 1, and every bound
+    D14 places on the loop would be counted from the wrong base."""
+    world = World(offset=8.0, gain=2.0).install(handlers)
+    ran: list = []
+    _failing_in_iteration(world, handlers, 2, ran)
+    runner = runner_factory([_three_row_loop(threshold_mm=1.5, max_iterations=8)])
+    loop_aid = runner.plan.aids()[0]
+    assert runner.run_to_completion(timeout=10.0) == "failed"
+    assert [m.iteration for m in runner.plan.members_of(loop_aid)] == [1, 1, 1, 2, 2, 2]
+
+    assert runner.resume() is True
+    assert wait_until(lambda: runner.state in ("failed", "complete"), timeout=15.0)
+    iterations = [m.iteration for m in runner.plan.members_of(loop_aid)]
+    assert iterations == sorted(iterations), "the region stays ordered by iteration"
+    assert iterations.count(1) == 3 and iterations.count(2) == 3, "no duplicate iteration"
+    outputs = runner.plan.result(loop_aid).outputs
+    assert outputs.iterations == max(iterations)
+    assert outputs.materialized == len(iterations)
+
+
 def test_an_action_injected_into_the_running_iteration_is_executed_by_it(handlers,
                                                                         runner_factory):
     """Not stepped over. An accepted injection that never runs is a silent skip (R-ENG-17), and

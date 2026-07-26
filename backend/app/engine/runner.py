@@ -60,7 +60,7 @@ from .events import (ActionFinished, ActionLog, ActionStarted, EventBase, EventS
                      ReadinessState, RunFinished, RunPaused, RunResumed, RunSnapshot,
                      RunStarted, RunState, RunStateChanged)
 from .plan import (ENGINE_KINDS, InjectRefused, MaterializationCapped, Plan, PreflightReport,
-                   params_of)
+                   UnknownActionError, params_of)
 
 log = obs.get_logger(__name__)
 
@@ -337,6 +337,10 @@ class Runner:
         self._worker: threading.Thread | None = None
         self._stack: list[int] = []          # aids currently executing, outermost first
         self._halted = False
+        #: The aid of a row *inside* a loop that stopped the run, set by `_run_loop` and read
+        #: once by `_run`. It is what keeps the cursor on the failed row instead of past the
+        #: whole materialized region — see `_next_action`.
+        self._loop_halt_aid: int | None = None
         self._announced_pause = False
         self._pause_reason: str = "operator"
         self._pause_aid: int | None = None
@@ -457,9 +461,20 @@ class Runner:
         """Continue from where the pause landed (R-ENG-9).
 
         Also the recovery path after a failure: R-ENG-15 leaves a halted plan inspectable and
-        injectable, so resuming a `failed` run continues at the cursor — which is immediately
-        after the action that failed, and therefore exactly where an injected fix lands (D22).
-        The worker thread has already exited by then, so it is restarted.
+        injectable, so resuming a `failed` run continues at the cursor — which is exactly where
+        an injected fix lands (D22). The worker thread has already exited by then, so it is
+        restarted.
+
+        Where the cursor is after a failure depends on where the failure was, and both answers
+        are the useful one:
+
+        * a **top-level** action failed → the cursor is immediately after it, and the run
+          continues with the next action (the failed one is not retried);
+        * a row **inside a loop** failed → the cursor is on that row, and resuming re-enters
+          the loop: the rest of that iteration runs (including anything injected after the
+          failure), then the loop's termination test, then further iterations. It never steps
+          over the region into the action that follows the loop — on the handover plan that
+          would retract the pipette while the tube was still misaligned.
         """
         if self._abort.is_set() or not self._started:
             # Not started means pre-flight refused it: there is nothing to resume, and
@@ -570,13 +585,22 @@ class Runner:
             while True:
                 if not self._boundary():
                     break
-                action = self.plan.at(self.plan.cursor)
+                action = self._next_action()
                 if action is None:
                     break
+                self._loop_halt_aid = None
                 result = self._execute(action)
                 # Advance by identity, not by incrementing: an injection may have renumbered
                 # everything after the insertion point while this action ran (R-ENG-4).
-                if isinstance(action, Loop):
+                halted_in = self._loop_halt_aid
+                if halted_in is not None and not self._abort.is_set():
+                    # A row *inside* a loop stopped the run. The cursor stays **on that row**
+                    # rather than past the loop's region: that is where the run actually
+                    # stopped, it is what makes injecting a fix immediately after the failure
+                    # land at the cursor (D22), and it is what lets `resume()` re-enter the
+                    # loop instead of executing the retract that follows it.
+                    self.plan.cursor = self.plan.index_of(halted_in)
+                elif isinstance(action, Loop):
                     self.plan.cursor = self.plan.region_of(action.aid)[1]
                 else:
                     self.plan.cursor = self.plan.index_of(action.aid) + 1
@@ -599,6 +623,27 @@ class Runner:
             self._halted = True
         finally:
             self._finish()
+
+    def _next_action(self) -> ActionBase | None:
+        """The action to execute at the cursor — the owning **loop** when the cursor sits
+        inside a materialized loop region.
+
+        A failure inside the servo loop leaves the cursor on the row that failed, which is what
+        makes the plan honest about where the run stopped and lets a fix land at the cursor
+        (D22). The thing to *run* from there is still the loop: executing the bare row on its
+        own would run out the rest of the region with no iteration bookkeeping, no termination
+        test and no further iterations, and would then walk past the region into whatever
+        follows the loop — on the handover plan, retracting the pipette while the tube is still
+        misaligned. `_run_loop` is re-enterable for exactly this reason.
+        """
+        action = self.plan.at(self.plan.cursor)
+        if action is None or action.parent_aid is None:
+            return action
+        try:
+            owner = self.plan.by_aid(action.parent_aid)
+        except UnknownActionError:
+            return action
+        return owner if isinstance(owner, Loop) else action
 
     def _finish(self) -> None:
         if self._abort.is_set():
@@ -866,9 +911,20 @@ class Runner:
         Termination is `offset_within_threshold` on `watch_slot` against `threshold_mm`
         (Q4/D16). Inter-view disagreement is never a gate: a loop gated on views agreeing can
         run forever after it has converged.
+
+        **Re-enterable.** A row inside the loop that fails halts the run with the cursor on
+        that row, and `resume()` therefore calls this again for the same loop. State is
+        rebuilt from the plan rather than assumed fresh: the iteration number comes from the
+        rows already materialized, and an iteration with rows still `planned` is *finished*
+        before another one is materialized — so the injected fix and the rest of that
+        iteration run, and the loop keeps going. The progress history (`best`,
+        `no_progress`) deliberately starts over: an operator has just changed the world by
+        hand, so the run of no-progress iterations that preceded that is no longer evidence.
         """
-        iteration = 0
-        materialized = 0
+        self._loop_halt_aid = None
+        members = self.plan.members_of(loop.aid)
+        iteration = max((m.iteration or 0 for m in members), default=0)
+        materialized = sum(1 for m in members if m.origin == "expand")
         best: float | None = None
         no_progress = 0
         magnitude: float | None = None
@@ -881,18 +937,23 @@ class Runner:
             if not self._boundary():
                 outcome = "aborted"
                 break
-            if iteration >= loop.max_iterations:
-                outcome = "exhausted"
-                break
-            try:
-                copies = self.plan.materialize_iteration(loop.aid, iteration + 1)
-            except MaterializationCapped as e:
-                ctx.log.warning("loop bounded: %s", e, extra={"event": "plan_mutated"})
-                outcome = "exhausted"
-                break
-            iteration += 1
-            materialized += len(copies)
-            self._emit_plan()
+            # Finish the iteration that is already on the plan before starting another. On a
+            # fresh entry nothing is pending and this materializes iteration 1; on a resume
+            # after a mid-loop failure the remainder of that iteration — including anything
+            # injected into it — runs first, which is what "continue the loop" means.
+            if self.plan.next_unrun_in_region(loop.aid) is None:
+                if iteration >= loop.max_iterations:
+                    outcome = "exhausted"
+                    break
+                try:
+                    copies = self.plan.materialize_iteration(loop.aid, iteration + 1)
+                except MaterializationCapped as e:
+                    ctx.log.warning("loop bounded: %s", e, extra={"event": "plan_mutated"})
+                    outcome = "exhausted"
+                    break
+                iteration += 1
+                materialized += len(copies)
+                self._emit_plan()
 
             # Drive off "the first row in this loop's region that has not run", re-read every
             # step, so an action injected into this iteration is executed rather than stepped
@@ -910,6 +971,9 @@ class Runner:
                     break
                 if child.status == "failed" and nxt.on_failure == "halt":
                     self._halted = True
+                    # Tell `_run` which row stopped the run, so the cursor stays here rather
+                    # than jumping to the end of the region.
+                    self._loop_halt_aid = nxt.aid
                     break
 
             if self._abort.is_set():
