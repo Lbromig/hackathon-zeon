@@ -1,36 +1,47 @@
 [
   {
     "type": "mock_tag_camera",
-    "id": "gripper_cam",
-    "name": "Gripper (on-arm) cam [mock RGB-D]",
-    "markers": [224, 186],
-    "width": 960,
-    "height": 540,
+    "id": "handover_cam",
+    "name": "Handover cam (arm->OT) [mock RGB-D]",
+    "markers": [225, 189, 219, 180, 181],
+    "width": 1280,
+    "height": 720,
+    "depth": true,
+    "depth_m": 0.65,
+    "serial": "MOCK-HANDOVER"
+  },
+  {
+    "type": "mock_tag_camera",
+    "id": "gripper_left_cam",
+    "name": "Gripper cam (RIGHT arm) [mock RGB-D]",
+    "markers": [218, 225],
+    "width": 1280,
+    "height": 720,
     "depth": true,
     "depth_m": 0.28,
-    "serial": "MOCK-GRIPPER"
+    "serial": "MOCK-GRIPPER-RIGHT"
+  },
+  {
+    "type": "mock_tag_camera",
+    "id": "gripper_cam",
+    "name": "Gripper cam (LEFT arm) [mock RGB-D]",
+    "markers": [218],
+    "width": 1280,
+    "height": 720,
+    "depth": true,
+    "depth_m": 0.28,
+    "serial": "MOCK-GRIPPER-LEFT"
   },
   {
     "type": "mock_tag_camera",
     "id": "overview_cam",
     "name": "Overview cam (both devices) [mock RGB-D]",
-    "markers": [180, 181, 183],
+    "markers": [202, 203, 185, 184, 227, 191],
     "width": 1280,
     "height": 720,
     "depth": true,
     "depth_m": 1.15,
     "serial": "MOCK-OVERVIEW"
-  },
-  {
-    "type": "mock_tag_camera",
-    "id": "handover_cam",
-    "name": "Handover cam (arm->OT) [mock RGB-D]",
-    "markers": [182, 224],
-    "width": 960,
-    "height": 540,
-    "depth": true,
-    "depth_m": 0.65,
-    "serial": "MOCK-HANDOVER"
   },
   { "type": "mock_arm", "id": "left", "name": "Left arm (mock)" },
   { "type": "mock_arm", "id": "right", "name": "Right arm (mock)" },
