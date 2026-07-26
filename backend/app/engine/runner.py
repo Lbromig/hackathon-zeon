@@ -69,6 +69,15 @@ log = obs.get_logger(__name__)
 #: progress is what turns `no_progress_abort` into a loop that never aborts (O9/R-VIS-7).
 NO_PROGRESS_EPSILON_MM = 0.05
 
+#: The axes a servo loop's corrective move can act on, and therefore the axes its termination
+#: test has to have measured. `lh.move_relative` and `arm.move_relative` both take dx/dy/dz, so
+#: an offset that leaves one of them unobserved is an offset the loop cannot verify — and
+#: `OffsetOutputs.magnitude_mm` is "over the observed axes only", which is a partial norm and
+#: not a convergence metric (B9/R-VIS-4). `Loop` has no per-axis field to read (it is frozen),
+#: and inferring the axes from the body would make the gate depend on how a plan was authored,
+#: so the set is fixed here and stated in one place.
+CORRECTED_AXES: frozenset[str] = frozenset({"x", "y", "z"})
+
 #: Per-action ceiling on `action_log` events. The socket is a convenience mirror of the log
 #: file, not the log transport (see `ActionLog`): a handler that logs in a tight loop must not
 #: be able to drown the event stream, and `GET /api/logs` always has the complete record.
@@ -96,6 +105,25 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
     return repr(value)
+
+
+def _observed_axes(value: Any) -> set[str] | None:
+    """Which axes the watched offset actually measured, or `None` if it makes no claim.
+
+    The solve's own `observed_axes` is the authority; when it is absent — a stub that writes only
+    a magnitude, say — the axes of `residual_offset_mm` that carry a number stand in, so a value
+    that reports a residual is still checked rather than taken on trust. `None` is returned only
+    when there is nothing to check against, and then the magnitude is used as given: the frozen
+    `OffsetOutputs` always populates at least one of the two, so in production this is never the
+    silent branch.
+    """
+    declared = _attr(value, "observed_axes")
+    if isinstance(declared, (list, tuple, set, frozenset)):
+        return {str(a) for a in declared}
+    residual = _attr(value, "residual_offset_mm")
+    if isinstance(residual, dict) and residual:
+        return {str(k) for k, v in residual.items() if isinstance(v, (int, float))}
+    return None
 
 
 def _attr(value: Any, name: str) -> Any:
@@ -341,6 +369,9 @@ class Runner:
         #: once by `_run`. It is what keeps the cursor on the failed row instead of past the
         #: whole materialized region — see `_next_action`.
         self._loop_halt_aid: int | None = None
+        #: Warning codes `_watch` has already attached to the loop in flight, so a twelve-
+        #: iteration loop does not attach twelve copies of one condition.
+        self._watch_warned: set[str] = set()
         self._announced_pause = False
         self._pause_reason: str = "operator"
         self._pause_aid: int | None = None
@@ -922,6 +953,7 @@ class Runner:
         hand, so the run of no-progress iterations that preceded that is no longer evidence.
         """
         self._loop_halt_aid = None
+        self._watch_warned = set()
         members = self.plan.members_of(loop.aid)
         iteration = max((m.iteration or 0 for m in members), default=0)
         materialized = sum(1 for m in members if m.origin == "expand")
@@ -1040,18 +1072,39 @@ class Runner:
         `None` means "not observed", which is **not** zero: an unobserved offset must never
         read as a converged one, so it counts as no progress and the loop stalls rather than
         declaring success (R-VIS-4/O9).
+
+        That rule holds for a whole axis too, which is what `_observed_axes` is for.
+        `OffsetOutputs.magnitude_mm` is documented as "over the observed axes only", so a solve
+        that saw x and y and reported `magnitude_mm=1.2` with z unobservable used to terminate
+        the loop as `converged` — the side view occluded by the jaws mid-approach is exactly the
+        case D27 says to expect, and the pipette's height above the tube mouth would never have
+        been measured. A partial norm is not a convergence metric.
         """
         if loop.watch_slot in PER_CAMERA_SLOTS:
             # The three per-camera slots hold one value per view; there is no single
             # magnitude to compare. Refusing to guess which view to believe is D15.
-            ctx.warn("watch_slot_per_camera",
-                     f"loop watches {loop.watch_slot!r}, which is per-camera and has no "
-                     f"single magnitude; the loop cannot terminate on it")
+            self._watch_warn(ctx, "watch_slot_per_camera",
+                             f"loop watches {loop.watch_slot!r}, which is per-camera and has "
+                             f"no single magnitude; the loop cannot terminate on it")
             return None, {}
         value = self.blackboard.peek(loop.watch_slot)
         sigma_raw = _attr(value, "sigma_mm") or {}
         sigma = {str(k): float(v) for k, v in sigma_raw.items()
                  if isinstance(v, (int, float))} if isinstance(sigma_raw, dict) else {}
+        observed = _observed_axes(value)
+        if observed is not None:
+            missing = sorted(CORRECTED_AXES - observed)
+            if missing:
+                # Not a failure and not zero: unknown. `None` counts as no progress, so the
+                # loop stalls with `sigma_mm` and `observed_axes` on the record — the honest
+                # outcome — instead of reporting success on an axis nobody measured.
+                self._watch_warn(
+                    ctx, "unobserved_axis",
+                    f"{loop.watch_slot!r} does not observe {', '.join(missing)}; the loop "
+                    f"corrects {', '.join(sorted(CORRECTED_AXES))} and cannot report a "
+                    f"remaining offset it did not measure, so this iteration counts as no "
+                    f"progress rather than as converged (R-VIS-4)")
+                return None, sigma
         magnitude = _attr(value, "magnitude_mm")
         if magnitude is None:
             residual = _attr(value, "residual_offset_mm")
@@ -1072,8 +1125,20 @@ class Runner:
             return None, sigma
         return magnitude, sigma
 
+    def _watch_warn(self, ctx: ActionContext, code: str, message: str) -> None:
+        """Warn once per loop invocation, not once per iteration.
+
+        `ctx.warn` appends, and a twelve-iteration loop with an occluded side view would attach
+        twelve identical warnings to one result — which makes the readiness panel's "match on
+        `Warning_.code`" rule report a count instead of a condition.
+        """
+        if code in self._watch_warned:
+            return
+        self._watch_warned.add(code)
+        ctx.warn(code, message)
+
 
 __all__ = [
-    "DeviceBusy", "DeviceClaims", "EventSink", "MAX_ACTION_LOG_EVENTS",
+    "CORRECTED_AXES", "DeviceBusy", "DeviceClaims", "EventSink", "MAX_ACTION_LOG_EVENTS",
     "NO_PROGRESS_EPSILON_MM", "NoHandlerError", "Runner", "StartRefused", "device_claims",
 ]

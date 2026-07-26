@@ -309,6 +309,50 @@ def test_an_unobserved_offset_is_not_a_converged_one(handlers, runner_factory):
     assert [e.magnitude_mm for e in _iterations(runner)] == [None, None]
 
 
+def test_an_axis_that_was_never_observed_cannot_converge_the_loop(handlers, runner_factory):
+    """B9. `magnitude_mm` is documented as "over the observed axes only", and nothing checked
+    `observed_axes` — so a solve that saw x and y and reported 1.2 mm with z unobservable
+    terminated the loop as `converged`. That is R-VIS-4's failure mode in the one place the
+    design did not guard it: the side view occluded by the jaws mid-approach (D27), the liquid
+    handler commanding no z, and the tab showing success for a height nobody measured."""
+    def solve(action, ctx):
+        outputs = A.OffsetOutputs(
+            residual_offset_mm={"x": 0.8, "y": 0.9, "z": None},
+            magnitude_mm=1.2,                       # a partial norm, under the threshold
+            sigma_mm={"x": 0.1, "y": 0.1},
+            observed_axes=["x", "y"], method="axis_decoupled_jacobian")
+        ctx.blackboard.set("selected_offset", outputs)
+        return outputs
+
+    handlers("lh.move_relative", lambda a, c: A.LHMoveOutputs(applied_mm={"z": 0.0}))
+    handlers("vision.solve_offset", solve)
+    runner = runner_factory([_loop(threshold_mm=1.5, max_iterations=10, no_progress_abort=2)])
+    loop_aid = runner.plan.aids()[0]
+    assert runner.run_to_completion(timeout=10.0) == "failed"
+
+    result = runner.plan.result(loop_aid)
+    assert result.outputs.outcome == "stalled", "not converged, and not a crash either"
+    assert result.outputs.final_magnitude_mm is None
+    assert [e.magnitude_mm for e in _iterations(runner)] == [None, None]
+    # With a stated reason, once — not once per iteration.
+    warned = [w for w in result.warnings if w.code == "unobserved_axis"]
+    assert len(warned) == 1 and "z" in warned[0].message
+    # sigma still travels, so the operator can see how well the axes that *were* seen are known.
+    assert _iterations(runner)[0].sigma_mm == {"x": 0.1, "y": 0.1}
+
+
+def test_a_magnitude_is_trusted_when_every_corrected_axis_is_observed(handlers,
+                                                                     runner_factory):
+    """The other side of B9: the gate must not stall a loop whose solve did see all three axes,
+    which is the normal case and the one every existing convergence test depends on."""
+    World(offset=2.0, gain=2.0).install(handlers)
+    runner = runner_factory([_loop(threshold_mm=1.5, max_iterations=4)])
+    assert runner.run_to_completion(timeout=10.0) == "complete"
+    result = runner.plan.result(runner.plan.aids()[0])
+    assert result.outputs.outcome == "converged"
+    assert [w.code for w in result.warnings] == []
+
+
 def test_a_per_camera_watch_slot_warns_rather_than_guessing_which_view_to_believe(
         handlers, runner_factory):
     """The three per-camera slots hold one value per view and no single magnitude. Picking one
