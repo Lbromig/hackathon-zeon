@@ -82,6 +82,8 @@ def test_specs_are_ordered_by_workflow_step():
     by_step = {(s.step, s.device): s.name for s in waypoints.SPEC}
     assert by_step[(14, "right")] == "TRANSITION_ROBOT_TABLE"
     assert by_step[(18, "right")] == "LIQUID_HANDLER_DECK"
+    # The right arm's HOME is step 0 (initialization), not one of the 20 workflow steps.
+    assert by_step[(0, "right")] == "HOME" and by_step[(12, "left")] == "HOME"
 
 
 def test_every_waypoint_has_a_note_saying_what_the_arm_is_doing():

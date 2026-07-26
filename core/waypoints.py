@@ -153,15 +153,22 @@ SPEC: tuple[WaypointSpec, ...] = (
         "tube presented on the deck under the pipette — the servo loop starts here",
     ),
     # --- both arms ------------------------------------------------------------------
-    # One name, two owners, two entirely different poses (R-WP-4). The left arm returns
-    # home at step 12 to clear the right arm's path; the right arm homes after the run.
+    # One name, two owners, two entirely different poses (R-WP-4). `HOME` is also each
+    # arm's **initialization** home (R-INIT, R-ARM-1): initialization warns rather than
+    # guessing when it is missing, which is why it is on the checklist at all.
+    #
+    # Step numbers: the left arm's home is a move *inside* the workflow — step 12, where it
+    # gets out of the right arm's traverse path. The right arm's home is not one of the 20
+    # steps (step 20 is the liquid handler retracting Z), so it takes step 0: initialization,
+    # and the pose to return to when a session ends. 0 also sorts it to the top of the
+    # right arm's checklist, which is the right place — teach a safe pose first.
     WaypointSpec(
         HOME, LEFT, 12, "slow",
-        "left arm parked clear of the right arm's traverse path",
+        "left arm parked clear of the right arm's traverse path; also its init home",
     ),
     WaypointSpec(
-        HOME, RIGHT, 20, "slow",
-        "right arm parked in its own rest pose after the tube is presented",
+        HOME, RIGHT, 0, "slow",
+        "right arm's init home and rest pose — teach this one first, it is the way back",
     ),
 )
 
