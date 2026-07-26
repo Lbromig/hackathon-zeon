@@ -12,6 +12,11 @@ decap**. Both are physical safety properties rather than implementation details:
 
 These are asserted as an ordered transcript rather than per-call, because the property is about
 the *sequence*: any single call in isolation looks fine.
+
+None of them is a claim about which *way* the wrist turns — that is `cap_ops.UNSCREW_SIGN`,
+and it depends on how the gripper is bolted to the flange. A gripped turn goes the loosening
+way and an unwind comes back; the transcript is read through `GRIPPED`/`FREE` so the sequence
+stays the subject even when the sign flips.
 """
 from __future__ import annotations
 
@@ -21,6 +26,18 @@ from core.motion import cap_ops
 from drivers.mock import MockArmDriver
 
 GRIP = 298.0          # 35 % of the parallel gripper's 0..850, as the workflow commands
+
+SIGN = cap_ops.UNSCREW_SIGN
+MARGIN = cap_ops.UNWIND_MARGIN_DEG
+#: How a cap-turning and a wrist-returning move appear in the transcript below. The gripped
+#: turn takes the loosening sign; every unwind — between bites and in the recovery — opposes it.
+GRIPPED = "+" if SIGN > 0 else "-"
+FREE = "-" if SIGN > 0 else "+"
+
+
+def _toward(deg: float) -> float:
+    """``deg`` degrees in the loosening direction, signed."""
+    return SIGN * deg
 
 
 class _Recorder(MockArmDriver):
@@ -56,20 +73,23 @@ def _cfg(**kw):
 # --- the normal ratchet -------------------------------------------------------
 
 def test_the_cap_is_turned_only_with_the_jaws_closed():
-    """Every gripped (positive) turn must be preceded by a close, never by an open."""
+    """Every cap-turning move must be preceded by a close, never by an open."""
     arm = _Recorder(j6=0.0)
     arm.grip(width=GRIP)                     # the plan closes on the cap before decap runs
     arm.transcript.clear()
     cap_ops.run_ratchet(arm, _cfg())
 
+    turned = 0
     jaws = "closed"
     for entry in arm.transcript:
         if entry == "open":
             jaws = "open"
         elif entry.startswith("close"):
             jaws = "closed"
-        elif entry.startswith("turn(+"):
+        elif entry.startswith(f"turn({GRIPPED}"):
+            turned += 1
             assert jaws == "closed", f"the cap was turned with the jaws {jaws}: {arm.transcript}"
+    assert turned == 4, f"no cap-turning move was even recognised: {arm.transcript}"
 
 
 def test_the_unwind_between_bites_happens_with_the_jaws_open():
@@ -79,14 +99,17 @@ def test_the_unwind_between_bites_happens_with_the_jaws_open():
     arm.transcript.clear()
     cap_ops.run_ratchet(arm, _cfg())
 
+    unwound = 0
     jaws = "closed"
     for entry in arm.transcript:
         if entry == "open":
             jaws = "open"
         elif entry.startswith("close"):
             jaws = "closed"
-        elif entry.startswith("turn(-"):
+        elif entry.startswith(f"turn({FREE}"):
+            unwound += 1
             assert jaws == "open", f"the wrist unwound with the jaws {jaws}: {arm.transcript}"
+    assert unwound == 4, f"no unwind was even recognised: {arm.transcript}"
 
 
 def test_every_close_in_the_sequence_uses_the_configured_width():
@@ -113,34 +136,41 @@ def test_the_ratchet_ends_with_the_cap_released():
 def test_a_wrist_wound_too_far_unwinds_open_then_closes_then_decaps():
     """The operator's requirement, as an ordered transcript.
 
-    J6 at 270° with a +90° peak leaves no room under a 360° limit, so the recovery fires. It
-    must open, unwind, close, and only then start turning the cap.
+    A wrist parked 300° round in the loosening direction has less than one 90° bite of room
+    before the soft limit it is heading for, so the recovery fires. It must open, unwind,
+    close, and only then start turning the cap.
+
+    300 and not 270: a wrist exactly one bite from the limit is deliberately *not*
+    repositioned any more — PREFLIGHT_TOLERANCE_DEG absorbs that with the jaws still closed,
+    because opening them to buy headroom drops the cap. This test is about a wrist that is
+    genuinely wound too far, which is the only case that earns a reposition.
     """
-    arm = _Recorder(j6=270.0)
+    arm = _Recorder(j6=_toward(300.0))
     arm.grip(width=GRIP)
     arm.transcript.clear()
     result = cap_ops.run_ratchet(arm, _cfg())
 
-    assert result.unwound_deg > 0, "the recovery did not fire on a wrist that needed it"
+    assert abs(result.unwound_deg) >= MARGIN, \
+        "the recovery did not fire on a wrist that needed it"
 
     # The first four operations are the recovery, in this exact order.
     assert arm.transcript[0] == "open", f"recovery did not open first: {arm.transcript[:4]}"
-    assert arm.transcript[1].startswith("turn(-"), \
-        f"recovery did not unwind negative: {arm.transcript[:4]}"
+    assert arm.transcript[1].startswith(f"turn({FREE}"), \
+        f"recovery did not unwind against the loosening direction: {arm.transcript[:4]}"
     assert arm.transcript[2].startswith("close"), \
         f"recovery did not re-close before decapping: {arm.transcript[:4]}"
-    assert arm.transcript[3].startswith("turn(+"), \
+    assert arm.transcript[3].startswith(f"turn({GRIPPED}"), \
         f"the first cap turn is not the fourth operation: {arm.transcript[:4]}"
 
 
 def test_the_recovery_unwind_turns_the_wrist_and_not_the_cap():
     """Open-unwind-close is what makes the reposition free: the cap must not move."""
-    arm = _Recorder(j6=270.0)
+    arm = _Recorder(j6=_toward(300.0))
     arm.grip(width=GRIP)
     arm.transcript.clear()
     cap_ops.run_ratchet(arm, _cfg())
-    # The recovery's negative turn sits strictly between an open and a close.
-    i = next(i for i, e in enumerate(arm.transcript) if e.startswith("turn(-"))
+    # The recovery's unwind sits strictly between an open and a close.
+    i = next(i for i, e in enumerate(arm.transcript) if e.startswith(f"turn({FREE}"))
     assert arm.transcript[i - 1] == "open"
     assert arm.transcript[i + 1].startswith("close")
 
@@ -152,7 +182,27 @@ def test_no_recovery_means_no_spurious_jaw_cycling():
     arm.transcript.clear()
     result = cap_ops.run_ratchet(arm, _cfg())
     assert result.unwound_deg == 0.0
-    assert arm.transcript[0].startswith("turn(+"), (
+    assert arm.transcript[0].startswith(f"turn({GRIPPED}"), (
         f"the sequence opened the jaws before the first turn with no recovery needed: "
         f"{arm.transcript[:3]}"
+    )
+
+
+def test_a_wrist_exactly_one_bite_from_the_limit_keeps_hold_of_the_cap():
+    """The second bench report, as a jaw-state property.
+
+    A previous fix unwound to `hi - margin` unconditionally, which made the reposition fire
+    for a wrist that was essentially in position — and a reposition opens the jaws, dropping
+    the cap. Buying 2° of headroom at the cost of the cap is worse than the refusal it was
+    avoiding, so a wrist merely *at* the edge is left alone and pre-flighted as it stands.
+    """
+    arm = _Recorder(j6=_toward(270.0))            # 90° bite, 360° limit: exactly on the edge
+    arm.grip(width=GRIP)
+    arm.transcript.clear()
+    result = cap_ops.run_ratchet(arm, _cfg())
+
+    assert result.unwound_deg == 0.0
+    assert arm.transcript[0].startswith(f"turn({GRIPPED}"), (
+        f"the jaws opened before the first bite for a wrist that was in position — that "
+        f"drops the cap: {arm.transcript[:3]}"
     )
