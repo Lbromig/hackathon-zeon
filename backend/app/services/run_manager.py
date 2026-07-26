@@ -41,7 +41,7 @@ from core.config import settings
 from core.obs import get_logger
 
 from ..engine.events import PlanReplaced, RunSnapshot, RunState
-from ..engine.plan import Plan, PreflightReport
+from ..engine.plan import Plan
 from ..engine.plans import handover
 from ..engine.runner import EventSink, Runner, device_claims
 from .device_access import DeviceGateway
