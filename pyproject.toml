@@ -21,6 +21,9 @@ dependencies = [
     "pyrealsense2 ; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
     # robot control (vendored in third_party/, see [tool.uv.sources])
     "xarm-python-sdk",
+    # Opentrons OT-One: its Smoothieboard controller speaks G-code over USB CDC serial.
+    # Imported lazily by the driver, so a machine with no OT attached is unaffected.
+    "pyserial",
     # config
     "python-dotenv",
 ]
