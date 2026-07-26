@@ -262,3 +262,33 @@ has until vision supplies one.
 If anything grinds, cut power at the switch. Do not rely on software.
 
     python3 ot_driver.py estop --port <PORT>     # writes Ctrl-X, M112, M18
+
+
+---
+
+# Motion profile (read from the board, 2026-07-26)
+
+    config-get sd acceleration          -> 250        (mm/s^2)
+    config-get sd default_seek_rate     -> 2500       (mm/min, homing search)
+    config-get sd junction_deviation    -> not in config
+    config-get sd x_axis_max_speed      -> not in config
+    config-get sd default_feed_rate     -> not in config
+
+`junction_deviation` being absent means corner blending runs on Smoothieware's
+built-in default rather than a tuned value. With acceleration at 250 mm/s^2 a short
+leg may never reach cruise before it has to decelerate for the next vertex, so leg
+length and feedrate interact: more `--sides` gives gentler corners but shorter legs.
+
+Measured smooth at **100 x 70 mm, 16 sides, F700, 12 mm Z dip**: 806 mm over 48
+legs in 69.37s against 69.07s predicted (+6 ms/leg), closing to 0.00 on all three
+axes. Confirmed smooth by eye at that setting, so the profile was left untouched —
+`M204`/`M205` both answer `ok`, so acceleration and junction deviation *can* be
+raised at runtime if a future path needs it, but that was not necessary and raising
+acceleration on a machine with no closed loop risks skipped steps.
+
+# Deck state to check before any Z motion
+
+**A tip may be fitted.** As of 2026-07-26 one is. A fitted tip extends the nozzle,
+so the usable clearance below the datum is less than the bare-nozzle figure, and the
+53 mm tip-engagement depth assumes an *empty* nozzle descending onto a tip in the
+rack — do not reuse it as a descent target with a tip already on.
