@@ -562,7 +562,10 @@ def test_a_wrist_parked_too_far_round_is_rewound_and_the_rewind_is_reported():
 
     assert out.total_rotation_deg == pytest.approx(360.0), "the cap still turns a full turn"
     assert out.net_wrist_travel_deg == pytest.approx(0.0), "no drift across the bites"
-    assert arm.get_joints()[-1] == pytest.approx(180.0), "304 - 124, inside the limit"
+    # 304 - (124° overshoot + UNWIND_MARGIN_DEG): the rewind clears the limit with room, so
+    # a real arm landing slightly short of the commanded rewind still pre-flights.
+    rewind = 304.0 + 180.0 - (360.0 - cap_ops.UNWIND_MARGIN_DEG)
+    assert arm.get_joints()[-1] == pytest.approx(304.0 - rewind), "inside the limit, with margin"
     warning = next(w for w in ctx.collected_warnings()
                    if w.code == "wrist_rewound_before_decap")
     assert "124" in warning.message and "jaws open" in warning.message

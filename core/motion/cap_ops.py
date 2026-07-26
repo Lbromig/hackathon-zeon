@@ -56,20 +56,51 @@ DEFAULT_TURNS = 1.0             # one full turn of the cap
 DEFAULT_JOINT_SPEED = 30.0      # deg/s — unscrewing is not a place to hurry
 RETURN_TOLERANCE_DEG = 1.0      # how far off "back at the start" is still acceptable
 
-#: Extra degrees to unwind beyond the bare minimum, so the plan clears the soft limit with
-#: room rather than landing exactly on it.
+#: Extra degrees to unwind **once an unwind is already necessary**, so the plan clears the soft
+#: limit with room rather than landing exactly on it.
+#:
+#: Read with :data:`PREFLIGHT_TOLERANCE_DEG` — the two solve the same bench report and the
+#: split between them matters more than either number.
 #:
 #: From the bench: "J6 would reach 360.0° — J6=360.00° outside soft limit [-360, 360]", which
-#: reads as a contradiction until you notice the printed value is rounded. `required_unwind`
-#: computed an unwind that put the plan's peak *exactly* at `hi`, and a commanded relative
-#: move on a real arm does not land exactly — a few hundredths short and the peak is over the
-#: limit again, so the pre-flight refuses a plan the unwind was supposed to have fixed. The
-#: mock lands exactly, which is why this only ever appeared on hardware.
+#: reads as a contradiction until you notice the printed value is rounded. The wrist was a few
+#: hundredths of a degree past the limit, so the peak of an otherwise-legal plan was too.
 #:
-#: 2° is far more than the arm's positioning error and far less than a 90° bite, so it costs
-#: nothing and cannot mask a genuinely impossible plan: `required_unwind` still raises when no
-#: starting angle fits, and the margin is included in that feasibility check.
+#: The first fix for that was to always unwind to `hi - margin`, which was **wrong** and was
+#: reported straight back from the bench: it made the unwind fire for a wrist that was
+#: essentially in position, and an unwind opens the jaws. Opening the jaws to buy 2° of
+#: headroom **drops the cap** — a far worse outcome than the refusal it was avoiding. Margin is
+#: the right idea applied at the wrong moment.
+#:
+#: So: :data:`PREFLIGHT_TOLERANCE_DEG` absorbs position dust with the jaws still closed, and
+#: this margin applies only when the wrist is *genuinely* wound too far and the jaws have to
+#: open regardless. Then it is free.
 UNWIND_MARGIN_DEG = 2.0
+
+#: How far past a soft limit the pre-flight tolerates before refusing, in degrees.
+#:
+#: Exists so a wrist sitting *at* the limit is not treated as a wrist wound past it. The arm
+#: reports joint angles with real resolution and lands relative moves imperfectly, so "exactly
+#: 360°" arrives as 360.004° — and refusing that means refusing a plan that fits, while
+#: "fixing" it by unwinding means opening the jaws and dropping the cap (see above).
+#:
+#: Safe because a soft limit is not a hard one: it already sits inside the controller's own
+#: limit, and the measured constants it guards carry their own margins (the flange-camera J5
+#: clearance was measured with 5°). Half a degree of tolerance on top of that changes nothing
+#: physical; it only stops arithmetic dust from reading as a fault.
+PREFLIGHT_TOLERANCE_DEG = 0.5
+
+#: Which way the tool axis turns to **loosen** a cap: -1 for negative J6, +1 for positive.
+#:
+#: From the bench: with the previous hardcoded `+bite` the routine **tightened the cap**. There
+#: was no way to express the other direction, which is the actual defect — the sign of a
+#: gripped turn is a fact about the thread and the tool mounting, not something a motion module
+#: gets to assume. A right-hand thread loosens counter-clockwise seen from above, and whether
+#: that is +J6 or -J6 depends on how the gripper is bolted to the flange.
+#:
+#: Wrong either way it is destructive rather than merely unsuccessful: tightening a cap that is
+#: already seated drives the thread against the tube with the full joint torque behind it.
+UNSCREW_SIGN = -1.0
 
 #: A step of the plan. ``("turn", deg)`` moves the tool axis; ``("open", 0.0)`` and
 #: ``("close", 0.0)`` drive the jaws.
@@ -110,6 +141,10 @@ class CapConfig:
     # The consequence is deliberate and worth stating: the arm does NOT end where it started.
     # It ends `(bites - 1) * lift_per_regrip_mm` higher, which is why the result reports
     # `lifted_mm` separately from the wrist's net travel. Set 0 to disable.
+    # Which way the tool axis turns to LOOSEN. See UNSCREW_SIGN: the bench found the old
+    # hardcoded positive turn was tightening the cap, and tightening a seated cap drives the
+    # thread against the tube with the full joint torque behind it.
+    unscrew_sign: float = UNSCREW_SIGN
     lift_per_regrip_mm: float = 2.0
     lift_speed: float = 30.0             # mm/s for the lift; unscrewing is not a race
     # Rewind the wrist (jaws open, so the cap does not turn) when it is parked too far round
@@ -149,8 +184,8 @@ class CapConfig:
     def plan(self) -> list[Step]:
         """The ratchet this config describes, as steps. Pure."""
         if not self.generalized:
-            return plan_unscrew(self.half_turns)
-        return plan_ratchet(self.bite_deg, self.total_deg)
+            return plan_unscrew(self.half_turns, self.unscrew_sign)
+        return plan_ratchet(self.bite_deg, self.total_deg, self.unscrew_sign)
 
 
 @dataclass(frozen=True)
@@ -221,7 +256,8 @@ def bite_sizes(step_deg: float = DEFAULT_STEP_DEG,
 
 
 def plan_ratchet(step_deg: float = DEFAULT_STEP_DEG,
-                 total_deg: float = FULL_TURN_DEG) -> list[Step]:
+                 total_deg: float = FULL_TURN_DEG,
+                 sign: float = UNSCREW_SIGN) -> list[Step]:
     """The ratchet as a list of (action, degrees) steps — pure, so it is testable.
 
     Every bite is turn-gripped / open / unwind-free, and the unwind must happen with the
@@ -233,21 +269,25 @@ def plan_ratchet(step_deg: float = DEFAULT_STEP_DEG,
     so unscrewing twice in a row does not walk J6 toward its limit.
     """
     sizes = bite_sizes(step_deg, total_deg)
+    # `sign` is the loosening direction (UNSCREW_SIGN). The gripped turn goes that way and the
+    # jaws-open unwind comes back the other, so net wrist travel stays zero whichever it is.
+    turn = 1.0 if sign >= 0 else -1.0
     steps: list[Step] = []
     for i, bite in enumerate(sizes):
-        steps.append(("turn", +bite))                # gripped: back the cap off
+        steps.append(("turn", turn * bite))          # gripped: back the cap off
         steps.append(("open", 0.0))                  # let go before unwinding
-        steps.append(("turn", -bite))                # free: wrist returns
+        steps.append(("turn", -turn * bite))         # free: wrist returns
         if i < len(sizes) - 1:
             steps.append(("close", 0.0))             # re-grip for the next bite
     return steps
 
 
-def plan_unscrew(half_turns: int = DEFAULT_HALF_TURNS) -> list[Step]:
+def plan_unscrew(half_turns: int = DEFAULT_HALF_TURNS,
+                 sign: float = UNSCREW_SIGN) -> list[Step]:
     """The 180°-bite ratchet — the teach tab's ``/cap`` spelling of `plan_ratchet`."""
     if half_turns < 1:
         raise CapOpError("half_turns must be >= 1")
-    return plan_ratchet(HALF_TURN_DEG, HALF_TURN_DEG * half_turns)
+    return plan_ratchet(HALF_TURN_DEG, HALF_TURN_DEG * half_turns, sign)
 
 
 def count_bites(steps: list[Step]) -> int:
@@ -374,6 +414,25 @@ def tool_axis(arm: ArmDriver) -> int:
     return max(0, arm.axis_count - 1)
 
 
+def _within_tolerance(arm: ArmDriver, angles: list[float], index: int) -> list[float]:
+    """`angles` with the tool axis pulled toward its range by PREFLIGHT_TOLERANCE_DEG.
+
+    Only ever moves the value *inward*, and only by the tolerance, so a target genuinely out of
+    range stays out. This is a check-time allowance, not a change to what gets commanded — the
+    arm is still sent the real angle.
+    """
+    out = list(angles)
+    limits = arm.limits.joints
+    if not limits or index >= len(limits):
+        return out
+    lo, hi = limits[index]
+    if out[index] > hi:
+        out[index] = max(hi, out[index] - PREFLIGHT_TOLERANCE_DEG)
+    elif out[index] < lo:
+        out[index] = min(lo, out[index] + PREFLIGHT_TOLERANCE_DEG)
+    return out
+
+
 def preflight_turns(arm: ArmDriver, steps: list[Step]) -> None:
     """Walk the whole ratchet on paper and check every wrist angle it would visit.
 
@@ -392,7 +451,10 @@ def preflight_turns(arm: ArmDriver, steps: list[Step]) -> None:
         if action != "turn":
             continue
         angles[index] += degrees
-        reason = arm.check_joint_target(angles)
+        # Check the angle pulled back inside the limit by the tolerance, so a target sitting on
+        # the limit — or a hair past it because the arm reports 360.004° for 360° — is not a
+        # refusal. Anything genuinely beyond tolerance still fails, and fails before moving.
+        reason = arm.check_joint_target(_within_tolerance(arm, angles, index))
         if reason:
             # Report the excess, at enough precision to be believable. The bench saw
             # "would reach 360.0° — J6=360.00° outside soft limit [-360, 360]", which reads as
@@ -458,15 +520,44 @@ def required_unwind(arm: ArmDriver, steps: list[Step]) -> float:
             f"({usable:.0f}° once a {UNWIND_MARGIN_DEG:g}° margin is kept at each end) — no "
             f"starting angle can fit this plan; reduce the bite or the number of turns"
         )
-    unwind = max(0.0, (start + peak) - (hi - UNWIND_MARGIN_DEG))
-    if start - unwind + trough < lo + UNWIND_MARGIN_DEG:
-        # Unwinding to fit the top would push the bottom of the excursion out instead.
+
+    # Which limit binds depends on the loosening direction, so both are checked. A negative
+    # `unscrew_sign` (the bench default) makes the excursion run *downward*: peak 0, trough
+    # -bite, so `lo` is what the plan can hit and `hi` is irrelevant. Guarding only the top,
+    # as this did when the turn was hardcoded positive, silently stops guarding anything.
+    over_top = (start + peak) - hi
+    under_bottom = lo - (start + trough)
+
+    # Does the plan genuinely not fit, or is the wrist merely *at* a limit? Only the first
+    # justifies a reposition, because repositioning opens the jaws and therefore drops the cap.
+    # A wrist within tolerance is left alone and `preflight_turns` accepts it with the jaws
+    # still closed — which is the whole point of the split (see UNWIND_MARGIN_DEG).
+    if max(over_top, under_bottom) <= PREFLIGHT_TOLERANCE_DEG:
+        return 0.0
+
+    # The jaws have to open regardless now, so taking the margin is free.
+    #
+    # Sign convention, preserved from when only the top could bind: **positive means "rotate
+    # the tool axis negative by this much"**. So a plan pressing against `lo` needs a negative
+    # return value. `unwind_tool_axis` applies `-value`, which makes both cases one motion.
+    if over_top >= under_bottom:
+        shift = over_top + UNWIND_MARGIN_DEG            # come back (negative rotation)
+        if start - shift + trough < lo + UNWIND_MARGIN_DEG:
+            raise CapOpError(
+                f"J{index + 1} cannot be positioned to fit this unscrew: at {start:.1f}° it "
+                f"needs to come back {shift:.0f}° to stay under {hi:g}°, which would take the "
+                f"plan's low point past {lo:g}°"
+            )
+        return shift
+
+    shift = under_bottom + UNWIND_MARGIN_DEG            # go forward (positive rotation)
+    if start + shift + peak > hi - UNWIND_MARGIN_DEG:
         raise CapOpError(
             f"J{index + 1} cannot be positioned to fit this unscrew: at {start:.1f}° it "
-            f"needs to come back {unwind:.0f}° to stay under {hi:g}°, which would take the "
-            f"plan's low point past {lo:g}°"
+            f"needs to go forward {shift:.0f}° to stay above {lo:g}°, which would take the "
+            f"plan's high point past {hi:g}°"
         )
-    return unwind
+    return -shift
 
 
 def lift_for_regrip(arm: ArmDriver, cfg: "CapConfig") -> float:
@@ -491,7 +582,7 @@ def unwind_tool_axis(arm: ArmDriver, degrees: float, cfg: "CapConfig") -> float:
     amount we unwind. Open, rotate, re-grip — the same three motions that end every bite,
     which is what makes this safe to do while holding a cap mid-thread.
     """
-    if degrees <= 0:
+    if degrees == 0:
         return 0.0
     arm.release()
     if cfg.settle_s:

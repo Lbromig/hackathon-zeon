@@ -138,10 +138,14 @@ def test_unscrew_rewinds_the_wrist_instead_of_refusing():
 
     result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
 
-    assert result.unwound_deg == pytest.approx(124.0), "304 + 180 - 360 = 124"
+    # 304 + 180 overshoots 360 by 124, and the rewind adds UNWIND_MARGIN_DEG on top so a
+    # real arm landing a few hundredths short still clears the limit — see
+    # test_cap_ops_unwind_margin.py for the bench refusal that made the margin necessary.
+    expected = 304.0 + 180.0 - (360.0 - cap_ops.UNWIND_MARGIN_DEG)
+    assert result.unwound_deg == pytest.approx(expected)
     assert result.total_rotation_deg == pytest.approx(360.0), "cap still turns the full amount"
     # The wrist ends where the REWIND left it, not where it started: that is the point.
-    assert arm.get_joints()[-1] == pytest.approx(180.0)
+    assert arm.get_joints()[-1] == pytest.approx(304.0 - expected)
     assert result.net_wrist_travel_deg == pytest.approx(0.0), "no drift across the bites"
 
 
@@ -164,10 +168,12 @@ def test_the_rewind_happens_with_the_jaws_open_so_the_cap_does_not_turn():
     arm.release, arm.grip = note_release, note_grip
     cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
 
-    # First two events: release at the wound angle, then re-grip 124° lower. The wrist moved
-    # only while open, so the cap never saw it.
+    # First two events: release at the wound angle, then re-grip lower by the whole rewind
+    # (the 124° overshoot plus UNWIND_MARGIN_DEG). The wrist moved only while open, so the cap
+    # never saw it — which is the property under test, not the particular angle.
+    rewind = 304.0 + 180.0 - (360.0 - cap_ops.UNWIND_MARGIN_DEG)
     assert order[0] == "release@304", order
-    assert order[1] == "grip@180", order
+    assert order[1] == f"grip@{304.0 - rewind:.0f}", order
 
 
 def test_no_rewind_when_the_plan_already_fits():
@@ -199,15 +205,18 @@ def test_a_rewind_that_fits_the_top_always_fits_the_bottom_for_a_ratchet():
     limits = [[-360, 360]] * 5 + [[100, 300]]     # 200° of range, 180° bite, parked high
     arm = _arm(joints=[0, 0, 0, 0, 0, 290.0], limits=limits)
     result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
-    assert result.unwound_deg == pytest.approx(170.0), "290 + 180 - 300"
-    assert arm.get_joints()[-1] == pytest.approx(120.0), "still inside [100, 300]"
+    expected = 290.0 + 180.0 - (300.0 - cap_ops.UNWIND_MARGIN_DEG)
+    assert result.unwound_deg == pytest.approx(expected), "290 + 180 - (300 - margin)"
+    landed = 290.0 - expected
+    assert arm.get_joints()[-1] == pytest.approx(landed)
+    assert 100.0 + cap_ops.UNWIND_MARGIN_DEG <= landed <= 300.0, "inside [100, 300] with margin"
 
 
 def test_unscrew_sentence_reports_the_rewind():
     """Real motion the operator did not ask for must appear in the result."""
     arm = _arm(joints=[0, 0, 0, 0, 0, 304.0], limits=[[-360, 360]] * 6)
     sentence = cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
-    assert "rewound wrist 124" in sentence
+    assert f"rewound wrist {304.0 + 180.0 - (360.0 - cap_ops.UNWIND_MARGIN_DEG):.0f}" in sentence
     assert "jaws open" in sentence
 
 
@@ -380,7 +389,81 @@ def test_unscrew_emits_a_step_callback_for_progress():
     arm = _arm()
     seen: list[str] = []
     cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0), on_step=seen.append)
-    assert len(seen) == 7
+    # 7 plan steps plus one lift, which is reported because it is real arm motion.
+    assert len(seen) == 8
     assert seen[0].startswith("turn +180")
     assert seen[-1].startswith("turn -180")
     assert "open" in seen and "close" in seen
+    assert any("lift" in s for s in seen)
+
+
+# --- following the cap up its thread ------------------------------------------------
+
+
+def test_the_arm_lifts_at_every_regrip():
+    """A cap backing off rises; the jaws must come up with it or fight the thread."""
+    arm = _arm()
+    z_before = arm.get_pose().z
+    # 90° bites => 4 bites => 3 re-grips => 3 lifts.
+    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
+
+    assert result.bites == 4
+    assert result.lifted_mm == pytest.approx(6.0), "3 re-grips x 2 mm"
+    assert arm.get_pose().z == pytest.approx(z_before + 6.0)
+    assert result.net_wrist_travel_deg == pytest.approx(0.0), "the wrist still returns"
+
+
+def test_the_lift_happens_while_the_jaws_are_open():
+    """Lifting while gripping would drag the cap up the thread instead of following it."""
+    arm = _arm()
+    arm.grip()
+    events: list[str] = []
+    real_grip, real_release, real_move = arm.grip, arm.release, arm.move_relative
+
+    def note_grip(width=None):
+        events.append("grip")
+        real_grip(width=width)
+
+    def note_release():
+        events.append("release")
+        real_release()
+
+    def note_move(**kw):
+        if kw.get("dz"):
+            events.append(f"lift{kw['dz']:+g}")
+        real_move(**kw)
+
+    arm.grip, arm.release, arm.move_relative = note_grip, note_release, note_move
+    cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+
+    # Every lift must be preceded by a release and followed by a grip: jaws open throughout.
+    for i, e in enumerate(events):
+        if e.startswith("lift"):
+            assert "release" in events[:i], f"lift before any release: {events}"
+            assert events[i + 1] == "grip", f"lift not immediately before a grip: {events}"
+    assert any(e.startswith("lift") for e in events), events
+
+
+def test_lift_can_be_switched_off_and_then_the_arm_returns_exactly():
+    """The original invariant — whole arm back where it started — with lifting disabled."""
+    arm = _arm()
+    before = arm.get_joints()
+    result = cap_ops.run_ratchet(
+        arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0, lift_per_regrip_mm=0.0))
+    assert result.lifted_mm == 0.0
+    assert arm.get_joints() == pytest.approx(before)
+
+
+def test_a_single_bite_never_regrips_so_it_never_lifts():
+    arm = _arm()
+    z_before = arm.get_pose().z
+    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=1, settle_s=0.0))
+    assert result.bites == 1
+    assert result.lifted_mm == 0.0
+    assert arm.get_pose().z == pytest.approx(z_before)
+
+
+def test_unscrew_sentence_reports_the_lift():
+    arm = _arm()
+    sentence = cap_ops.unscrew_cap(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
+    assert "raised 6 mm" in sentence
