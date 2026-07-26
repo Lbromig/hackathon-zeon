@@ -45,6 +45,29 @@ def legs(dx: float, dy: float) -> list[tuple[str, float]]:
     return [("X", dx), ("Y", dy), ("X", -dx), ("Y", -dy)]
 
 
+def sweep_legs(dx: float, dy: float) -> list[dict[str, float]]:
+    """Full-travel sweeps: six LONG legs, closed, almost no vertices.
+
+    The polygon shapes trade leg length for corner angle — 16 sides means 16
+    direction changes per lap, and even with a perfectly continuous command queue
+    the planner still decelerates at each one, which reads as pulsing. This does
+    the opposite: each leg runs the entire requested travel, so there are 6
+    slowdowns per lap instead of 16, and the gantry actually crosses the full
+    axis rather than an inscribed ellipse.
+
+    dx/dy here are FULL travel, not half-widths. Legs: X out/back, Y out/back,
+    then a diagonal out/back. Sums to zero on both axes.
+    """
+    return [
+        {"X": dx},
+        {"X": -dx},
+        {"Y": dy},
+        {"Y": -dy},
+        {"X": dx, "Y": dy},
+        {"X": -dx, "Y": -dy},
+    ]
+
+
 def helix_legs(dx: float, dy: float, dz: float,
                sides: int = 12) -> list[dict[str, float]]:
     """A closed 3D loop: the XY polygon with Z dipping down and back over a lap.
@@ -127,13 +150,20 @@ def main() -> int:
     ap.add_argument("--feed", type=float, default=400.0, help="mm/min")
     ap.add_argument("--step", type=float, default=10.0,
                     help=f"max mm per jog (driver cap is {MAX_JOG_MM})")
-    ap.add_argument("--shape", choices=["rect", "smooth"], default="smooth",
-                    help="rect = 90-degree corners (jerky); smooth = inscribed polygon")
+    ap.add_argument("--shape", choices=["rect", "smooth", "sweep"], default="sweep",
+                    help="sweep = few long full-travel legs (smoothest, default); "
+                         "smooth = inscribed polygon; rect = 90-degree corners")
     ap.add_argument("--sides", type=int, default=12,
                     help="legs per lap for --shape smooth; more = gentler corners")
     ap.add_argument("--z", type=float, default=0.0,
                     help="Z dip per lap in mm (+Z is DOWN). 0 = XY only. "
                          "Only pass this if you know the clearance.")
+    ap.add_argument("--junction", type=float, default=None,
+                    help="junction deviation in mm via M205 (board default ~0.05 is "
+                         "conservative and slows every vertex). Try 0.2-0.4.")
+    ap.add_argument("--accel", type=float, default=None,
+                    help="acceleration in mm/s^2 via M204 (board config is 250). "
+                         "Raise cautiously: no closed loop, so too high skips steps.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -146,7 +176,8 @@ def main() -> int:
     print("  the loop is CLOSED: it returns to the exact starting point.\n")
 
     if args.dry_run:
-        preview = (legs(args.x, args.y) if args.shape == 'rect'
+        preview = (sweep_legs(args.x, args.y) if args.shape == 'sweep'
+                   else legs(args.x, args.y) if args.shape == 'rect'
                    else helix_legs(args.x, args.y, args.z, args.sides) if args.z
                    else smooth_legs(args.x, args.y, args.sides))
         for e in preview:
@@ -159,6 +190,16 @@ def main() -> int:
     print(f"connecting to {args.port} ...")
     d.connect()
     print(f"  connected: {d.info.name}\n")
+    # Corner blending: junction_deviation is absent from this board's config, so
+    # it runs on Smoothieware's conservative built-in default and decelerates at
+    # every vertex. Raising it is what removes the residual vertex-to-vertex
+    # hitching once the command queue is already continuous.
+    if args.junction is not None:
+        print(f"  M205 X{args.junction} (junction deviation)")
+        d._send(f"M205 X{args.junction:.3f}")
+    if args.accel is not None:
+        print(f"  M204 S{args.accel:.0f} (acceleration)")
+        d._send(f"M204 S{args.accel:.0f}")
     print("*** MOTION. WATCH IT. Ctrl-C cuts motion. ***\n")
 
     travelled = {"X": 0.0, "Y": 0.0, "Z": 0.0}
@@ -171,8 +212,10 @@ def main() -> int:
         # between steps and makes the path visibly jitter.
         # EVERY lap is queued in ONE call. Splitting per lap drains the planner
         # between laps, which is a full stop the operator sees as a hitch.
-        if args.shape == "rect":
-            one_lap: list = legs(args.x, args.y)
+        if args.shape == "sweep":
+            one_lap: list = sweep_legs(args.x, args.y)
+        elif args.shape == "rect":
+            one_lap = legs(args.x, args.y)
         elif args.z:
             one_lap = helix_legs(args.x, args.y, args.z, args.sides)
         else:
