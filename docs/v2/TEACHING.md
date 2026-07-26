@@ -66,9 +66,14 @@ Work down the checklist: it is already sorted by workflow step, which is the ord
 makes physical sense — each waypoint is reachable by a short move from the one before it,
 and the arm is never asked to cross the other arm's working volume with a tube in the jaws.
 
-For each row: get the arm there (hand-guide, or jog), then press **Teach here**. Press
-**Go** afterwards to confirm the arm returns to the same place, at the tier the workflow
-will use.
+For each row: get the arm there (hand-guide, or jog), then press **Teach here**. Switch
+hand-guiding **off**, then press **Go** to confirm the arm returns to the same place, at the
+tier the workflow will use. The checklist disables **Go** while hand-guiding is on, because
+commanded motion does not behave normally in a teaching mode; **Teach here** stays available,
+since hand-guiding is how the first teach of a pose happens.
+
+Re-teaching a waypoint that is already taught takes a second, confirming click — a stray
+click would otherwise overwrite a good point with wherever the arm happens to be standing.
 
 ### `right` — 10 waypoints
 

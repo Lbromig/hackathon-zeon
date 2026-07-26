@@ -21,6 +21,7 @@ import { useTeach } from "../../composables/useTeach";
 const {
   arm,
   selectedId,
+  state,
   waypoints,
   waypointProblems,
   waypointError,
@@ -32,6 +33,13 @@ const {
   gotoWaypoint,
   refreshWaypoints,
 } = useTeach();
+
+/**
+ * Teaching works while hand-guiding — that is how the first teach of a pose happens.
+ * Replaying does not: the driver is explicit that programmed motion "does not behave
+ * normally" in a teaching mode, so Go stays disabled until hand-guiding is switched off.
+ */
+const canReplay = computed(() => canMove.value && !state.value?.free_drive);
 
 /** Name awaiting a confirming second click before it is overwritten. */
 const confirmOverwrite = ref("");
@@ -125,6 +133,11 @@ function teach(row: WaypointRow) {
         {{ arm?.name ?? selectedId }} is not connected — you can read the list, but teaching
         needs a live arm.
       </p>
+      <p v-else-if="state?.free_drive" class="mt-2 text-xs text-sky-300">
+        Hand-guiding is on: push the arm to a waypoint and <strong>Teach here</strong>.
+        <strong>Go</strong> is disabled until you switch hand-guiding off — commanded moves
+        do not behave normally in teaching mode.
+      </p>
 
       <!-- the list -->
       <ul class="mt-3 divide-y divide-deck-700">
@@ -183,10 +196,12 @@ function teach(row: WaypointRow) {
             </button>
             <button
               class="btn btn-sm"
-              :disabled="!canMove || !row.taught"
-              :title="row.taught
-                ? `move there at the ${row.speed} tier`
-                : 'nothing taught to go to'"
+              :disabled="!canReplay || !row.taught"
+              :title="!row.taught
+                ? 'nothing taught to go to'
+                : state?.free_drive
+                  ? 'switch hand-guiding off first — commanded moves misbehave in teaching mode'
+                  : `move there at the ${row.speed} tier`"
               @click="gotoWaypoint(row.name, row.speed)"
             >
               Go
