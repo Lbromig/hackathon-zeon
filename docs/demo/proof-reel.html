@@ -23,7 +23,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
   content:'';position:absolute;inset:0;pointer-events:none;z-index:60;
   background:radial-gradient(ellipse 85% 75% at 50% 45%,transparent 40%,rgba(0,0,0,.72) 100%);
 }
-.beat{position:absolute;inset:0;opacity:0;transition:opacity .5s ease;pointer-events:none}
+.beat{position:absolute;inset:0;opacity:0;transition:opacity .26s ease;pointer-events:none}
 .beat.on{opacity:1}
 
 /* ---------- shared type ---------- */
@@ -41,7 +41,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
   justify-content:space-between;font:500 21px/1 var(--mono);color:var(--mute);letter-spacing:.1em}
 
 /* ---------- beat 1 : the trace ---------- */
-#b1{display:grid;grid-template-columns:1fr 560px;gap:0}
+#b1{display:grid;grid-template-columns:1fr 620px;gap:0}
 .plot{position:relative;display:flex;align-items:center;justify-content:center}
 #trace{display:block}
 .plotcap{position:absolute;top:72px;left:112px}
@@ -52,11 +52,11 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
 .row .k{font:600 15px/1 var(--mono);letter-spacing:.24em;text-transform:uppercase;color:var(--mute)}
 .row .v{font:600 52px/1 var(--mono);font-variant-numeric:tabular-nums;margin-top:14px;letter-spacing:-.02em}
 .row .u{font-size:26px;color:var(--mute);margin-left:8px}
-.net{display:flex;gap:44px;margin-top:16px}
-.net div{font:600 46px/1 var(--mono);font-variant-numeric:tabular-nums}
+.net{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:16px}
+.net div{font:600 38px/1 var(--mono);font-variant-numeric:tabular-nums}
 .net small{display:block;font:600 14px/1 var(--mono);letter-spacing:.2em;color:var(--mute);margin-bottom:10px}
 .zstrip{position:absolute;left:112px;right:112px;bottom:78px;height:96px}
-.zlab{position:absolute;left:0;bottom:104px;font:600 14px/1 var(--mono);letter-spacing:.22em;color:var(--mute)}
+.zlab{position:absolute;left:112px;bottom:186px;font:600 14px/1 var(--mono);letter-spacing:.22em;color:var(--mute)}
 
 /* ---------- beat 2 : closure stamp ---------- */
 #b2{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:40px}
@@ -72,6 +72,8 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
 #b3 .half+.half{border-left:1px solid var(--line)}
 #b3 .tag{font:600 17px/1 var(--mono);letter-spacing:.3em;text-transform:uppercase}
 #b3 h3{font:800 62px/1.04 var(--sans);letter-spacing:-.03em;text-align:center}
+#b3 .reportlab{font:600 14px/1 var(--mono);letter-spacing:.28em;text-transform:uppercase;
+  color:#4d5a6d;margin-top:12px}
 #b3 p{font:300 25px/1.5 var(--sans);color:#9fb0c6;text-align:center;max-width:26ch}
 .minitrace{opacity:.95}
 .dead{width:300px;height:300px;border:1px dashed #2a3546;border-radius:8px;
@@ -81,7 +83,7 @@ html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
   font:700 30px/1 var(--mono);letter-spacing:.18em;color:var(--amber)}
 
 /* ---------- beat 4 : verifiers ---------- */
-#b4{padding:112px 150px;display:flex;flex-direction:column;gap:48px}
+#b4{padding:96px 150px;display:flex;flex-direction:column;justify-content:center;gap:48px}
 .vgrid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
 .vcard{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
   border-radius:10px;padding:34px 38px}
@@ -161,13 +163,15 @@ body.rec #hud{display:none}
     <div class="half">
       <div class="tag" style="color:var(--blue)">MOTOR RAIL ON</div>
       <canvas class="minitrace" id="mini" width="300" height="300"></canvas>
+      <div class="reportlab">What the software reports</div>
       <h3>Move complete</h3>
       <p>48 legs acknowledged. M400 drained in 69.37 s. Net zero on all three axes.</p>
     </div>
     <div class="half">
       <div class="tag" style="color:var(--amber)">MOTOR RAIL OFF</div>
       <div class="dead">NOTHING<br>MOVED</div>
-      <h3 style="color:var(--amber)">Move complete</h3>
+      <div class="reportlab">What the software reports</div>
+      <h3>Move complete</h3>
       <p>48 legs acknowledged. M400 drained in 69.37 s. Net zero on all three axes.</p>
     </div>
     <div class="banner">THE SOFTWARE CANNOT TELL THESE APART</div>
@@ -270,6 +274,7 @@ function drawTo(upto, colour='#4c8dff'){
   cx.globalAlpha=1;cx.shadowBlur=0;
 }
 function drawZ(upto){
+  if(zs.clientWidth && zs.width!==zs.clientWidth) zs.width=zs.clientWidth;
   zc.clearRect(0,0,zs.width,zs.height);
   zc.strokeStyle='#1b2634';zc.lineWidth=1;
   zc.beginPath();zc.moveTo(0,zs.height-1);zc.lineTo(zs.width,zs.height-1);zc.stroke();
@@ -319,12 +324,22 @@ function runTrace(){
 
 /* ── beat machine ────────────────────────────────────────── */
 const beats=[...document.querySelectorAll('.beat')];
-let n=0;
+let n=0, swapping=false;
+/* Beats are full-bleed and stacked, so a crossfade double-exposes them and any
+   frame cut mid-transition looks broken. Fade fully to black, then fade in. */
 function show(i){
-  n=(i+beats.length)%beats.length;
-  beats.forEach((b,k)=>b.classList.toggle('on',k===n));
-  if(n===1){ ['nx','ny','nz'].forEach(id=>$(id).style.color=''); runTrace(); }
-  if(n===3) drawMini();
+  if(swapping) return;
+  const t=(i+beats.length)%beats.length;
+  swapping=true;
+  cancelAnimationFrame(raf);
+  beats.forEach(b=>b.classList.remove('on'));
+  setTimeout(()=>{
+    n=t;
+    beats[n].classList.add('on');
+    if(n===1){ ['nx','ny','nz'].forEach(id=>$(id).style.color=''); runTrace(); }
+    if(n===3) drawMini();
+    swapping=false;
+  }, 300);
 }
 addEventListener('keydown',e=>{
   if(e.code==='Space'){e.preventDefault();show(n+1)}

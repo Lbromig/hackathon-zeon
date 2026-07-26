@@ -133,8 +133,19 @@ class OpentronsDriver(LiquidHandlerDriver):
         except Exception:
             pass
 
+        # Clear a latched HALT unconditionally. A halted board still answers
+        # `version` while silently ignoring every G-code, so a responsiveness
+        # check does NOT prove it will accept commands — gating M999 behind that
+        # check let a halted board through, and the next G90 timed out. M999 is a
+        # no-op when nothing is halted, so there is no cost to always sending it.
+        try:
+            self._write(G_CLEAR_HALT)
+            time.sleep(0.6)
+            self._conn.reset_input_buffer()
+        except Exception:
+            pass
+
         if not self._responsive():
-            # A previous M112 latches HALT, where the board ignores everything.
             try:
                 self._write(G_CLEAR_HALT)
             except Exception:
@@ -282,6 +293,62 @@ class OpentronsDriver(LiquidHandlerDriver):
         return out
 
     # --- motion primitives -------------------------------------------------
+    # --- machine coordinates ------------------------------------------------
+    def machine_position(self) -> dict[str, float]:
+        """Read the board's axis counters, in mm.
+
+        These ARE usable coordinates, contrary to an earlier reading of this
+        machine. Homing zeroes an axis against a mechanical stop rather than a
+        switch, but a hard stop is physically repeatable, and the counter
+        **survives reconnection** (verified 2026-07-26: it read X=235 across a
+        fresh connection, exactly the sum of the preceding moves). So an axis
+        that has been homed carries a real machine coordinate.
+
+        The caveat is specific and it matters: there is no closed loop, so if an
+        axis ever skips steps the counter keeps counting and the coordinate
+        silently drifts from reality. Vision re-observing the nozzle is the only
+        way to detect that, which is why the servo loop in
+        core/calibration/ot_hand_eye.py doubles as drift detection.
+        """
+        raw = self._send(G_POSITION)
+        out: dict[str, float] = {}
+        for token in raw.replace(",", " ").split():
+            if ":" not in token:
+                continue
+            key, _, value = token.partition(":")
+            if key in ("X", "Y", "Z", "A", "B", "C"):
+                try:
+                    out[key] = float(value)
+                except ValueError:
+                    pass
+        return out
+
+    def move_to_machine(self, feedrate: float = APPROACH_FEED, **axes: float) -> dict[str, float]:
+        """Move to absolute machine coordinates, e.g. move_to_machine(X=300, Z=40).
+
+        Implemented as a relative move of the difference, because this firmware's
+        absolute mode references the same counters anyway and going through the
+        relative path keeps one code route for all motion. Reads the counters
+        first, so it is only as correct as they are — see machine_position.
+
+        Y is accepted but should be treated with suspicion: it cannot be homed,
+        so its counter has no physical reference until vision supplies one.
+        """
+        current = self.machine_position()
+        delta: dict[str, float] = {}
+        for axis, target in axes.items():
+            a = axis.upper()
+            if a not in current:
+                raise DriverError(f"axis {a} not reported by the board")
+            d = float(target) - current[a]
+            if abs(d) > 1e-6:
+                delta[a] = d
+        if not delta:
+            return current
+        self.jog_path([delta], feedrate=feedrate,
+                      max_total_mm=sum(abs(v) for v in delta.values()) + 25.0)
+        return self.machine_position()
+
     def home(self) -> None:
         """Home the Z lift only.
 
