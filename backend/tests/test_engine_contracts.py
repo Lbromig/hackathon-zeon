@@ -364,6 +364,12 @@ def test_the_log_ref_is_a_query_not_a_byte_range():
 def test_a_handler_registers_and_is_retrievable():
     original = dict(A._HANDLERS)
     try:
+        # A Wave-1 slice may already own this kind by the time the suite runs, and a
+        # duplicate registration is (correctly) a RuntimeError. What is under test is the
+        # register/retrieve round trip, so start from an empty slot and put the real
+        # registry back in the `finally`.
+        A._HANDLERS.pop("control.checkpoint", None)
+
         @A.handler("control.checkpoint")
         def _h(action, ctx):
             return A.CheckpointOutputs(acknowledged=True)
@@ -380,6 +386,10 @@ def test_a_duplicate_handler_raises_rather_than_overwriting():
     resolve itself silently, in import order, and be invisible until the wrong one ran."""
     original = dict(A._HANDLERS)
     try:
+        # As above: S2 registers a real `arm.gripper` handler, so the *first* registration
+        # here would raise and the test would never reach the property it is about.
+        A._HANDLERS.pop("arm.gripper", None)
+
         @A.handler("arm.gripper")
         def _first(action, ctx):
             return A.GripperOutputs(state="open")
