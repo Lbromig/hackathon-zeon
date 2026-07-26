@@ -435,7 +435,10 @@ def test_a_missing_handler_reports_that_the_step_cannot_run(monkeypatch, runner_
     started failing the moment that slice landed, testing the state of the codebase instead of
     the wrapper's behaviour. Every action kind now has a handler, so there is no gap to borrow.
     """
-    monkeypatch.delitem(A._HANDLERS, "camera.search_code")
+    # `raising=False` because whether that slice's module has been imported yet depends on
+    # which other test files this run selected. Either way the kind ends up unhandled, which
+    # is the only precondition this test has.
+    monkeypatch.delitem(A._HANDLERS, "camera.search_code", raising=False)
     runner = runner_factory([{"kind": "camera.search_code", "device": "handover_cam",
                               "marker_id": 225}])
     runner.run_to_completion(timeout=5.0, skip_preflight=True)
