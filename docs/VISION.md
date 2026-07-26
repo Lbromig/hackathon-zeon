@@ -35,19 +35,38 @@ the verify→retry loop — Track C's *verification* half — is **partially hol
 on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
 true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
 half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **This cycle the team hardened
-the perimeter, not the critical path:** a still-image camera driver hedges a lost viewpoint, the world model is now
-thread-safe (the RLock/`lock()` a reparent-on-grasp will need), and — most usefully — fixed-camera **world-frame
-calibration is being wired** (each fixed camera solves its pose from a shared 210/211 tag board), which turns fused
-geometry from camera-frame toward a real world frame and so **strengthens the geometry-only verifier fallback**
-(`tube_aligned`, `cap_removed`-separation) that we'd lean on if reparent-wiring slips. All welcome — but all three of
-the deciding items stood still. The next block's job is narrow and mostly at the bench — **merge the OT transport,
-finish teaching the poses (still 2/12), and wire the one reparent line** (or deliberately scope the demo's verify
-moment onto the now-better-calibrated geometry predicate) — then one real `ok=False` stops one real aspirate.
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **For a third cycle the team hardened
+the perimeter, not the critical path** — but this cycle they also *committed* the one perimeter item worth committing:
+the fixed-camera **world-frame calibration** (each fixed camera solves its pose from a shared 210/211 tag board) is now
+in git, with a **top-down world-map visualization** that renders both cameras in the same solved frame — a showable
+proof the shared frame is real and the honest substrate for the geometry-only verifiers (`tube_aligned`,
+`cap_removed`-separation) we'd lean on if reparent-wiring slips. A remote camera driver lets a second machine run the
+whole stack off the bench's cameras. All welcome, all off the critical path — and all three deciding items stood still
+**for the third review running**: the OT still doesn't draw, the bench is still at 2/12, the reparent line is still
+unwritten. The story is no longer *can we build it* — the team demonstrably can — it is **where the remaining hours go.**
+The next block's job is narrow and mostly at the bench: **merge the OT transport, finish teaching the poses, and wire
+the one reparent line** (or deliberately scope the verify moment onto the now-committed geometry predicate — measure the
+one board spacing and it's metrically real), then one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T05:05Z — They committed the right perimeter item — and the three deciding items stood still a third time. The threat is now allocation, not capability.
+
+**Demo-readiness score: 7.0/10 for the *stated* PoC (verified uncap→aspirate) — held flat for a third straight review.** ~8.5/10 for the teleop + streaming-UI + safe-motion + **now world-map** show (up a notch: there's a genuinely showable calibration artifact). Three new team commits landed since the last review (`cfa8aac`, `39bdca6`, `95328c7`), so again the change is in git, not just on disk — and again every line of it lands **beside** the critical path. The stated-PoC number doesn't move because nothing that decides the demo moved: the OT still doesn't draw (`connect`/`_send` still `TODO`, re-verified in HEAD `95328c7`), `data/teach_poses.json` is unchanged at 2 of 12 poses, and there are still **zero** `reparent` calls in production.
+
+**What genuinely moved — and this cycle it was the *right* perimeter work.** Last review's single most defensible recommendation was "commit the world-frame calibration WIP." They did (`cfa8aac`): `world_board.py` + `extrinsics.py::solve_world_cam` + `pipeline._world_frame` now solve each fixed camera's `T_world_cam` from the shared 210/211 board and write it into the twin, converting fixed-camera geometry from camera-frame toward one metric world frame — the honest substrate the geometry-only verifiers need, now in git with a hardware-free round-trip test. Better still, they added a **top-down world-map visualization** (`core/viz/scene.py::world_scene`/`scene_svg`, `/api/worldmodel/scene[.svg]`, `worldmap.html` + `WorldMapTab.vue`): both fixed cameras are placed by solving the *same* board, so on the map they land at their true relative positions — if calibration were wrong they'd land in implausible spots. That is a real demo asset: a single screen that *proves the shared frame works*. A **remote camera driver** (`39bdca6`) also landed, letting a second machine run the whole stack against the bench's cameras over MJPEG — good for parallel dev and as an unplug hedge. This is the strongest perimeter cycle yet, and it followed the review's advice.
+
+**The single biggest threat this cycle — allocation drift, now escalated above the capability gaps.** For three reviews running, the same three items have decided the demo — merge the OT serial driver (Q-OT-1), finish teaching the 12 poses (Q-POSES-1, stalled at 2/12), and wire the one `reparent` line *or* adopt a geometry-only verify moment (Q-TWIN-COUPLING) — and for three reviews running the team has done excellent work *beside* all three. The capability gaps (Q-OT-1, Q-TWIN-COUPLING) are unchanged and co-equal underneath, but the *deciding* risk has shifted: this is no longer "can they build it?" — committing the calibration on cue proves they can close items when they choose. It is **which items they choose.** A hackathon dies this exact way: a beautiful, well-tested, well-visualized system that arrives at hour 24 unable to perform its own headline, because the perimeter always had one more honest improvement and the bench work — which can only happen in the room, on the hardware — kept sliding to "next block." The world map is the sharpest example: it makes the shared frame *demonstrable*, but the shared frame it visualizes still rests on `BOARD_SPACING_M = 0.060`, a `TODO(measure)` placeholder — one caliper reading undone, because measuring it needs the bench and the bench work keeps slipping.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only. **And now freeze the perimeter itself:** cameras, calibration code, viz, and concurrency are good enough for the demo; any further off-path polish is displacement activity while two climaxes mime.
+- **KEEP:** everything committed — `_execute` + choreography, real verifiers + fusion, the world-frame calibration + world-map viz (this cycle's keeper — it makes the geometry verify moment showable), the still/remote camera hedges, the P0 agent loop, teach + safe-motion.
+- **ADD, in strict priority (same three, now overdue by two cycles):** (1) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws (Q-OT-1). (2) **finish teaching the 12 poses on both arms** — resume now, it's stalled and can't be pre-staged (Q-POSES-1). (3) **wire the one `wm.reparent(...)` line into `_execute`** — the RLock makes it safe and the tests spell it out — *or* formally commit to the geometry-only verify moment, which this cycle's committed calibration + world map make the more defensible pick than ever (Q-TWIN-COUPLING). (4) **measure the 210/211 board spacing** (one caliper reading) so the committed world frame is metrically real. (5) then script **one deliberate failure injection** on whichever predicate is genuinely live (Q-DEMO-1).
+- **DECIDE (now urgent):** pick the demo's hero verify moment *this block*. The committed world frame + world map make "geometry-only" the strongest it's ever been — if reparent-wiring won't happen, choose the geometry predicate now, measure the board, and rehearse to it.
+
+**Opposing view (steelman).** The honest read: the team is executing the review's own advice — it said "commit the calibration," they did, and they threw in a visualization that turns an abstract honesty-upgrade into a screen a judge can *see*. On that view the world map may be worth more than a reparent line, because it lets the demo *narrate* physical verification (the frame is provably shared) even if the parent-based predicate never fires — and de-risking a demo you can narrate is legitimate. The counter is unchanged and, at three cycles, decisive: all of this perimeter work shares one property — it has no hard deadline and could be done any time, including after the demo — while pose-teaching and the OT rig are room-and-hardware tasks that *cannot* be pre-staged and *will* consume the last hour if left. Held at 7.0 because the stated PoC is exactly as demonstrable as last cycle: the perimeter is stronger and more showable, the climaxes no weaker and no stronger. But three cycles of runway have now been spent one merge, ten poses, and one line short of the thing that matters — and the next cycle spent the same way is the one where the clock, not the code, decides the demo.
 
 ### 2026-07-26T04:30Z — The perimeter got harder while the three deciding items stood still.
 

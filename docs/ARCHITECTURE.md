@@ -32,7 +32,8 @@ flowchart TB
       FUSE[TwinFuser · REAL COMMITTED<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
       PROJ[Twin→image projection · REAL COMMITTED<br/>core/perception/projection.py<br/>world entity + K → overlay polygon]:::be
       SHP[Shape detect · REAL COMMITTED<br/>core/perception/shapes.py<br/>Hough circles → untagged labware]:::be
-      CAL[Calibration pipeline<br/>runs + publishes twin · world-frame extrinsics WIP<br/>fixed-cam T_world_cam from 210/211 board<br/>hand-eye/scan · TODO]:::be
+      CAL[Calibration pipeline<br/>runs + publishes twin · world-frame extrinsics COMMITTED<br/>fixed-cam T_world_cam from 210/211 board<br/>board spacing unmeasured · hand-eye/scan · TODO]:::be
+      VIZ[World-map viz · REAL COMMITTED<br/>core/viz/scene.py · world_scene / scene_svg<br/>/api/worldmodel/scene&#40;.svg&#41; · both cams one frame]:::be
       DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
       RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
@@ -47,7 +48,7 @@ flowchart TB
     REG[registry]:::dr
     XA[xarm]:::dr
     OT[opentrons]:::dr
-    CAMd[camera<br/>realsense · UVC · still-replay · mock]:::dr
+    CAMd[camera<br/>realsense · UVC · still-replay · remote-MJPEG · mock]:::dr
   end
 
   subgraph TP[third_party]
@@ -91,6 +92,8 @@ flowchart TB
   WM -. camera world-pose .-> FUSE
   WM -->|entity pose + CAD dims| PROJ
   PROJ -->|overlay polygons| WS
+  WM -->|world XY positions| VIZ
+  VIZ -->|scene JSON + SVG| REST
   CAMd -. frames .-> SHP
   SHP -->|untagged xyz| WM
   CAL --> FID
@@ -172,17 +175,25 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   disk with **2 of 12 poses taught** (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z);
   the remaining 10 poses and the entire **left** arm are untaught, so `preflight` still correctly **refuses to
   run** the full choreography (Q-POSES-1) — a green test suite is not a moving demo, but a real arm is now being
-  taught. Calibration's **fixed-camera `world_frame` step is now being wired** (uncommitted WIP on disk):
+  taught. Calibration's **fixed-camera `world_frame` step is now committed** (`cfa8aac`, last cycle's recommendation done):
   `core/calibration/world_board.py` defines a shared world frame from a two-tag board (`tag36h11` ids 210 & 211),
   `core/calibration/extrinsics.py::solve_world_cam` solves each fixed camera's `T_world_cam` against that board
-  (hardware-free solver, synthetic round-trip unit test), and `pipeline.py::_world_frame` now detects the board on
-  `overview_cam`/`handover_cam`, writes `T_world_cam` into the twin and persists it under `calib/extrinsics/`. This
-  turns fused/projected coords for the fixed cameras from camera-frame toward a real shared metric world frame — the
-  honest substrate the geometry verifiers need. **Still TODO / placeholder:** the on-arm gripper camera's `hand_eye`,
-  `arm_to_arm`, and the scan step remain `TODO` (`PlaceholderScanAdapter`); the board's real tag spacing is an
-  unmeasured `TODO(measure)` placeholder; and `MARKER_MAP` uses **real** printed stock ids (`tag36h11` 180–224) but
-  keeps `identity()` marker→entity offsets (0.02 placeholder). Until the WIP is committed and the spacing measured,
-  world poses are still not trustworthy end-to-end (Q-CALIB-1, Q-FUSE-1).
+  (hardware-free solver, synthetic round-trip test `backend/tests/test_extrinsics.py`), and `pipeline.py::_world_frame`
+  now detects the board on `overview_cam`/`handover_cam`, writes `T_world_cam` into the twin and persists it under
+  `calib/extrinsics/`. This turns fused/projected coords for the fixed cameras from camera-frame toward a real shared
+  metric world frame — the honest substrate the geometry verifiers need. A **top-down world-map visualization** landed
+  alongside it (`core/viz/scene.py::world_scene`/`scene_svg`, served at `/api/worldmodel/scene` + `/scene.svg`, with
+  `frontend/public/worldmap.html` + `WorldMapTab.vue`; `backend/tests/test_scene.py`): it places both fixed cameras by
+  solving the *same* board, so on the map they land at their true relative positions — a showable proof that the shared
+  frame is real. **Still TODO / placeholder:** the on-arm gripper camera's `hand_eye`, `arm_to_arm`, and the scan step
+  remain `TODO` (`PlaceholderScanAdapter`); the board's real tag spacing is **still** an unmeasured `TODO(measure)`
+  (`BOARD_SPACING_M = 0.060` placeholder); and `MARKER_MAP` uses **real** printed stock ids (`tag36h11` 180–224) but
+  keeps `identity()` marker→entity offsets (0.02 placeholder). The code is committed now; until the board spacing is
+  measured, world poses are still not metrically trustworthy end-to-end (Q-CALIB-1, Q-FUSE-1). A **remote camera driver**
+  (`drivers/camera/remote.py`, `39bdca6`, registered `"remote"`) also landed: it serves another backend's cameras over
+  their MJPEG endpoint — selected wholesale by `HZ_CAMERA_HOST` — so a second machine with no cameras plugged in runs the
+  whole stack against the bench's viewpoints (frames enter at the driver layer, RGB-only so `has_depth` is False, honestly
+  reports `live: True` and errors on a frozen stream; `backend/tests/test_camera_remote.py`).
 - **Twin↔physics coupling is not wired in the live path (verifier-critical):** `WorldModel.reparent()` and any
   motion-driven twin pose update are exercised **only in tests** (`test_worldmodel.py`, `test_integration_loop.py`,
   `test_verification.py`) — `grep` finds **zero** `reparent` calls in `backend/app/` or `core/` production code, and
