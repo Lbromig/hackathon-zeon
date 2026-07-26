@@ -100,7 +100,7 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. **The OT-One now has its real action too**, on this branch (not on `feat/ot-one-serial-driver`): `drivers/opentrons/driver.py` has zero `TODO`s and drives G-code over USB serial to the Smoothieboard `v1.0.3`. Verified on hardware — all six axes jog (4 gantry + 2 plungers), tip pickup at a measured 53 mm engagement depth, and a closed 200 mm XY tour returning to net 0.00/0.00 mm. Driveable from the browser (`OpentronsJog.vue` → `/api/liquid-handlers/{id}/jog`), so a click moves the gantry. *Still unverified: a real **aspirate**, which needs the plunger calibrated — see Q-OT-PLUNGER-1.*
 - [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
 - [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose), the calibration pipeline now runs and publishes the twin (`/ws/calibrate`), the camera transport is now mounted (`cameras.router` + `camera_hub`, detections on `/ws/state`), and `MARKER_MAP` now carries real stock ids (180–224). Still open — unchanged this cycle: verification agents remain `ok=True` stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder; marker→entity offsets unmeasured.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
@@ -127,6 +127,25 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
   end-to-end run.
 - Dual-arm unscrew is the long pole → Dale starts first; snap-cap fallback ready.
 - Arm↔OT alignment → wide-mouth tube / funnel lead-in for slack.
+- **The OT can move but cannot yet aspirate.** All six axes jog and tip pickup is
+  measured, but `aspirate`/`dispense`/`drop_tip` refuse: `plunger_axis` and
+  `plunger_ul_per_mm` are measurements this unit has never had taken, and neither
+  is inferable (the board's config has no plunger entries, and `M119` reports
+  `min_b` but no `min_c`, so the plungers are not symmetric). Code is ready and
+  offline-verified; one bench session with `scripts/calibrate_plunger.py` closes
+  it. This is the OT half of the floor rung.
+- **The OT has no coordinate frame, so it cannot be sent to a pose.** No endstop
+  registers on any axis, so `G28.2` zeroes the counter at a mechanical stop rather
+  than a reference. Everything working is *relative* jogging. Any plan to have an
+  agent drive the OT to a perceived tube position has to either repair the endstop
+  wiring or close the loop visually — perception alone does not unblock it,
+  because there is no frame in which to express the target. See the Objective
+  section and `docs/OT_ONE_HARDWARE.md`.
+- **A crash on the OT is invisible to software.** No endstops and no current
+  sensing, so a stalled stepper skips steps and a blocked move returns exactly
+  like a clean one. Motion duration proves a move ran, never that the path was
+  clear. Any autonomous OT motion needs vision as its feedback channel before it
+  runs unattended.
 - Live chaining → the verify→retry loop is the safety net; prefer deliberate failure injection in the demo.
 - The hero workflow `_execute` is still empty (commented TODOs); wire at least the floor path so the
   chain and the agent loop drive real hardware, not no-ops.
