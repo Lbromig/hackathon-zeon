@@ -40,14 +40,21 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from drivers import DriverError, InstrumentKind
-from drivers.opentrons.driver import MAX_JOG_MM
+from drivers.opentrons.driver import MAX_JOG_MM, MAX_PLUNGER_JOG_MM, PLUNGER_AXES
 
 from ..services.device_manager import device_manager
 
 router = APIRouter(prefix="/api/liquid-handlers", tags=["liquid-handler"])
 
-JOGGABLE_AXES = ("X", "Z", "A")   # Y excluded: see module docstring
-REFUSED_AXES = ("Y",)
+# Y is joggable but NOT homeable. The Y fault is specific to homing: G28.2 Y
+# drives a long search for an endstop that never reports and grinds against a
+# hard stop. A bounded relative jog does no search, and was verified clean on
+# hardware over 10 mm in 2 mm steps.
+# B and C are the plungers. They jog too, but under a much tighter cap than the
+# gantry: travel is short and one driven past its seal jams.
+JOGGABLE_AXES = ("X", "Y", "Z", "A", "B", "C")
+REFUSED_AXES: tuple[str, ...] = ()
+UNHOMEABLE_AXES = ("Y",)
 
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -101,7 +108,10 @@ def limits(device_id: str) -> dict[str, Any]:
     return {
         "joggable_axes": list(JOGGABLE_AXES),
         "refused_axes": list(REFUSED_AXES),
+        "unhomeable_axes": list(UNHOMEABLE_AXES),
         "max_step_mm": MAX_JOG_MM,
+        "plunger_axes": list(PLUNGER_AXES),
+        "max_plunger_step_mm": MAX_PLUNGER_JOG_MM,
         "relative_only": True,
         "endstops_functional": False,
         "note": (

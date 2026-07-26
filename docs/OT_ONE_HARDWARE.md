@@ -172,3 +172,93 @@ power cycle: power off, unplug USB, wait about 5 s, reconnect.
 
 `write_timeout` on the port is what turns this into a clean abort instead of a
 hang. Do not remove it.
+
+---
+
+# Runbook: next bench session
+
+Everything below is prepared and offline-verified. The order matters: each step
+gates the next, and the cheap checks come first so a dead cable is found in
+seconds rather than after a failed calibration.
+
+## 0. Reconnect and confirm the machine is really there
+
+The board's logic runs off **USB** while the motors sit on a **separate rail**, so
+it can answer perfectly with dead motors, or vanish entirely. Both have happened.
+
+    python3 ot_driver.py detect
+
+Expect a `Smoothieboard` candidate on `/dev/cu.usbmodem*`. If the bus is empty the
+cable is not making a data connection — reconnect it. If it enumerates but will not
+answer, it needs a real power cycle: power off, **unplug USB too**, wait ~5 s.
+
+Note the port name; macOS does not always reissue the same `usbmodem` number.
+
+## 1. Confirm motors actually move (30 s, no risk)
+
+The trap: with the motor rail off, moves are accepted, position registers update,
+and durations come back correct while **nothing physically moves**.
+
+    python3 ot_driver.py home --transport serial --port <PORT> --axes Z --go
+
+A real Z home takes 5-7 s. If it returns instantly, or nothing visibly moves, the
+motor supply is off.
+
+## 2. Re-verify continuous motion (unverified — do this before trusting it)
+
+`jog_path()` was written to fix visible jitter: driving a path with one `jog()` per
+step drains the planner with `M400` after every step, stopping the machine dead
+between steps. It queues the moves and drains once instead. **This has never run on
+hardware** — the board dropped off before it could.
+
+    python3 scripts/tour_search_space.py --x 60 --y 40 --laps 2 --feed 600
+
+Watch for one continuous sweep per lap rather than a series of twitches. The loop
+is closed, so net displacement should print `0.00 / 0.00`.
+
+## 3. Identify the mounted plunger (the actual blocker: Q-OT-PLUNGER-1)
+
+Cheapest informative step, and it can also tell you the plunger motor is not
+connected at all — which would be a hardware finding, not a calibration result.
+
+    python3 scripts/calibrate_plunger.py --identify
+
+It nudges B, returns it, then C, returns it. Whichever visibly moves is the mounted
+side. `M119` reports `min_b` but no `min_c`, so do not assume it is B.
+
+## 4. Measure µL per mm
+
+Needs a tip fitted and primed, its end submerged in water, and the plunger at a
+repeatable start point.
+
+    python3 scripts/calibrate_plunger.py --measure --axis <B|C> --mm 2.0
+
+Dispense into a tared container (or read the tip graduation), then:
+
+    plunger_ul_per_mm = volume_uL / mm_travelled
+
+Take it **at least twice**. A single reading cannot show whether the plunger is
+repeatable, which is the property that actually matters.
+
+## 5. Record it and aspirate becomes real
+
+On the `opentrons` entry in `core/config.py` `DEFAULT_FLEET`:
+
+    "plunger_axis": "B",            # whichever moved
+    "plunger_ul_per_mm": <measured>
+
+That closes Q-OT-PLUNGER-1 and hands over the OT half of Q-EXEC-1 (the floor
+rung's aspirate step). Until both values exist, `aspirate`/`dispense` refuse by
+design rather than guessing.
+
+## Throughout: what the software cannot tell you
+
+**A crash is invisible.** No endstops register on any axis and there is no current
+sensing, so a stalled stepper skips steps and a blocked move returns exactly like a
+clean one. Every duration in every log above proves a move *ran*, never that the
+path was *clear*. The operator watching is the only feedback channel this machine
+has until vision supplies one.
+
+If anything grinds, cut power at the switch. Do not rely on software.
+
+    python3 ot_driver.py estop --port <PORT>     # writes Ctrl-X, M112, M18
