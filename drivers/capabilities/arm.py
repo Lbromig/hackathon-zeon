@@ -179,6 +179,24 @@ class ArmDriver(InstrumentDriver):
         span = info.max_width - info.min_width
         return info.min_width + (width_m / info.stroke_m) * span
 
+    def metres_from_width(self, width: float) -> float | None:
+        """Inverse of :meth:`width_from_metres` — command units back to SI.
+
+        Verification works in metres (it compares the opening against a tube
+        diameter from the world model), while the gripper reports counts. Returns
+        None when the conversion isn't defined, so a caller can distinguish "no
+        width feedback" from a real reading of zero.
+        """
+        info = self.gripper_info
+        if not info.supports_width or width is None:
+            return None
+        if info.units == "m":
+            return float(width)
+        span = info.max_width - info.min_width
+        if info.stroke_m <= 0 or span == 0:
+            return None
+        return (float(width) - info.min_width) / span * info.stroke_m
+
     @abstractmethod
     def grip(self, width: float | None = None, force: float | None = None) -> None:
         """Close the gripper, to ``width`` in ``gripper_info.units`` if supported.

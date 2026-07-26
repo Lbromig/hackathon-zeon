@@ -261,12 +261,41 @@ class XArmDriver(ArmDriver):
         # a failed pose read propagate would blank the fault codes too, and a
         # missing error_code reads as "no fault" — waving motion onto a faulted arm.
         for key, read in (("pose", lambda: self.get_pose().__dict__),
-                          ("joints", self.get_joints)):
+                          ("joints", self.get_joints),
+                          ("effort", self._read_effort),
+                          ("gripper_width_m", self._read_gripper_width_m)):
             try:
                 out[key] = read()
             except Exception as e:
                 out.setdefault("read_errors", {})[key] = str(e)
         return out
+
+    def _read_effort(self) -> dict[str, list[float]]:
+        """Per-joint torque (Nm) and servo current (A) — the only load signal we have.
+
+        The Lite 6 has no force/torque sensor: ``ft_ext_force`` reads all zeros and
+        the SDK exposes no gripper force. Joint effort is therefore what the
+        verification agents fuse to answer "did the cap actually come loose?".
+
+        Both come from the controller's *rich* report, which ``connect()`` already
+        waits for. Sliced to ``axis_count``: the report is a fixed 7-slot array, so
+        a 6-axis arm reports a trailing 0.0 that is not a joint and would drag any
+        min/mean over the joints toward zero.
+        """
+        api = self._require()
+        n = self.axis_count
+        return {
+            "joints_torque": [float(v) for v in (api.joints_torque or [])[:n]],
+            "currents": [float(v) for v in (api.currents or [])[:n]],
+        }
+
+    def _read_gripper_width_m(self) -> float | None:
+        """Current opening in metres, for verifiers that compare against geometry.
+
+        None for grippers with no width feedback (lite6/bio are binary), which the
+        grasp verifier reads as "no evidence" rather than as a zero-width grasp.
+        """
+        return self.metres_from_width(self.gripper_width())
 
     # --- motion ------------------------------------------------------------
     def _require(self) -> "XArmAPI":

@@ -28,6 +28,22 @@ TEACH_LIMITS: dict[str, Any] = {
     "max_move_to_jump": 250.0,  # mm, max cartesian distance for one absolute move
 }
 
+# Which arm does what in the cooperative uncap. Not yet fixed on the bench, so
+# it is configuration rather than a hardcoded id — flip with HZ_TURNING_ARM /
+# HZ_HOLDING_ARM without touching the workflow.
+#
+# The holding arm is also the one that transports and presents the tube: it is
+# already holding it once the cap is off, so handing over to the other arm would
+# be a needless regrasp. (The original PLAN comments had "left holds, right
+# turns" but then transported with `right`, which cannot both be true.)
+TURNING_ARM: str = os.getenv("HZ_TURNING_ARM", "right")
+HOLDING_ARM: str = os.getenv("HZ_HOLDING_ARM", "left")
+
+# Geometry the grasp verifier compares against: holding the tube should hold the
+# jaws open by roughly the tube body's diameter. 15 ml body = 0.0153 m, measured
+# from the CAD bounding box in core/worldmodel/meshes.py — keep the two in step.
+GRASP_WIDTH_M: float = float(os.getenv("HZ_GRASP_WIDTH_M", "0.0153"))
+
 DEFAULT_FLEET: list[dict[str, Any]] = [
     {"type": "xarm", "id": "left", "name": "Left arm", "ip": "192.168.3.13",
      "gripper": "auto", "limits": TEACH_LIMITS},
