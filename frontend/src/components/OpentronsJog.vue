@@ -25,8 +25,11 @@ const log = ref<{ t: string; msg: string; ok: boolean }[]>([]);
 // Positive Z is DOWN on this unit, established by observation during bring-up.
 // The UI labels the buttons by intent (Down/Up) so the operator never has to
 // remember the sign convention.
+// Y is joggable but not homeable: the Y fault is specific to homing's long
+// endstop search, not to bounded relative moves. Verified on hardware.
 const AXES = [
-  { axis: "X", label: "X", minus: "−X", plus: "+X", hint: "gantry left / right" },
+  { axis: "X", label: "X", minus: "−X", plus: "+X", hint: "gantry" },
+  { axis: "Y", label: "Y", minus: "−Y", plus: "+Y", hint: "gantry · jog only, never home" },
   { axis: "Z", label: "Z", minus: "Up", plus: "Down", hint: "shared lift · +Z is DOWN" },
   { axis: "A", label: "A", minus: "Up", plus: "Down", hint: "right mount" },
 ] as const;
@@ -130,14 +133,10 @@ onMounted(async () => {
       <span class="hint">{{ a.hint }}</span>
     </div>
 
-    <div class="row axis disabled">
-      <span class="lbl">Y</span>
-      <button disabled>−Y</button>
-      <button disabled>+Y</button>
-      <span class="hint">
-        refused — drives looking for an endstop that never reports, and grinds
-      </span>
-    </div>
+    <p class="note">
+      All four axes jog. <strong>Home Z only</strong> — homing Y drives a long
+      search for an endstop that never reports and grinds against a hard stop.
+    </p>
 
     <ul class="log">
       <li v-for="(l, i) in log" :key="i" :class="{ bad: !l.ok }">

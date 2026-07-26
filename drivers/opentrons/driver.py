@@ -177,10 +177,14 @@ class OpentronsDriver(LiquidHandlerDriver):
                 return False
         return False
 
-    def _send(self, command: str, motion: bool = False) -> str:
+    def _send(self, command: str, motion: bool = False,
+              timeout: float | None = None) -> str:
         if self._conn is None:
             raise DriverError("Opentrons not connected")
-        budget = MOTION_TIMEOUT if motion else ACK_TIMEOUT
+        # An explicit timeout is needed for a queued path: M400 there waits for
+        # the WHOLE path to finish, which legitimately exceeds MOTION_TIMEOUT.
+        budget = timeout if timeout is not None else (
+            MOTION_TIMEOUT if motion else ACK_TIMEOUT)
         # Drop anything left over. One orphaned "ok" would otherwise satisfy this
         # command instantly and silently disable the stall detection below.
         try:
@@ -290,19 +294,22 @@ class OpentronsDriver(LiquidHandlerDriver):
         caller is responsible for knowing there is room: with no endstops and no
         current sensing, an overrun is invisible to software.
 
-        Sign conventions verified on this unit so far:
+        Y IS allowed here, unlike in home(). The Y fault is specific to homing:
+        `G28.2 Y` drives a long search looking for an endstop that never reports
+        and grinds against a hard stop. A bounded relative move does no search,
+        so it is a different operation entirely. Verified on hardware
+        2026-07-25: 10 mm of Y in 2 mm steps, every step within 0.01 s of the
+        predicted duration, no resistance.
+
+        Sign conventions verified on this unit:
           Z: positive is DOWN.
-          X: NOT established. Test with a small step and observe before
-             relying on it.
+          X, Y: axis directions confirmed to move; which way an operator calls
+                "left" or "back" depends on where they are standing, so the UI
+                labels them by axis rather than by direction.
         """
         axis = axis.upper()
         if axis not in ("X", "Y", "Z", "A"):
             raise DriverError(f"unknown axis {axis!r}")
-        if axis == "Y":
-            raise DriverError(
-                "refusing to move Y: it drives looking for a switch that never "
-                "reports and grinds against a hard stop."
-            )
         if abs(delta_mm) > MAX_JOG_MM:
             raise DriverError(
                 f"refusing a {delta_mm} mm jog: the cap is {MAX_JOG_MM} mm per "
@@ -321,6 +328,58 @@ class OpentronsDriver(LiquidHandlerDriver):
                 self._send(G_ABSOLUTE)
             except Exception:
                 pass
+
+    def jog_path(self, steps: list[tuple[str, float]],
+                 feedrate: float = APPROACH_FEED,
+                 max_total_mm: float = 500.0) -> None:
+        """Queue several relative moves back-to-back for CONTINUOUS motion.
+
+        Use this for scripted paths. `jog()` drains the planner with M400 after
+        every single step, which brings the machine to a dead stop between steps
+        — so a path built from repeated jog() calls visibly jitters, one
+        start-stop per step. Here the moves are queued without draining, letting
+        Smoothieware's look-ahead blend them into continuous motion, and the
+        queue is drained once at the end.
+
+        The trade-off is deliberate: a stall is only detected when the whole
+        path finishes rather than per step, so the guard becomes a cap on total
+        distance instead of per-step distance. Keep paths short enough that an
+        operator can still react.
+        """
+        if not steps:
+            return
+        total = sum(abs(d) for _, d in steps)
+        if total > max_total_mm:
+            raise DriverError(
+                f"refusing a {total:.0f} mm path: the cap is {max_total_mm:.0f} mm "
+                f"total, because a stall is only detected once the path completes."
+            )
+        for axis, _ in steps:
+            a = axis.upper()
+            if a not in ("X", "Y", "Z", "A"):
+                raise DriverError(f"unknown axis {axis!r}")
+        if self._reference_lost:
+            raise DriverError("reference lost after an emergency stop; home() again")
+
+        self._send(G_STEPPERS_ON)
+        try:
+            self._send(G_RELATIVE)
+            # Queue every move first, WITHOUT waiting. This is what makes the
+            # motion continuous rather than a series of separate moves.
+            for axis, delta in steps:
+                self._send(f"{G_MOVE} {axis.upper()}{delta:.2f} F{feedrate:.0f}",
+                           motion=True)
+            # One drain for the whole path. Its ack is the real "arrived".
+            self._send(G_WAIT_MOVES, motion=True,
+                       timeout=max(MOTION_TIMEOUT, total * 60.0 / feedrate + 10.0))
+        finally:
+            try:
+                self._send(G_ABSOLUTE)
+            except Exception:
+                pass
+        for axis, delta in steps:
+            if axis.upper() == "Z":
+                self._z_offset_mm += delta
 
     def jog_z(self, delta_mm: float, feedrate: float = APPROACH_FEED) -> float:
         """Move Z by a relative amount. Positive is DOWN on this unit.
