@@ -24,6 +24,20 @@ violating either wedges the machine in a way only a power cycle recovers:
    it rather than assuming.
 
 Homing is deliberately NOT implemented — see :meth:`home`.
+
+Two frames, and where they meet
+-------------------------------
+Everything below the ``_send`` line is in the **controller frame**: ``Z+`` is down, ``min_z`` is
+at the top of travel. Everything the *capability* exposes — :meth:`move_relative`,
+:class:`~drivers.capabilities.liquid_handler.RelativeMoveReport` — is in the **task frame**,
+where ``+z is up``. :data:`Z_UP_SIGN` is the entire conversion and it is applied in exactly one
+method. :meth:`position` and :meth:`status` deliberately stay in the controller frame, because
+their numbers are read next to what the board itself reports and flipping them would make the
+driver disagree with ``M114`` on a bench.
+
+The wire itself lives in :mod:`drivers.opentrons.transport` (D6/R-LH-5), which also provides a
+board simulator recording the exact lines emitted — the only way to catch a driver that reports
+success while doing nothing, without an instrument.
 """
 from __future__ import annotations
 
@@ -35,12 +49,16 @@ import time
 from typing import Any
 
 from ..base import ConnectionState, DeviceInfo, DriverError, InstrumentKind
-from ..capabilities.liquid_handler import DeckLocation, LiquidHandlerDriver
+from ..capabilities.liquid_handler import (DeckLocation, LiquidHandlerDriver, MoveLimits,
+                                           RelativeMoveReport)
+from .transport import BAUD, GANTRY_AXES, LoopbackTransport, NullTransport, SerialTransport
+from .transport import open_transport as build_transport
 
 log = logging.getLogger(__name__)
 
-BAUD = 115200
-GANTRY_AXES = ("X", "Y", "Z")
+#: Kept as an alias so callers and tests that reached for the old private name still work. The
+#: class itself now lives in `transport.py`, with the loopback and null transports beside it.
+_SerialTransport = SerialTransport
 # How far each axis moves during initialize(). Small: this is a "does it move" check, not a
 # calibration, and the machine is unhomed so nothing knows where the deck is.
 INIT_STEP_MM = {"X": 3.0, "Y": 3.0, "Z": 2.0}
@@ -79,6 +97,11 @@ RETRACT_STEP_MM = 2.0          # checked against the endstops between steps
 # wrong number can do. An absolute `envelope` may additionally be configured.
 MAX_STEP_MM = {"X": 50.0, "Y": 50.0, "Z": 30.0}
 
+# Difference between commanded and achieved worth reporting, mm. Below this it is rounding in the
+# controller's step maths; above it, an axis did not follow — and every later offset would then be
+# computed against a position that was never reached, which is the failure that matters most here.
+DRIFT_TOLERANCE_MM = 0.2
+
 # How position is known, reported so no consumer mistakes it for a measurement (R-LH-4).
 #
 # The OT-One has no encoders: `M114`'s lower-case "actual" values are the controller's own
@@ -97,58 +120,14 @@ POSITION_PROVENANCE = {
 _FAULT_MARKERS = ("!!", "reset or m999 required", "limit switch")
 
 
-class _SerialTransport:
-    """Line conversation with the board. Owns the port and the read timing."""
+def open_transport(port: str, baud: int = BAUD) -> Any:
+    """Open the **serial** transport. The seam a test replaces to avoid a real port.
 
-    def __init__(self, port: str, baud: int = BAUD, timeout: float = 2.0) -> None:
-        try:
-            import serial
-        except ImportError as e:                                  # pragma: no cover
-            raise DriverError(
-                "pyserial not installed — it is required to talk to the OT-One"
-            ) from e
-        try:
-            self._ser = serial.Serial(port, baud, timeout=timeout)
-        except Exception as e:
-            raise DriverError(f"cannot open {port}: {e}") from e
-        self.port = port
-        # The board says nothing on open (no boot banner on an already-running board), so
-        # a short drain only clears anything a previous session left behind.
-        self._read(0.5)
-
-    def _read(self, seconds: float) -> str:
-        """Read until the board has been quiet for a moment, or the window expires.
-
-        Replies are multi-line and carry no sentinel — `M114` answers with two lines and no
-        trailing "ok" of its own — so "quiet for 400 ms" is the only reliable
-        end-of-reply signal.
-        """
-        out, end = b"", time.time() + seconds
-        while time.time() < end:
-            waiting = self._ser.in_waiting
-            if waiting:
-                out += self._ser.read(waiting)
-                end = time.time() + 0.4
-            else:
-                time.sleep(0.05)
-        return out.decode("utf-8", "replace")
-
-    def converse(self, line: str, wait: float) -> str:
-        self._ser.reset_input_buffer()
-        self._ser.write((line + "\n").encode())
-        self._ser.flush()
-        return self._read(wait).strip()
-
-    def close(self) -> None:
-        try:
-            self._ser.close()
-        except Exception:                                          # pragma: no cover
-            pass
-
-
-def open_transport(port: str, baud: int = BAUD) -> _SerialTransport:
-    """Factory, so tests can substitute a fake without touching a serial port."""
-    return _SerialTransport(port, baud)
+    Kept at this exact two-argument signature on purpose: it is the monkeypatch point every
+    driver test uses, and widening it would break them silently. Choosing a *different* transport
+    is `connect`'s job, from ``config["transport"]``, so this function never has to decide.
+    """
+    return SerialTransport(port, baud)
 
 
 def find_port() -> str | None:
@@ -195,14 +174,27 @@ class OpentronsDriver(LiquidHandlerDriver):
     # --- lifecycle ---------------------------------------------------------
     def connect(self) -> None:
         self._state = ConnectionState.CONNECTING
-        port = str(self.config.get("port") or "").strip() or find_port()
-        if not port:
-            self._state = ConnectionState.ERROR
-            raise DriverError(
-                f"{self.device_id}: no serial port configured or found. Set OT_SERIAL_PORT "
-                "(on macOS it looks like /dev/cu.usbmodem11301, not /dev/ttyACM0)"
-            )
-        io = open_transport(port, int(self.config.get("baud") or BAUD))
+        kind = str(self.config.get("transport") or "serial").strip().lower()
+        port = str(self.config.get("port") or "").strip()
+        baud = int(self.config.get("baud") or BAUD)
+
+        if kind == "serial":
+            port = port or find_port() or ""
+            if not port:
+                self._state = ConnectionState.ERROR
+                raise DriverError(
+                    f"{self.device_id}: no serial port configured or found. Set OT_SERIAL_PORT "
+                    "(on macOS it looks like /dev/cu.usbmodem11301, not /dev/ttyACM0)"
+                )
+            # Through the module-level factory rather than the class, so this stays the one seam
+            # a test replaces to keep every code path below hardware-free (R-SIM-7).
+            io = open_transport(port, baud)
+        else:
+            # A board simulator or a deliberately mute transport (D6). No port is required, and
+            # none is invented: a loopback that quietly claimed a tty would be a lie about what
+            # the machine is.
+            io = build_transport(port, baud, kind)
+            port = io.port
         try:
             # `version` is the cheapest proof that the firmware's main loop is alive. A
             # board mid-blocked-move opens fine and answers nothing, so opening the port is
@@ -333,13 +325,17 @@ class OpentronsDriver(LiquidHandlerDriver):
         min endstop is moved *away* first and the release is verified; an axis with room is
         jogged both ways and returned to where it started.
 
-        R-LH-2 also asks for a Z retract at the end. It runs when `retract_z` is true, or
-        when the config says `retract_z_on_init`; it defaults **off** because a retract has
-        no endstop above it to stop against (see :meth:`retract_z`) and the safe distance
-        depends on where the head happens to be parked, which nothing here knows.
+        R-LH-2 also asks for a Z retract at the end, and it now runs **by default**. It was off
+        for a while, on the reasoning that a retract had no endstop above it to stop against — and
+        that reasoning was wrong, because it rested on the inverted Z convention this driver has
+        since settled. ``min_z`` is at the *top* of travel (measured: with it triggered, `G0 Z+5`
+        released it), so a retract moves *toward* a real switch and :meth:`retract_z` stops on it.
+        With a hard stop to stop against, "leave the head clear of the deck" is the safe way to
+        finish initializing, and R-LH-2 asks for it. Pass ``retract_z=False``, or set
+        ``retract_z_on_init: false`` in the fleet entry, to opt out.
         """
         if retract_z is None:
-            retract_z = bool(self.config.get("retract_z_on_init", False))
+            retract_z = bool(self.config.get("retract_z_on_init", True))
         report: dict[str, Any] = {"firmware": self._firmware, "axes": {}}
         self._refresh(force=True)
         try:
@@ -404,9 +400,97 @@ class OpentronsDriver(LiquidHandlerDriver):
         return {"started_on_endstop": False, "moved_mm": step, "net_mm": 0.0,
                 "released": None}
 
-    # --- relative motion (R-LH-1) ------------------------------------------
+    # --- relative motion, task frame (R-LH-1) ------------------------------
+    def move_relative(self, dx: float = 0.0, dy: float = 0.0,
+                      dz: float = 0.0) -> RelativeMoveReport:
+        """The capability's relative move: **task frame, +z is up** (R-LH-1).
+
+        This method is the entire boundary between the two frames. It converts ``dz`` with
+        :data:`Z_UP_SIGN`, hands the controller-frame displacement to :meth:`move_by`, and
+        converts the achieved motion and the positions back. Nothing above it needs to know that
+        this machine's ``Z+`` points at the deck, and nothing below it may assume otherwise.
+
+        A positive ``dz`` therefore **raises** the head. That is the one sentence worth checking
+        against a test before touching this file: reversed, "retract" drives the pipette into the
+        deck, and the driver would report success while doing it.
+
+        ``provenance`` is always ``dead_reckoned``. The OT-One has no encoders and has never been
+        homed, so both the numbers and their origin are the controller's own step counts
+        (:data:`POSITION_PROVENANCE`). Reporting anything else would let the servo loop treat an
+        assumption as a measurement, which is exactly what R-LH-4 forbids.
+        """
+        raw = self.move_by(dx=dx, dy=dy, dz=Z_UP_SIGN * float(dz))
+        requested = {"x": float(dx), "y": float(dy), "z": float(dz)}
+        applied = {a.lower(): self._to_task(a, v)
+                   for a, v in (raw.get("achieved") or {}).items()}
+        drift = {a: round(applied[a] - requested[a], 3) for a in applied
+                 if abs(applied[a] - requested[a]) > DRIFT_TOLERANCE_MM}
+        position = raw.get("position") or self.position()
+        return RelativeMoveReport(
+            requested_mm=requested,
+            applied_mm=applied,
+            position_before=self._task_position(position.get("actual"), applied, before=True),
+            position_after=self._task_position(position.get("actual"), applied),
+            provenance="dead_reckoned",
+            drift_mm=drift,
+            moved=bool(raw.get("moved")),
+            detail={"controller_frame": position, "endstops": dict(self._endstops)},
+        )
+
+    def move_limits(self) -> MoveLimits:
+        """The bounds :meth:`move_relative` enforces (R-LH-3).
+
+        Only ``max_step_mm``, which is frame-agnostic: it bounds a *magnitude*, so it means the
+        same thing in either frame and can be checked by a caller without knowing which frame it
+        holds.
+
+        ``envelope_mm`` is deliberately left empty even when one is configured. A configured
+        envelope is in the **controller's** frame, and Z's bounds do not merely negate when
+        converted — the interval flips end for end — so publishing a converted pair would produce
+        a bound nobody can check against the board by eye, in the one place where being wrong is
+        expensive. The absolute envelope is therefore enforced inside :meth:`_check_envelope`, in
+        its own frame, where the numbers match what ``M114`` prints.
+        """
+        return MoveLimits(max_step_mm={a.lower(): float(v) for a, v in MAX_STEP_MM.items()})
+
+    @staticmethod
+    def _to_task(axis: str, value: float) -> float:
+        """One controller-frame number in the task frame. Z flips; X and Y do not."""
+        return round(Z_UP_SIGN * float(value), 3) if axis.upper() == "Z" else round(float(value), 3)
+
+    def _task_position(self, actual: Any, applied: dict[str, float],
+                       before: bool = False) -> dict[str, float]:
+        """Task-frame position, after the move, or reconstructed for before it.
+
+        ``M114`` is only read *after* a move, so "before" is the readback minus what was applied.
+        Reconstructed rather than captured separately because an extra ``M114`` round trip before
+        every nudge costs a wire conversation per iteration for a number the arithmetic already
+        has — and on a machine whose position is dead reckoning either way, the subtraction is
+        exactly as trustworthy as the read.
+        """
+        if not isinstance(actual, dict):
+            return {}
+        out: dict[str, float] = {}
+        for axis, value in actual.items():
+            try:
+                number = self._to_task(axis, float(value))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number):
+                continue
+            key = axis.lower()
+            out[key] = round(number - applied.get(key, 0.0), 3) if before else number
+        return out
+
     def move_by(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> dict[str, Any]:
-        """Move the pipette head by a relative offset in mm. The servo loop's one action.
+        """Move by a relative offset in mm, **in the controller's frame** — so ``dz`` is *down*.
+
+        The wire-level half of :meth:`move_relative`, and the reason the two exist separately:
+        this one speaks the frame ``M114`` and ``G0`` speak, which is the frame to think in when
+        reading a board's replies, and the capability's method speaks the task frame, which is the
+        frame to think in when reading a plan. Callers above the driver should use
+        :meth:`move_relative`; this stays public because the bench scripts and the driver's own
+        tests reason in board coordinates.
 
         Relative *semantics*, and relative on the wire too (`G91`). The work breakdown
         suggests read -> clamp -> absolute command where a readback exists, and a readback
@@ -452,7 +536,7 @@ class OpentronsDriver(LiquidHandlerDriver):
         # A commanded move the axis did not make is the failure that matters here: it means
         # something is blocked, and every later offset would be computed against a lie.
         drift = {a: round(achieved[a] - moving[a], 3) for a in moving
-                 if abs(achieved[a] - moving[a]) > 0.2}
+                 if abs(achieved[a] - moving[a]) > DRIFT_TOLERANCE_MM}
         if drift:
             log.warning("%s: commanded %s but achieved %s (shortfall %s)",
                         self.device_id, moving, achieved, drift)
