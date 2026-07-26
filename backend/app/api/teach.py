@@ -32,23 +32,30 @@ from fastapi import APIRouter, HTTPException
 from drivers import ArmDriver, ConnectionState, DriverError, InstrumentKind, Pose
 
 from core.config import settings
+from core import teach_paths
+from core.motion import cap_ops, path_teach
+from core.motion.path_teach import TaughtPath
 
 from ..schemas import (
     ArmActionResult,
     ArmLimitsModel,
     ArmState,
     ArmSummary,
+    CapRequest,
     EnableRequest,
     FreeDriveRequest,
     GripperModel,
     GripperRequest,
     JogRequest,
     MoveToRequest,
+    PathRecordState,
     PoseModel,
     StopRequest,
+    TaughtPathModel,
     TaughtPose,
 )
 from ..services.device_manager import device_manager
+from ..services.path_recorder import path_recorder
 
 router = APIRouter(prefix="/api/arms", tags=["teach"])
 
@@ -393,6 +400,33 @@ def enable(device_id: str, req: EnableRequest) -> ArmActionResult:
     return _command(device_id, action)
 
 
+@router.post("/{device_id}/cap", response_model=ArmActionResult)
+def cap(device_id: str, req: CapRequest) -> ArmActionResult:
+    """Grab / release / unscrew a cap.
+
+    `unscrew` is a ratchet: the tool cabling cannot take a continuous 360°, so the wrist
+    takes 180° bites, opening and unwinding between them. It pre-flights every wrist
+    angle it would visit before moving at all — stopping halfway would leave the cap
+    partly unscrewed with the wrist wound round.
+    """
+    def action(arm: ArmDriver) -> str:
+        _require_movable(arm)
+        cfg = cap_ops.CapConfig(
+            grip_counts=req.width,
+            half_turns=req.half_turns,
+            joint_speed=_speed(arm, req.speed, angular=True) or cap_ops.DEFAULT_JOINT_SPEED,
+        )
+        try:
+            if req.action == "grab":
+                return cap_ops.grab_cap(arm, cfg)
+            if req.action == "ungrab":
+                return cap_ops.ungrab_cap(arm)
+            return cap_ops.unscrew_cap(arm, cfg)
+        except cap_ops.CapOpError as e:
+            raise ValueError(str(e)) from e
+    return _command(device_id, action)
+
+
 @router.post("/{device_id}/free_drive", response_model=ArmActionResult)
 def free_drive(device_id: str, req: FreeDriveRequest) -> ArmActionResult:
     """Hand-guiding: make the arm back-drivable so an operator can position it.
@@ -436,6 +470,130 @@ def stop(device_id: str, req: StopRequest) -> ArmActionResult:
     except Exception as e:
         detail, ok = f"stop failed: {e}", False
     return ArmActionResult(ok=ok, detail=detail, state=_state(arm, read_gripper=False))
+
+
+# --- taught paths (hand-guided travel routes) ---------------------------------
+
+def _path_model(p: TaughtPath) -> TaughtPathModel:
+    return TaughtPathModel(
+        name=p.name, waypoints=p.waypoints, recorded_at=p.recorded_at,
+        note=p.note, raw_samples=p.raw_samples, length_deg=round(p.length_deg, 1),
+    )
+
+
+@router.get("/{device_id}/paths", response_model=list[TaughtPathModel])
+def list_paths(device_id: str) -> list[TaughtPathModel]:
+    _arm(device_id)
+    return [_path_model(teach_paths.get(device_id, n))
+            for n in sorted(teach_paths.load().get(device_id, {}))]
+
+
+@router.get("/{device_id}/paths/recording", response_model=PathRecordState)
+def path_recording_state(device_id: str) -> PathRecordState:
+    _arm(device_id)
+    rec = path_recorder.active(device_id)
+    if rec is None:
+        return PathRecordState(recording=False)
+    return PathRecordState(recording=True, name=rec.name, samples=len(rec.samples),
+                           duration_s=round(rec.duration_s, 1), detail=rec.error)
+
+
+@router.post("/{device_id}/paths/{name}/record", response_model=ArmActionResult)
+def start_path_recording(device_id: str, name: str) -> ArmActionResult:
+    """Begin sampling joints so the operator can hand-guide a route.
+
+    Switches the arm into free-drive as part of starting, because recording a path you
+    cannot physically move is pointless — and forgetting that step is the obvious way to
+    end up with a recording of the arm standing still.
+    """
+    def action(arm: ArmDriver) -> str:
+        if arm.state != ConnectionState.CONNECTED:
+            raise DriverError(f"{arm.device_id} is not connected")
+        try:
+            arm.set_free_drive(True)
+        except NotImplementedError as e:
+            raise DriverError(str(e)) from e
+        try:
+            path_recorder.start(arm, name)
+        except RuntimeError as e:
+            raise ValueError(str(e)) from e
+        return (f"recording {name!r} — hand-guide the arm along the route, "
+                f"then press stop")
+    return _command(device_id, action)
+
+
+@router.post("/{device_id}/paths/{name}/record/stop", response_model=ArmActionResult)
+def stop_path_recording(device_id: str, name: str, note: str = "") -> ArmActionResult:
+    """Stop sampling, simplify, and save. Also leaves free-drive.
+
+    Free-drive off is not optional here: the very next thing anyone does is replay the
+    path, and commanded motion does not behave normally in a teaching mode.
+    """
+    def action(arm: ArmDriver) -> str:
+        try:
+            rec = path_recorder.stop(device_id)
+        except RuntimeError as e:
+            raise ValueError(str(e)) from e
+        finally:
+            try:
+                arm.set_free_drive(False)
+            except Exception:
+                pass
+        if rec.error:
+            raise DriverError(rec.error)
+
+        waypoints = path_teach.simplify(rec.samples)
+        try:
+            path_teach.validate(waypoints, arm.axis_count)
+        except path_teach.PathError as e:
+            raise ValueError(str(e)) from e
+
+        teach_paths.save(TaughtPath(
+            name=name, device_id=device_id, waypoints=waypoints, note=note,
+            raw_samples=len(rec.samples),
+            recorded_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ))
+        return (f"saved {name!r}: {len(waypoints)} waypoints "
+                f"from {len(rec.samples)} samples over {rec.duration_s:.0f}s")
+    return _command(device_id, action)
+
+
+@router.delete("/{device_id}/paths/{name}", response_model=list[TaughtPathModel])
+def delete_path(device_id: str, name: str) -> list[TaughtPathModel]:
+    _arm(device_id)
+    if not teach_paths.delete(device_id, name):
+        raise HTTPException(404, f"no taught path {name!r} for {device_id}")
+    return list_paths(device_id)
+
+
+@router.post("/{device_id}/paths/{name}/replay", response_model=ArmActionResult)
+def replay_path(device_id: str, name: str, speed: float | None = None,
+                reverse: bool = False) -> ArmActionResult:
+    """Drive the arm through the taught waypoints in order.
+
+    Every waypoint is checked against the joint soft limits *before the first move*.
+    Stopping halfway along a travel path can leave the arm somewhere nobody chose —
+    over the deck, or between the two instruments.
+    """
+    try:
+        path = teach_paths.get(device_id, name)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
+    def action(arm: ArmDriver) -> str:
+        _require_movable(arm)
+        if _state(arm, read_gripper=False).free_drive:
+            raise DriverError("hand-guiding is on — switch it off before replaying")
+        waypoints = list(reversed(path.waypoints)) if reverse else path.waypoints
+        for i, wp in enumerate(waypoints):
+            reason = arm.check_joint_target(wp)
+            if reason:
+                raise ValueError(f"waypoint {i + 1}/{len(waypoints)} rejected: {reason}")
+        for wp in waypoints:
+            arm.move_joints(wp, speed=_speed(arm, speed, angular=True), wait=True)
+        return (f"replayed {name!r} {'in reverse ' if reverse else ''}"
+                f"({len(waypoints)} waypoints)")
+    return _command(device_id, action)
 
 
 # --- taught poses ------------------------------------------------------------

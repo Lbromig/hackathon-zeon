@@ -417,11 +417,32 @@ class XArmDriver(ArmDriver):
         return [float(a) for a in angles[: self.axis_count]]
 
     def move_joints(self, angles: list[float], speed: float | None = None,
-                    wait: bool = True) -> None:
+                    wait: bool = True, radius: float | None = None) -> None:
+        """Joint move. ``radius`` blends this move into the next one.
+
+        With a radius the controller runs MoveArcJoint instead of MoveJoint: it does not
+        decelerate to a stop at this waypoint, it arcs through it into the following
+        command. That is the difference between a smooth sweep and a stutter at every
+        point — but it also means the arm CUTS THE CORNER, passing within `radius` of the
+        waypoint rather than through it. Fine for travel, wrong for a final approach.
+
+        Blending only works if the moves are queued, so pass ``wait=False`` for every
+        waypoint but the last and wait once at the end (see ``wait_for_idle``).
+        """
         self._check(self._require().set_servo_angle(
             angle=list(angles), speed=speed or self.config.get("joint_speed", 20),
             is_radian=False, wait=wait, timeout=MOTION_TIMEOUT_S if wait else None,
+            radius=radius,
         ), "set_servo_angle")
+
+    def wait_for_idle(self, timeout: float = MOTION_TIMEOUT_S) -> bool:
+        """Block until the queued trajectory has finished. Returns False on timeout.
+
+        Needed for blended replays: the individual moves are fired with ``wait=False``
+        so the controller can blend them, which means nothing else is waiting for the
+        motion to actually end.
+        """
+        return self._wait_until_stopped(self._require(), timeout)
 
     def move_joints_relative(self, deltas: list[float], speed: float | None = None,
                              wait: bool = True) -> None:
