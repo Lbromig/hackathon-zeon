@@ -7,10 +7,14 @@
 //
 //   * `arm.waypoint` **distance** — no field. Derived as the straight-line distance between
 //     `pose_before` and `pose_after`, which is the *travelled* distance, not the commanded one.
-//   * `arm.waypoint` **motion path** — `MoveOutputs.path` exists but is written by nothing
-//     until review B7 lands. Absent renders as `path ?`, not as `cartesian`.
 //   * `vision.solve_offset` **trend arrow** — no field. Compared against the previous solve in
 //     the same loop region.
+//
+// Review B7's three unwritten fields have since landed in `arm.py` and are read here as fields:
+// `MoveOutputs.path` (verified `joint_replay` on a live run), and
+// `DecapOutputs.wrist_rewound_before_decap` / `rewind_deg`. The absent-renders-as-unknown paths
+// below stay, because an older backend or a handler that stops writing one must still read as
+// unknown rather than as `cartesian` or as "no rewind happened".
 //
 // And two rules from §3.5 that are enforced here rather than by the reader:
 //   * a loop is never labelled "aborted" because a step inside it failed (non-blocking 1);
@@ -41,12 +45,19 @@ const deg = (v: number, digits = 0) => `${v.toFixed(digits)}°`;
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-/** `{x,y,z}` as `x 1.2 · y -0.4 · z 3.0`, skipping axes that are absent or null. */
+/**
+ * `{x,y,z}` as `x 1.2 · y -0.4 · z 3.0`, skipping axes that are absent or null.
+ *
+ * Both spellings are accepted, because the backend uses both: `LHMoveOutputs.requested_mm` is
+ * keyed `x/y/z` (from `AXES`) while `MoveOutputs.offsets_mm` is keyed `dx/dy/dz` (from the
+ * action's own field names). Reading only one spelling made every arm offset render as blank.
+ */
 function axes(map: unknown, digits = 1): string {
   if (!map || typeof map !== "object") return "";
+  const bag = map as Record<string, unknown>;
   const out: string[] = [];
   for (const axis of ["x", "y", "z"]) {
-    const v = num((map as Record<string, unknown>)[axis]);
+    const v = num(bag[axis]) ?? num(bag[`d${axis}`]);
     if (v !== null) out.push(`${axis} ${v.toFixed(digits)}`);
   }
   return out.join(" · ");
@@ -109,8 +120,9 @@ export function summarize(item: ChainRow, ctx: SummaryContext): Bit[] {
       if (item.result) {
         push(path ? PATH_LABEL[path] ?? path : "path ?", path ? "muted" : "warn",
           path ? "MoveOutputs.path — which motion path the move actually took"
-            : "MoveOutputs.path is empty: the handler does not write it yet (review B7). " +
-              "Not shown as 'cartesian' because that would be a guess");
+            : "MoveOutputs.path is empty. The handler does write it, so an empty value means " +
+              "this row came from an older backend. Not shown as 'cartesian': that would be a " +
+              "guess about the first question worth asking after an unexpected trajectory");
       }
       break;
     }
@@ -155,11 +167,12 @@ export function summarize(item: ChainRow, ctx: SummaryContext): Bit[] {
         push(rewindDeg ? `rewound ${deg(rewindDeg)}` : "rewound", "warn",
           "the wrist had to be unwound before the ratchet could start");
       } else if (hasWarning(item, "wrist_rewound_before_decap")) {
-        // The field is not written yet (review B7); the warning is the reachable half, and a
-        // decap that needed a rewind must not render identically to one that did not.
+        // Both halves exist now: the field and the `ctx.warn`. This branch catches the case
+        // where only the warning arrived — a decap that needed a rewind must never render
+        // identically to one that did not.
         push("rewound (from warning)", "warn",
-          "DecapOutputs.wrist_rewound_before_decap is unwritten (B7); this is the " +
-          "wrist_rewound_before_decap warning instead");
+          "the wrist_rewound_before_decap warning fired but the field is empty — an older " +
+          "backend, or a rewind the outputs did not record");
       }
       if (out && out.preflight_ok === false) {
         push("ratchet not pre-flighted", "bad", "DecapOutputs.preflight_ok is false");

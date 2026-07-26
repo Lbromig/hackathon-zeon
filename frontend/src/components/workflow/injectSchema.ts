@@ -57,6 +57,14 @@ export interface KindSpec {
   fields: FieldSpec[];
   /** Set when a form cannot express this kind honestly — the JSON editor is the only path. */
   jsonOnly?: string;
+  /**
+   * Real model fields no form input can express, carried through the JSON path verbatim.
+   *
+   * A loop's `body` is the case that matters: it is required (`min_length=1`), it is structural,
+   * and a JSON path that dropped it would post a loop the backend rejects for the one field the
+   * operator actually wrote.
+   */
+  passthrough?: readonly string[];
 }
 
 const DEVICE = (role: DeviceRole, help: string, required = true): FieldSpec => ({
@@ -288,6 +296,10 @@ export const KIND_SPECS: KindSpec[] = [
       "A loop carries a `body` of at least one action, and authoring a body of nested actions in "
       + "a flat form would be a worse editor than the JSON. Note also that the engine refuses a "
       + "loop injected into an existing loop region — the one nested-loop route no validator sees.",
+    // `body` is required and structural; `until` is a named predicate with one member; and
+    // `corrected_axes` declares which axes the loop must have OBSERVED before it may claim
+    // convergence — none of the three belongs in a flat form, and all three are real fields.
+    passthrough: ["body", "until", "corrected_axes"],
     fields: [
       {
         name: "threshold_mm", type: "number", label: "threshold_mm", default: 1.5,
@@ -453,27 +465,47 @@ export function buildAction(kind: ActionKind, values: FormValues): Built {
  * Unknown fields are reported rather than dropped: `extra="forbid"` means the backend would 422
  * them, and a form that silently discarded them would send something other than what was read.
  */
-export function parseAction(text: string): { kind: ActionKind | null; values: FormValues; problems: string[] } {
+export interface Parsed {
+  kind: ActionKind | null;
+  values: FormValues;
+  /** Structural fields the form does not own (`body`), carried through untouched. */
+  extra: Record<string, unknown>;
+  problems: string[];
+}
+
+export function parseAction(text: string): Parsed {
   const problems: string[] = [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (e) {
-    return { kind: null, values: {}, problems: [`not JSON: ${e instanceof Error ? e.message : String(e)}`] };
+    return {
+      kind: null, values: {}, extra: {},
+      problems: [`not JSON: ${e instanceof Error ? e.message : String(e)}`],
+    };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { kind: null, values: {}, problems: ["expected a JSON object with a `kind`"] };
+    return { kind: null, values: {}, extra: {}, problems: ["expected a JSON object with a `kind`"] };
   }
   const bag = parsed as Record<string, unknown>;
   const kind = typeof bag.kind === "string" ? bag.kind as ActionKind : null;
   const spec = kind ? specFor(kind) : undefined;
   if (!spec) {
-    return { kind: null, values: {}, problems: [`unknown or missing kind: ${String(bag.kind)}`] };
+    return {
+      kind: null, values: {}, extra: {},
+      problems: [`unknown or missing kind: ${String(bag.kind)}`],
+    };
   }
   const values = defaultsFor(spec.kind);
+  const extra: Record<string, unknown> = {};
   const known = new Set([...spec.fields, ...COMMON_FIELDS].map((f) => f.name));
+  const carried = new Set(spec.passthrough ?? []);
   for (const [key, value] of Object.entries(bag)) {
     if (key === "kind") continue;
+    if (carried.has(key)) {
+      extra[key] = value;
+      continue;
+    }
     if (!known.has(key)) {
       problems.push(`field \`${key}\` is not on ${spec.kind} — the backend forbids extra fields, `
         + "so this would be rejected rather than ignored");
@@ -484,5 +516,9 @@ export function parseAction(text: string): { kind: ActionKind | null; values: Fo
         : typeof value === "boolean" || typeof value === "number" ? value
           : String(value);
   }
-  return { kind: spec.kind, values, problems };
+  if (spec.kind === "control.loop" && !Array.isArray(extra.body)) {
+    problems.push("a `control.loop` needs a `body` of at least one action — the engine refuses an "
+      + "empty one, and there is nothing for the loop to iterate over");
+  }
+  return { kind: spec.kind, values, extra, problems };
 }

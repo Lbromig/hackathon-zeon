@@ -62,7 +62,22 @@ watch(kind, (next) => {
   values.value = defaultsFor(next);
   const s = specFor(next);
   jsonMode.value = !!s?.jsonOnly;
-  if (jsonMode.value) jsonText.value = JSON.stringify({ kind: next, body: [] }, null, 2);
+  if (jsonMode.value) {
+    // A skeleton with a real body, not an empty one: an empty `body` is refused, and a template
+    // that cannot be sent teaches nothing about what a loop looks like.
+    jsonText.value = JSON.stringify({
+      kind: next,
+      threshold_mm: 1.5,
+      max_iterations: 12,
+      body: [
+        { kind: "camera.snapshot", device: "handover_cam", fresh: true, into_slot: "frame" },
+        { kind: "vision.identify", device: "handover_cam", target: "tip", from_slot: "frame" },
+        { kind: "vision.identify", device: "handover_cam", target: "tube", from_slot: "frame" },
+        { kind: "vision.solve_offset", into_slot: "selected_offset" },
+        { kind: "lh.move_relative", device: "ot", from_slot: "selected_offset", clamp_mm: 15 },
+      ],
+    }, null, 2);
+  }
 });
 
 // --- device and waypoint pickers --------------------------------------------
@@ -156,7 +171,11 @@ const built = computed(() => {
     if (!parsed.kind || parsed.problems.length) {
       return { errors: { json: parsed.problems.join("; ") || "unreadable action" }, action: null };
     }
-    return buildAction(parsed.kind, parsed.values);
+    const out = buildAction(parsed.kind, parsed.values);
+    // A loop's `body` (and `until` / `corrected_axes`) has no form input, so it survives only by
+    // being carried through untouched — dropping it would post the one field the operator wrote.
+    if (out.action) out.action = { ...out.action, ...parsed.extra };
+    return out;
   }
   return buildAction(kind.value, values.value);
 });
