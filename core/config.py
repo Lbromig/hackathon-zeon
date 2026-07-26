@@ -74,6 +74,11 @@ CAM_ENV: dict[str, str] = {
 # e.g. CAM_WIDTH_GRIPPER_CAM=848 — the on-arm camera often wants a smaller frame
 # than the overview one. RealSense rejects combinations it has no profile for.
 CAM_FORMAT_ENV: dict[str, str] = {"width": "CAM_WIDTH", "height": "CAM_HEIGHT", "fps": "CAM_FPS"}
+# Fleet entry types that denote a camera slot. `remote` is absent on purpose: it is not
+# something a single slot opts into, it is what HZ_CAMERA_HOST turns every slot into.
+CAMERA_TYPES: tuple[str, ...] = (
+    "realsense", "camera", "still", "mock_tag_camera", "mock_camera",
+)
 
 
 # repo root is one level up from this file: <repo>/core/config.py -> <repo>
@@ -151,13 +156,63 @@ def _apply_camera_type(entry: dict[str, Any], eid: str) -> str:
     requested = requested.strip().lower()
     if not requested or requested == entry.get("type"):
         return str(entry.get("type"))
-    if requested not in ("realsense", "camera", "still", "mock_tag_camera", "mock_camera"):
+    if requested not in CAMERA_TYPES:
         print(f"[config] ignoring {var}_TYPE={requested!r}: unknown camera driver type")
         return str(entry.get("type"))
     entry["type"] = requested
     if requested != "realsense":
         entry.pop("serial", None)      # a UVC node is addressed by index, not serial
     return requested
+
+
+def _normalize_host(value: str) -> str:
+    """`bench:8100`, `http://bench:8100` and a trailing slash all mean the same thing.
+
+    Done here as well as in the driver (drivers/camera/remote.py) so that
+    ``settings.camera_host`` is directly usable as a URL prefix — the API proxies
+    /api/cameras/devices to it — while a hand-written fleet file that sets ``base_url``
+    on a slot still gets normalized by the driver itself.
+    """
+    value = value.strip().rstrip("/")
+    if value and "://" not in value:
+        value = f"http://{value}"
+    return value
+
+
+def _apply_camera_host(fleet: list[dict[str, Any]], host: str) -> list[dict[str, Any]]:
+    """Point every camera slot at another backend's camera API (``HZ_CAMERA_HOST``).
+
+    All-or-nothing by design: a machine either has the cameras or it borrows them.
+    Mixing the two per slot would mean two sources of truth for what a viewpoint sees,
+    and a world model fed from both would be impossible to reason about.
+
+    Applied last, so it wins over the per-device overrides *and* over a whole
+    ``HZ_FLEET_FILE`` — the point of a global switch is that a clone can borrow the
+    bench's eyes without editing the fleet it was given.
+
+    Non-camera entries are untouched: the arms and the Opentrons are addressed over
+    their own networks and are not affected by where the pictures come from. Note that
+    this makes them the clone's *own* connections — borrowing frames from a bench does
+    not mean sharing its hardware locks.
+    """
+    out = []
+    for entry in fleet:
+        if entry.get("type") not in CAMERA_TYPES:
+            out.append(entry)
+            continue
+        eid = str(entry.get("id") or "")
+        remote = {k: v for k, v in entry.items()
+                  # serial/source address local hardware; carrying them over would leave
+                  # a stale USB index on a slot that no longer opens any device, which
+                  # reads as a configuration that is still in force.
+                  if k not in ("type", "serial", "source")}
+        remote["type"] = "remote"
+        remote["base_url"] = host
+        # Same slot ids on both ends: the viewpoints (gripper / overview / handover) are
+        # the shared vocabulary. A remote that names them differently needs a fleet file.
+        remote["remote_id"] = eid
+        out.append(remote)
+    return out
 
 
 def _apply_camera_format(entry: dict[str, Any], eid: str) -> None:
@@ -199,6 +254,11 @@ class Settings:
     # that plainly fails. Device *names* cannot be used for this: ffmpeg and OpenCV
     # enumerate AVFoundation in different orders, so a name never identifies a cv2 index.
     camera_exclude_indices: frozenset = frozenset()
+    # HZ_CAMERA_HOST: another backend to take every camera feed from, e.g.
+    # "http://192.168.1.174:8100". Empty means this machine owns its cameras.
+    # For a laptop / a clone of the repo that has no hardware attached but still needs
+    # the bench's viewpoints for detection, the world model and the Cameras tab.
+    camera_host: str = ""
 
     @classmethod
     def load(cls) -> "Settings":
@@ -216,6 +276,12 @@ class Settings:
                 s.fleet = json.load(f)
         else:
             s.fleet = _apply_env_overrides(DEFAULT_FLEET)
+
+        # Last, so it overrides both the per-device vars and a whole fleet file.
+        s.camera_host = _normalize_host(os.getenv("HZ_CAMERA_HOST", ""))
+        if s.camera_host:
+            s.fleet = _apply_camera_host(s.fleet, s.camera_host)
+            print(f"[config] cameras proxied from {s.camera_host} (HZ_CAMERA_HOST)")
 
         s.teach_poses_file = os.getenv("HZ_TEACH_POSES_FILE", s.teach_poses_file)
         s.capture_dir = os.getenv("HZ_CAPTURE_DIR", s.capture_dir)

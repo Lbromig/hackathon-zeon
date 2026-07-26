@@ -74,8 +74,30 @@ class CalibrationPipeline:
         return "hand-eye gripper_cam -> right_tcp (TODO)"
 
     def _world_frame(self) -> str:
-        # TODO: detect ArUco board + 3D-printed ruler -> world origin + metric scale
-        return "world frame from board + ruler (TODO)"
+        """W2: solve each FIXED camera's pose from the shared 210/211 board and write it
+        into the twin, so all fixed cameras share one metric world frame. The on-arm
+        gripper camera (hand-eye) is intentionally not done here."""
+        from .extrinsics import calibrate_fixed_camera
+
+        out = []
+        for cam_id in ("overview_cam", "handover_cam"):
+            try:
+                drv = self.dm.get(cam_id)
+                frame = drv.capture()
+                K = drv.camera_matrix()
+            except Exception as e:
+                out.append(f"{cam_id}: unavailable ({e})")
+                continue
+            r = calibrate_fixed_camera(self.wm, cam_id, frame, K)
+            out.append(f"{cam_id}: {'OK' if r.ok else r.reason} ({r.n_board_tags} board tags)")
+            if r.ok and r.T_world_cam is not None:
+                self._persist_extrinsic(cam_id, r.T_world_cam)
+        return "; ".join(out) or "no fixed cameras"
+
+    def _persist_extrinsic(self, cam_id: str, T_world_cam) -> None:
+        d = self.dir / "extrinsics"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{cam_id}.json").write_text(json.dumps(T_world_cam.tolist(), indent=2))
 
     def _arm_to_arm(self) -> str:
         # TODO: resolve left_base / right_base into world (markers 10/11)

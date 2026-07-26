@@ -69,6 +69,15 @@ class StillImageCameraDriver(CameraDriver):
         if not path:
             raise DriverError("no source path configured")
         if not os.path.exists(path):
+            # A bare number here means the slot's *_TYPE says `still` while its source is
+            # still a UVC index. That pairing is the likely mistake, and "image not found:
+            # 2" on its own sends you looking for a missing file instead.
+            if path.strip().lstrip("-").isdigit():
+                raise DriverError(
+                    f"source {path!r} is a device index, not an image path — this slot is "
+                    f"configured as type 'still'. Either set the source to a file path, or "
+                    f"set the slot's *_TYPE to 'camera' to open index {path} live."
+                )
             raise DriverError(f"image not found: {path}")
 
         self._state = ConnectionState.CONNECTING

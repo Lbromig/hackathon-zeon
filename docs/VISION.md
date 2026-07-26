@@ -35,14 +35,35 @@ the verify→retry loop — Track C's *verification* half — is **partially hol
 on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
 true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
 half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. The next block's job is
-narrow and mostly at the bench — **merge the OT transport, finish teaching the poses, and wire a minimal
-reparent-on-grasp** (or scope the demo's verify moment onto a geometry-only predicate perception can drive) —
-then one real `ok=False` stops one real aspirate.
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **This cycle the team hardened
+the perimeter, not the critical path:** a still-image camera driver hedges a lost viewpoint, the world model is now
+thread-safe (the RLock/`lock()` a reparent-on-grasp will need), and — most usefully — fixed-camera **world-frame
+calibration is being wired** (each fixed camera solves its pose from a shared 210/211 tag board), which turns fused
+geometry from camera-frame toward a real world frame and so **strengthens the geometry-only verifier fallback**
+(`tube_aligned`, `cap_removed`-separation) that we'd lean on if reparent-wiring slips. All welcome — but all three of
+the deciding items stood still. The next block's job is narrow and mostly at the bench — **merge the OT transport,
+finish teaching the poses (still 2/12), and wire the one reparent line** (or deliberately scope the demo's verify
+moment onto the now-better-calibrated geometry predicate) — then one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T04:30Z — The perimeter got harder while the three deciding items stood still.
+
+**Demo-readiness score: 7.0/10 for the *stated* PoC (verified uncap→aspirate) — held flat, deliberately.** ~8/10 for the teleop + streaming-UI + safe-motion show (unchanged). This is the first cycle with **new team commits since the last review** (`aa83f21`, `9c97e8d`, `ef69d43`, plus uncommitted calibration WIP), so the change is in git, not just on disk — but every line of it lands **beside** the critical path, not on it. The number doesn't move because nothing that decides the demo moved: the OT still doesn't draw, only 2 of 12 poses are taught (no new pose since 02:00Z, before the last review), and the reparent line is still unwritten. Real work; neutral for demo-readiness.
+
+**What genuinely moved — the perimeter is sturdier.** Three solid pieces landed. (1) A **still-image camera driver** (`drivers/camera/still.py`) replays the last saved frame (plus sibling depth) for a viewpoint whose hardware is unplugged, so detection/the Cameras tab/the twin survive a camera loss — and it honestly flags itself a still in `info.meta` so a verifier can't read a frozen frame as a live observation. Paired with `CAM_EXCLUDE_INDICES` (never open the operator's laptop cam as a bench slot), this is exactly the kind of un-glamorous robustness a live demo needs. (2) The **world model is now RLock-guarded** with a `lock()` accessor for atomic multi-op sequences (`test_worldmodel_concurrency.py`) — notably, the precise concurrency substrate a reparent-on-grasp would need. (3) Best of the three: **fixed-camera world-frame calibration is being wired** (uncommitted) — `world_board.py` + `extrinsics.py::solve_world_cam` + `pipeline._world_frame` solve each fixed camera's `T_world_cam` from a shared 210/211 board and write it into the twin, converting fused/projected geometry from camera-frame toward one real metric world frame. The solver is hardware-free and round-trip unit-tested.
+
+**The single biggest threat this cycle — unchanged, and that's the point: two green ticks over nothing, and a cycle spent away from them.** Q-OT-1 (OT `connect`/`_send` still `TODO`, re-verified in `ef69d43`) and Q-TWIN-COUPLING (still **zero** `reparent` calls in production `backend/app/`/`core/`; the parent-based `grasp_secure` and `cap_removed`-reparent clause can't fire from a real grasp) remain co-equal — the two narrative climaxes are still mimed. What's *new* and worth naming bluntly is **allocation** (Q-ALLOC-1): this is the second straight review to list the same three deciding items — merge the OT serial driver, finish teaching the poses, wire the one reparent line — and a full cycle passed with genuine effort spent on all three *other* things instead. The concurrency guard even built the exact substrate the reparent needs, then stopped one line short of using it. For a 24h hackathon, polishing the perimeter while the climaxes stay mimed is the quiet way to arrive at hour 24 with a beautiful system that can't perform its headline.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only.
+- **KEEP:** everything committed — `_execute` + choreography, real verifiers + fusion loop, P0 agent loop, teach + safe-motion layer, fiducial + camera transport, and now the still-cam hedge + concurrency guard. **Commit the world-frame calibration WIP** — it's the one off-path item that pays for itself, because it makes the geometry-only verify moment honest.
+- **ADD, in strict priority (same three, now overdue):** (1) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws (Q-OT-1). (2) **finish teaching the 12 poses on both arms** — resume now, it can't be pre-staged and it's stalled (Q-POSES-1). (3) **wire the one `wm.reparent(...)` line into `_execute`** — the tests spell it out and the RLock now makes it safe — *or* formally adopt the geometry-only verify moment (`tube_aligned` / `cap_removed`-separation), which this cycle's calibration work just made more trustworthy (Q-TWIN-COUPLING). (4) then script **one deliberate failure injection** on whichever predicate is genuinely live (Q-DEMO-1).
+- **DECIDE (carried, now urgent):** pick the demo's hero verify moment *this block*. The calibration progress makes "geometry-only" a more defensible pick than it was — if reparent-wiring won't happen, choose the geometry predicate now and rehearse to it.
+
+**Opposing view (steelman).** A fair reading: the team is de-risking, not drifting. A demo that dies because a camera unplugged or because the twin corrupted under a concurrent write is a worse loss than a mimed aspirate you can narrate around — and world-frame calibration is a genuine honesty upgrade for the verifiers, arguably worth more than a reparent line that greens a topology over still-placeholder geometry. On that view the score should *rise*. The counter is timing, not merit: all three of these are the kind of work that has no hard deadline, while pose-teaching and the OT rig are hands-on-hardware tasks that can only happen in the room and will expand to eat whatever hour they're left in. Do the perimeter work *after* the bench moves, not instead. Held at 7.0 because the perimeter is stronger and the climaxes are no weaker — but the honest verdict is that a cycle of runway was spent one line short of the thing that matters.
 
 ### 2026-07-26T02:11Z — A bench is being taught — and a hole opened under the verify loop: its parent-based half is a no-op on real hardware.
 
