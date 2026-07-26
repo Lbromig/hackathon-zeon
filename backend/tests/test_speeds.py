@@ -140,3 +140,20 @@ def test_the_resolved_speed_is_reportable():
     the only version worth having after the fact."""
     reported = for_arm("fast", Limits(linear=50.0, angular=10.0)).as_dict()
     assert reported == {"tier": "fast", "linear": 50.0, "angular": 10.0, "clamped": True}
+
+
+def test_no_raw_speed_number_is_expressible_in_plan_data():
+    """R-ENG-14's last sentence, enforced against the frozen action contract: every motion
+    action carries a `speed` tier and no numeric speed field."""
+    from backend.app.engine.actions import ACTION_MODELS
+
+    offenders = []
+    for model in ACTION_MODELS:
+        for name, field in model.model_fields.items():
+            if name in ("speed", "speed_tier"):
+                literal = getattr(field.annotation, "__args__", ())
+                if set(literal) - set(TIERS):
+                    offenders.append(f"{model.__name__}.{name}: {field.annotation}")
+            elif "speed" in name or name in ("mm_per_s", "deg_per_s", "velocity"):
+                offenders.append(f"{model.__name__}.{name}")
+    assert not offenders, "raw speeds expressible in plan data:\n  " + "\n  ".join(offenders)
