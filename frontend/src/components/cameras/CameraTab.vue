@@ -103,19 +103,11 @@ onMounted(refresh);
           class="chip"
           :class="{ 'chip-on': showLabels }"
           :disabled="!showOverlay"
-          title="Draw the id / entity / range text inside the outlines"
+          title="Draw the id / range text inside the outlines"
           @click="toggleLabels"
         >
           Labels
         </button>
-        <a
-          class="btn btn-sm"
-          href="/worldmap.html"
-          target="_blank"
-          rel="noopener"
-          title="Top-down world map: all cameras + tracked objects in one shared frame (after calibration)"
-          >World map ↗</a
-        >
         <button class="btn btn-sm" :disabled="scanning" @click="scan">
           {{ scanning ? "Scanning…" : "Scan for devices" }}
         </button>
@@ -213,10 +205,10 @@ onMounted(refresh);
         </div>
       </dl>
       <p class="mt-3 text-xs text-deck-400">
-        These are <em>camera-frame</em> metres. Commanding the arm additionally needs
-        <code class="text-deck-200">T_world_cam</code> — the fixed-tag world frame step in
-        <code class="text-deck-200">core/calibration/pipeline.py</code> is still a stub
-        (docs/CAMERA_UI_PLAN.md, C3–C4).
+        These are <em>camera-frame</em> metres. There is no shared world frame any more —
+        the offset the workflow needs is computed between two features in
+        <em>one</em> camera's frame (R-VIS-12), which is why the calibration pipeline
+        went away rather than being finished.
       </p>
     </section>
   </div>

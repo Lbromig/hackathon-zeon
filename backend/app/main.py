@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 
-from .api import calibration, cameras, instruments, teach
+from .api import cameras, instruments, teach
 from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
@@ -76,7 +76,6 @@ app.include_router(instruments.router)
 app.include_router(instruments.state_router)
 app.include_router(teach.router)
 app.include_router(cameras.router)
-app.include_router(calibration.router)
 
 
 @app.get("/api/health")
