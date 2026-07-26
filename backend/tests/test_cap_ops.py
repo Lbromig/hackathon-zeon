@@ -109,14 +109,106 @@ def test_unscrewing_twice_does_not_accumulate_wrist_travel():
 
 
 def test_unscrew_is_refused_up_front_when_it_would_exceed_the_joint_limit():
-    """Refusing halfway would leave the cap part-unscrewed and the wrist wound."""
+    """Refusing halfway would leave the cap part-unscrewed and the wrist wound.
+
+    `auto_unwind=False` selects this behaviour explicitly. The default is now to rewind the
+    wrist and proceed — see the recovery tests below.
+    """
     limits = [[-360, 360]] * 5 + [[-360, 200]]      # J6 capped at 200
     arm = _arm(joints=[0, 0, 0, 0, 0, 100.0], limits=limits)
     with pytest.raises(cap_ops.CapOpError) as e:
-        cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+        cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0,
+                                                   auto_unwind=False))
     assert "J6" in str(e.value)
     # and nothing moved
     assert arm.get_joints()[-1] == pytest.approx(100.0)
+
+
+# --- recovery: rewind the wrist instead of refusing ---------------------------------
+#
+# The bench hit this as "unscrew refused before starting: J6 would reach 484.3°". The wrist
+# being left wound from a previous unscrew is the normal state, so the plan not fitting is a
+# starting-position problem, not an impossible request.
+
+
+def test_unscrew_rewinds_the_wrist_instead_of_refusing():
+    """J6 at 304° with a 360° ceiling: a 180° bite would reach 484°, so rewind first."""
+    limits = [[-360, 360]] * 5 + [[-360, 360]]
+    arm = _arm(joints=[0, 0, 0, 0, 0, 304.0], limits=limits)
+
+    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+
+    assert result.unwound_deg == pytest.approx(124.0), "304 + 180 - 360 = 124"
+    assert result.total_rotation_deg == pytest.approx(360.0), "cap still turns the full amount"
+    # The wrist ends where the REWIND left it, not where it started: that is the point.
+    assert arm.get_joints()[-1] == pytest.approx(180.0)
+    assert result.net_wrist_travel_deg == pytest.approx(0.0), "no drift across the bites"
+
+
+def test_the_rewind_happens_with_the_jaws_open_so_the_cap_does_not_turn():
+    """Rewinding while gripped would screw the cap back down by exactly the rewind."""
+    limits = [[-360, 360]] * 5 + [[-360, 360]]
+    arm = _arm(joints=[0, 0, 0, 0, 0, 304.0], limits=limits)
+    arm.grip()                                    # start gripped, as the ratchet requires
+    order: list[str] = []
+    real_release, real_grip = arm.release, arm.grip
+
+    def note_release():
+        order.append(f"release@{arm.get_joints()[-1]:.0f}")
+        real_release()
+
+    def note_grip(width=None):
+        order.append(f"grip@{arm.get_joints()[-1]:.0f}")
+        real_grip(width=width)
+
+    arm.release, arm.grip = note_release, note_grip
+    cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+
+    # First two events: release at the wound angle, then re-grip 124° lower. The wrist moved
+    # only while open, so the cap never saw it.
+    assert order[0] == "release@304", order
+    assert order[1] == "grip@180", order
+
+
+def test_no_rewind_when_the_plan_already_fits():
+    arm = _arm(joints=[0, 0, 0, 0, 0, 0.0], limits=[[-360, 360]] * 6)
+    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+    assert result.unwound_deg == 0.0
+    assert arm.get_joints()[-1] == pytest.approx(0.0)
+
+
+def test_rewind_is_refused_when_the_joint_range_cannot_fit_the_plan_at_all():
+    """A bite bigger than the whole joint range is not a positioning problem."""
+    limits = [[-360, 360]] * 5 + [[0, 90]]        # 90° of range, 180° bite
+    arm = _arm(joints=[0, 0, 0, 0, 0, 45.0], limits=limits)
+    with pytest.raises(cap_ops.CapOpError, match="no starting angle"):
+        cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+
+
+def test_a_rewind_that_fits_the_top_always_fits_the_bottom_for_a_ratchet():
+    """Why `required_unwind`'s low-end guard cannot fire on a ratchet plan.
+
+    A bite goes ``+step`` then ``-step``, so a ratchet never dips below the angle it started
+    at: its excursion trough is 0. The rewind therefore leaves the low point at ``hi - peak``,
+    and any plan for which that is below ``lo`` has ``peak > hi - lo`` — which the
+    range check has already refused. The guard stays as defence for a future plan shape that
+    *does* dip below its start; this test is why nobody should expect to trigger it today.
+    """
+    assert cap_ops.plan_excursion(cap_ops.plan_unscrew(2))[1] == 0.0
+
+    limits = [[-360, 360]] * 5 + [[100, 300]]     # 200° of range, 180° bite, parked high
+    arm = _arm(joints=[0, 0, 0, 0, 0, 290.0], limits=limits)
+    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+    assert result.unwound_deg == pytest.approx(170.0), "290 + 180 - 300"
+    assert arm.get_joints()[-1] == pytest.approx(120.0), "still inside [100, 300]"
+
+
+def test_unscrew_sentence_reports_the_rewind():
+    """Real motion the operator did not ask for must appear in the result."""
+    arm = _arm(joints=[0, 0, 0, 0, 0, 304.0], limits=[[-360, 360]] * 6)
+    sentence = cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+    assert "rewound wrist 124" in sentence
+    assert "jaws open" in sentence
 
 
 # --- the generalized bite (D12 / R-ARM-5) -------------------------------------------
@@ -236,10 +328,12 @@ def test_on_bite_fires_between_bites_with_the_jaws_open_and_the_wrist_home():
 
 
 def test_the_90_degree_ratchet_is_refused_up_front_when_a_bite_would_exceed_the_limit():
+    """With auto_unwind off, the pre-flight still refuses rather than starting."""
     limits = [[-360, 360]] * 5 + [[-360, 150]]       # J6 capped at 150
     arm = _arm(joints=[0, 0, 0, 0, 0, 100.0], limits=limits)
     with pytest.raises(cap_ops.CapOpError) as e:
-        cap_ops.run_ratchet(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
+        cap_ops.run_ratchet(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0,
+                                                  auto_unwind=False))
     assert "J6" in str(e.value)
     assert arm.get_joints()[-1] == pytest.approx(100.0), "nothing may have moved"
 
@@ -254,9 +348,11 @@ def test_a_90_degree_bite_is_accepted_where_a_180_degree_bite_is_refused():
     joints = [0, 0, 0, 0, 0, 100.0]
     with pytest.raises(cap_ops.CapOpError):
         cap_ops.run_ratchet(_arm(joints=joints, limits=limits),
-                            cap_ops.CapConfig(half_turns=2, settle_s=0.0))
+                            cap_ops.CapConfig(half_turns=2, settle_s=0.0,
+                                              auto_unwind=False))
     result = cap_ops.run_ratchet(_arm(joints=joints, limits=limits),
-                                 cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
+                                 cap_ops.CapConfig(step_deg=90.0, settle_s=0.0,
+                                                   auto_unwind=False))
     assert result.bites == 4
     assert result.total_rotation_deg == pytest.approx(360.0)
     assert result.net_wrist_travel_deg == pytest.approx(0.0)

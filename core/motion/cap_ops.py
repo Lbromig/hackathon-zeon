@@ -86,6 +86,31 @@ class CapConfig:
     turns: float | None = None
     joint_speed: float = DEFAULT_JOINT_SPEED
     settle_s: float = 0.3
+    # Raise the arm by this much (mm, cartesian +Z) at every re-grip, to follow the cap up
+    # its own thread. A cap backing off rises as it turns; the jaws are rigidly held by the
+    # flange, so without this the gripper keeps re-gripping at the original height and the
+    # thread has to force the cap down through the jaws on every bite. Applied while the jaws
+    # are OPEN, immediately before closing them, so the lift never drags the cap sideways.
+    #
+    # The consequence is deliberate and worth stating: the arm does NOT end where it started.
+    # It ends `(bites - 1) * lift_per_regrip_mm` higher, which is why the result reports
+    # `lifted_mm` separately from the wrist's net travel. Set 0 to disable.
+    lift_per_regrip_mm: float = 2.0
+    lift_speed: float = 30.0             # mm/s for the lift; unscrewing is not a race
+    # Rewind the wrist (jaws open, so the cap does not turn) when it is parked too far round
+    # for the plan to fit inside J6's soft limit — see `unwind_tool_axis`.
+    #
+    # On by default, from the bench: "unscrew refused before starting: J6 would reach 484.3°"
+    # is a *starting position* problem, and the wrist being left wound from the previous
+    # unscrew is the normal state rather than an error. This does not weaken R-ARM-5's
+    # up-front pre-flight: the rewind is jaws-open repositioning that turns no cap, it happens
+    # before `preflight_turns`, and a plan that no starting angle could fit still raises out of
+    # `required_unwind` before anything moves. What it removes is the refusal for the one case
+    # that was only ever about where the wrist happened to be parked.
+    #
+    # It is still real motion nobody asked for, so it is reported: `unwound_deg` on the result,
+    # and the engine's decap handler raises a warning when it is non-zero.
+    auto_unwind: bool = True
 
     @property
     def generalized(self) -> bool:
@@ -125,6 +150,10 @@ class RatchetResult:
     total_rotation_deg: float
     net_wrist_travel_deg: float
     preflight_ok: bool
+    # Degrees the wrist was rewound (jaws open) before the first bite, to bring the plan
+    # inside J6's soft limit. Reported because it is real motion the operator did not ask
+    # for: a recovery that happens silently is indistinguishable from a bug.
+    unwound_deg: float = 0.0
 
     @property
     def returned(self) -> bool:
@@ -251,6 +280,16 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
     """
     cfg = cfg or CapConfig()
     steps = cfg.plan()
+
+    # Recovery, not a refusal. The wrist is routinely left wound from a previous unscrew, so
+    # "J6 would reach 484°" is a *starting position* problem, not an impossible request: the
+    # plan needs a window of travel, and the wrist can be rewound to give it one. Unwinding
+    # happens with the jaws OPEN, so the cap does not move — see `unwind_tool_axis`.
+    unwound = 0.0
+    if cfg.auto_unwind:
+        unwound = unwind_tool_axis(arm, required_unwind(arm, steps), cfg)
+        if unwound and on_step:
+            on_step(f"unwound wrist {-unwound:+.0f}° to make room (jaws open)")
     preflight_turns(arm, steps)
 
     index = tool_axis(arm)
@@ -283,6 +322,7 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
         total_rotation_deg=gripped_rotation(steps),
         net_wrist_travel_deg=arm.get_joints()[index] - start[index],
         preflight_ok=True,
+        unwound_deg=unwound,
     )
 
 
@@ -293,7 +333,9 @@ def unscrew_cap(arm: ArmDriver, cfg: CapConfig | None = None,
     result = run_ratchet(arm, cfg, on_step=on_step)
     note = "" if result.returned else (
         f" WARNING: wrist ended {result.net_wrist_travel_deg:+.1f}° from start, expected 0")
-    return (f"unscrewed {result.total_rotation_deg:.0f}° in {result.bites} x "
+    prefix = ("" if not result.unwound_deg else
+              f"rewound wrist {result.unwound_deg:.0f}° first (jaws open, cap untouched); ")
+    return (f"{prefix}unscrewed {result.total_rotation_deg:.0f}° in {result.bites} x "
             f"{result.step_deg:.0f}° bites; cap released, wrist returned to start{note}")
 
 
@@ -326,6 +368,69 @@ def preflight_turns(arm: ArmDriver, steps: list[Step]) -> None:
                 f"unscrew refused before starting: J{index + 1} would reach "
                 f"{angles[index]:.1f}° — {reason}. Rotate the wrist back before unscrewing."
             )
+
+
+def plan_excursion(steps: list[Step]) -> tuple[float, float]:
+    """(highest, lowest) tool-axis offset from the start that a plan visits."""
+    cur = peak = trough = 0.0
+    for action, degrees in steps:
+        if action != "turn":
+            continue
+        cur += degrees
+        peak, trough = max(peak, cur), min(trough, cur)
+    return peak, trough
+
+
+def required_unwind(arm: ArmDriver, steps: list[Step]) -> float:
+    """How far the tool axis must rotate BACK for every planned turn to become legal.
+
+    0 when the plan already fits. Positive means "rotate the tool axis this many degrees
+    negative first". Raises when unwinding cannot help — the plan needs more range than the
+    joint has between its limits, so no starting angle would work.
+    """
+    index = tool_axis(arm)
+    limits = arm.limits.joints
+    if not limits or index >= len(limits):
+        return 0.0                     # no soft limits configured, nothing to solve for
+    lo, hi = limits[index]
+    start = list(arm.get_joints())[index]
+    peak, trough = plan_excursion(steps)
+
+    if (span := peak - trough) > (hi - lo):
+        raise CapOpError(
+            f"unscrew needs {span:.0f}° of J{index + 1} travel but its soft limit "
+            f"[{lo:g}, {hi:g}] only allows {hi - lo:.0f}° — no starting angle can fit this "
+            f"plan; reduce the bite or the number of turns"
+        )
+    unwind = max(0.0, (start + peak) - hi)
+    if start - unwind + trough < lo:
+        # Unwinding to fit the top would push the bottom of the excursion out instead.
+        raise CapOpError(
+            f"J{index + 1} cannot be positioned to fit this unscrew: at {start:.1f}° it "
+            f"needs to come back {unwind:.0f}° to stay under {hi:g}°, which would take the "
+            f"plan's low point past {lo:g}°"
+        )
+    return unwind
+
+
+def unwind_tool_axis(arm: ArmDriver, degrees: float, cfg: "CapConfig") -> float:
+    """Rotate the tool axis back by ``degrees``, **with the jaws open**.
+
+    The jaws must be open for this: the whole point is to reposition the wrist *without*
+    turning the cap, and doing it gripped would screw the cap back down by exactly the
+    amount we unwind. Open, rotate, re-grip — the same three motions that end every bite,
+    which is what makes this safe to do while holding a cap mid-thread.
+    """
+    if degrees <= 0:
+        return 0.0
+    arm.release()
+    if cfg.settle_s:
+        time.sleep(cfg.settle_s)
+    turn_tool_axis(arm, -degrees, cfg.joint_speed)
+    arm.grip(width=cfg.grip_counts)
+    if cfg.settle_s:
+        time.sleep(cfg.settle_s)
+    return degrees
 
 
 def turn_tool_axis(arm: ArmDriver, degrees: float, speed: float) -> None:

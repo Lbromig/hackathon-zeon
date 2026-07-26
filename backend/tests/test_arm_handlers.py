@@ -507,36 +507,77 @@ def test_the_decap_plan_is_assertable_without_an_arm():
     assert steps[-2:] == [("open", 0.0), ("turn", -90.0)], "ends released and unwound"
 
 
-def test_decap_rotates_only_the_tool_axis_in_joint_space():
-    """Never a cartesian yaw: asking IK for a turn invites a different arm configuration."""
+def test_decap_rotates_the_tool_axis_in_joint_space_and_never_as_a_cartesian_yaw():
+    """R-ARM-5. Spinning the last joint keeps the TCP fixed by construction; asking IK for a
+    yaw change invites a different arm configuration and a large unplanned motion.
+
+    Orientation only: `cap_ops` may translate the TCP between bites (following a cap up its
+    own thread is a +Z move), and that is not a rotation. The rotation is what must stay in
+    joint space.
+    """
     arm = make_arm("left")
-    pose_before = arm.get_pose().__dict__
+    before = arm.get_pose()
+    joints_before = arm.get_joints()
+
     run(actions.ArmDecap(device="left"), Devices(left=arm))
-    assert arm.get_pose().__dict__ == pose_before, "no cartesian command may be issued"
+
+    after = arm.get_pose()
+    for axis in ("roll", "pitch", "yaw"):
+        assert getattr(after, axis) == pytest.approx(getattr(before, axis)), axis
+    # And the tool axis really was driven: the ratchet returns it, so the evidence that it
+    # moved at all is that a joint command was issued rather than a cartesian one.
+    assert arm.get_joints() == pytest.approx(joints_before), "net-zero, in joint space"
 
 
 def test_a_decap_that_would_exceed_a_joint_soft_limit_is_refused_before_the_first_step():
-    """Halfway is the worst outcome: the cap is part unscrewed and the wrist is wound."""
-    limits = [[-360, 360]] * 5 + [[-360, 150]]
-    arm = make_arm("left", limits=limits, joints=[0, 0, 0, 0, 0, 100.0])
+    """Halfway is the worst outcome: the cap is part unscrewed and the wrist is wound.
+
+    The soft limit here is narrower than one bite, so no starting angle could fit the plan —
+    which is the case that is genuinely impossible rather than merely badly parked. A wrist
+    that is only *parked* too far round is rewound instead; that is the next test.
+    """
+    limits = [[-360, 360]] * 5 + [[0.0, 60.0]]     # 60° of range, 90° bite
+    arm = make_arm("left", limits=limits, joints=[0, 0, 0, 0, 0, 30.0])
     arm.grip(width=420.0)
 
     with pytest.raises(cap_ops.CapOpError) as e:
         run(actions.ArmDecap(device="left", grip_counts=420.0), Devices(left=arm))
 
     assert "J6" in str(e.value)
-    assert "before starting" in str(e.value)
-    assert arm.get_joints()[-1] == pytest.approx(100.0), "not one bite may have run"
+    assert "no starting angle" in str(e.value)
+    assert arm.get_joints()[-1] == pytest.approx(30.0), "not one bite may have run"
     assert arm.gripper_width() == pytest.approx(420.0), "the jaws must not have opened"
+
+
+def test_a_wrist_parked_too_far_round_is_rewound_and_the_rewind_is_reported():
+    """From the bench: "J6 would reach 484°" is a starting position, not an impossible
+    request. The rewind is jaws-open and turns no cap — but it is motion nobody asked for,
+    so it has to be reachable rather than only logged."""
+    arm = make_arm("left", limits=[[-360, 360]] * 6, joints=[0, 0, 0, 0, 0, 304.0])
+    arm.grip(width=420.0)
+    action = actions.ArmDecap(device="left", step_deg=180.0, grip_counts=420.0)
+    ctx = make_ctx(action, Devices(left=arm))
+
+    out = ctx and arm_handlers.decap(action, ctx)
+
+    assert out.total_rotation_deg == pytest.approx(360.0), "the cap still turns a full turn"
+    assert out.net_wrist_travel_deg == pytest.approx(0.0), "no drift across the bites"
+    assert arm.get_joints()[-1] == pytest.approx(180.0), "304 - 124, inside the limit"
+    warning = next(w for w in ctx.collected_warnings()
+                   if w.code == "wrist_rewound_before_decap")
+    assert "124" in warning.message and "jaws open" in warning.message
 
 
 def test_every_intermediate_angle_is_pre_flighted_not_just_the_endpoints():
     """The plan returns the wrist to its start, so a check on the endpoints alone passes a
-    plan whose middle drives J6 straight past its limit."""
-    limits = [[-360, 360]] * 5 + [[-45, 45]]
-    arm = make_arm("left", limits=limits)          # starts at 0 — endpoints are fine
-    with pytest.raises(cap_ops.CapOpError):
-        run(actions.ArmDecap(device="left", step_deg=90.0), Devices(left=arm))
+    plan whose middle drives J6 straight past its limit. Asserted on the pure pre-flight, so
+    it holds independently of whether a rewind could have made room."""
+    arm = make_arm("left", limits=[[-360, 360]] * 5 + [[-45, 45]])
+    steps = cap_ops.plan_ratchet(90.0, 360.0)
+    assert cap_ops.net_wrist_travel(steps) == 0.0, "the endpoints are inside the limit"
+
+    with pytest.raises(cap_ops.CapOpError, match="J6"):
+        cap_ops.preflight_turns(arm, steps)
     assert arm.get_joints()[-1] == pytest.approx(0.0)
 
 

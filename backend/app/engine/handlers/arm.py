@@ -437,6 +437,19 @@ def decap(action: ArmDecap, ctx: ActionContext) -> DecapOutputs:
 
     result = cap_ops.run_ratchet(arm, cfg, on_bite=on_bite)
 
+    if result.unwound_deg:
+        # `cap_ops` rewinds the wrist (jaws open, cap untouched) when it is parked too far
+        # round for the plan to fit inside the soft limit — from the bench, where "J6 would
+        # reach 484°" was a starting position and not an impossible request. It is still real
+        # motion nobody asked for, so it has to be reachable rather than merely logged
+        # (R-LOG-6). `DecapOutputs` has no field for it and `actions.py` is frozen; see the
+        # report.
+        ctx.warn("wrist_rewound_before_decap",
+                 f"the wrist was parked too far round for a {result.step_deg:g}° bite to stay "
+                 f"inside its soft limit, so it was rewound {result.unwound_deg:.0f}° with the "
+                 f"jaws open before the first bite. The cap did not turn; the {result.bites} "
+                 f"bites then ran normally.")
+
     if not result.returned:
         # Reported, not raised: the cap is off and the jaws are open, so the action did what
         # it was for. A wrist that did not return is a mechanical problem that must reach the
