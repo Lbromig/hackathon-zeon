@@ -125,13 +125,12 @@ def _read_joints(arm: ArmDriver) -> list[float]:
 
 
 def _speed_report(resolved: speed_tiers.Speeds, path: str) -> dict[str, Any]:
-    """`MoveOutputs.resolved_speed` plus which motion path was commanded.
+    """`MoveOutputs.resolved_speed`: tier, linear, angular, clamped — what was *commanded*.
 
-    The path belongs in the outputs — "prefer joint replay" is only a checkable claim if the
-    record says which one ran — and `resolved_speed` is the one `dict[str, Any]` field
-    `MoveOutputs` has. `actions.py` is frozen for Wave 1, so adding a `path` field to the
-    model is a contract change and is reported rather than made. Documented so nobody
-    "tidies" the key away.
+    The motion path now has its own `MoveOutputs.path` field (the contract change this slice
+    asked for was made). It is still mirrored here because the log's speed record and the path
+    are read together when reconstructing an unexpected trajectory, and splitting them across
+    two fields would mean two lookups for one question.
     """
     report = dict(resolved.as_dict())
     report["path"] = path
@@ -236,6 +235,7 @@ def waypoint(action: ArmWaypoint, ctx: ActionContext) -> MoveOutputs:
         waypoint=action.waypoint,
         offsets_mm={"dx": action.dx, "dy": action.dy, "dz": action.dz},
         resolved_speed=_speed_report(tier, path),
+        path=path,
     )
 
 
@@ -329,6 +329,7 @@ def move_relative(action: ArmRelative, ctx: ActionContext) -> MoveOutputs:
         # `ActionResult.inputs`, which is the action's own dump.
         offsets_mm={"dx": dx, "dy": dy, "dz": dz},
         resolved_speed=_speed_report(tier, "relative"),
+        path="relative",
     )
 
 
@@ -442,8 +443,8 @@ def decap(action: ArmDecap, ctx: ActionContext) -> DecapOutputs:
         # round for the plan to fit inside the soft limit — from the bench, where "J6 would
         # reach 484°" was a starting position and not an impossible request. It is still real
         # motion nobody asked for, so it has to be reachable rather than merely logged
-        # (R-LOG-6). `DecapOutputs` has no field for it and `actions.py` is frozen; see the
-        # report.
+        # (R-LOG-6) *and* a recorded output field: a decap that needed a rewind started from a
+        # different wrist configuration than one that did not, and the record has to show it.
         ctx.warn("wrist_rewound_before_decap",
                  f"the wrist was parked too far round for a {result.step_deg:g}° bite to stay "
                  f"inside its soft limit, so it was rewound {result.unwound_deg:.0f}° with the "
@@ -465,6 +466,8 @@ def decap(action: ArmDecap, ctx: ActionContext) -> DecapOutputs:
         total_rotation_deg=result.total_rotation_deg,
         net_wrist_travel_deg=result.net_wrist_travel_deg,
         preflight_ok=result.preflight_ok,
+        wrist_rewound_before_decap=bool(result.unwound_deg),
+        rewind_deg=float(result.unwound_deg),
     )
 
 

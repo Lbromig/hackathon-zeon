@@ -515,7 +515,8 @@ class MoveOutputs(OutputsBase):
     resolved_speed: dict[str, Any] = Field(default_factory=dict)
     """From `core.speeds.Speeds.as_dict()`: tier, linear, angular, clamped. The log records
     what was **commanded**, not what was asked for — the only version worth having after."""
-    path: Literal["joint_replay", "joint_replay+cartesian_offset", "cartesian", ""] = ""
+    path: Literal["joint_replay", "joint_replay+cartesian_offset", "cartesian",
+                  "relative", ""] = ""
     """Which motion path was taken, because the three are not equally trustworthy.
 
     `joint_replay` reproduces a configuration the arm physically reached, so no IK branch was
