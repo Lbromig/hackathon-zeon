@@ -58,6 +58,13 @@ class Act:
     volume_ul: float = 0.0          # for kind="aspirate"
     deck: str = ""                  # OT deck slot, for kind="aspirate"
     note: str = ""
+    # Twin effect (W4): when this act runs, reparent `attach` onto `to` in the digital
+    # twin — e.g. a grip attaches the tube to the tool, a release parks the cap. This is
+    # what lets grasp_secure / cap_removed turn true on a live run (the tube/cap actually
+    # move onto the gripper / into the dropzone in the twin, tracked by arm FK).
+    attach: str = ""                # entity id to reparent
+    to: str = ""                    # its new parent entity id
+    keep_world: bool = True         # preserve world pose across the reparent
 
 
 # FLOOR-demo choreography (snap-cap: pull the cap straight off, no ratchet loop).

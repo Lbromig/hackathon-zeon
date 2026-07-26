@@ -31,6 +31,7 @@ current frame — see ``_fresh_frame``.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -231,17 +232,50 @@ class RemoteCameraDriver(CameraDriver):
 
     def _read_stream(self) -> None:
         req = urllib.request.Request(self.stream_url, headers={"Accept": "multipart/x-mixed-replace"})
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+        resp = urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S)
+        with self._conn_lock:
+            if self._stop.is_set():           # disconnected while the request was in flight
+                resp.close()
+                return
+            self._conn = resp
+        try:
             self._set_error("")
             buf = b""
             while not self._stop.is_set():
-                chunk = resp.read(65536)
+                # read1, NOT read: urllib hands back a *buffered* reader, and read(n)
+                # blocks until it has all n bytes. At ~40 KB a frame that means every
+                # frame waits for the next one or two — a second of latency on a live
+                # feed, measured. read1 returns whatever has arrived.
+                chunk = resp.read1(65536)
                 if not chunk:
                     raise DriverError("stream closed by the remote backend")
                 buf += chunk
                 buf = self._drain(buf)
                 if len(buf) > MAX_PART_BYTES:
                     raise DriverError("multipart desync (no frame boundary found)")
+        finally:
+            with self._conn_lock:
+                self._conn = None
+            resp.close()
+
+    def _close_conn(self) -> None:
+        with self._conn_lock:
+            conn, self._conn = self._conn, None
+        if conn is None:
+            return
+        # Closing an HTTPResponse closes the file object, which does not always wake a
+        # read already parked in recv() — so shut the socket down first. Private
+        # attributes, hence best-effort: if the layout ever changes we simply fall back
+        # to the reader noticing `_stop` after its next frame or socket timeout, and
+        # disconnect() waits out its join instead of returning immediately.
+        try:
+            conn.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass          # already torn down; the reader will see it and exit
 
     def _drain(self, buf: bytes) -> bytes:
         """Pull every complete JPEG out of `buf`, returning the unconsumed tail."""

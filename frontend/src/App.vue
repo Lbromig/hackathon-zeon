@@ -6,8 +6,9 @@ import InstrumentPanel from "./components/InstrumentPanel.vue";
 import WorkflowRunner from "./components/WorkflowRunner.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
 import CameraTab from "./components/cameras/CameraTab.vue";
+import WorldMapTab from "./components/worldmap/WorldMapTab.vue";
 
-type Tab = "fleet" | "teach" | "cameras";
+type Tab = "fleet" | "teach" | "cameras" | "world";
 
 const { instruments, cameras, connected } = useFleet();
 // Remembered across reloads — during bring-up you live in one tab for hours.
@@ -34,7 +35,7 @@ function select(next: Tab) {
 
     <nav class="mt-5 flex gap-1 border-b border-deck-600">
       <button
-        v-for="t in (['fleet', 'teach', 'cameras'] as Tab[])"
+        v-for="t in (['fleet', 'teach', 'cameras', 'world'] as Tab[])"
         :key="t"
         class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition-colors"
         :class="
@@ -60,6 +61,7 @@ function select(next: Tab) {
            and drops the MJPEG connections so the backend can release the cameras -->
       <TeachPanel v-else-if="tab === 'teach'" />
       <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
+      <WorldMapTab v-else-if="tab === 'world'" />
     </main>
   </div>
 </template>
