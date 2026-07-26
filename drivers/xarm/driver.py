@@ -431,9 +431,20 @@ class XArmDriver(ArmDriver):
             timeout=MOTION_TIMEOUT_S if wait else None,
         ), "set_servo_angle(relative)")
 
-    def check_joint_target(self, angles: list[float]) -> str | None:
-        """Soft-limit check, plus the controller's own verdict when connected."""
-        reason = super().check_joint_target(angles)
+    def check_joint_target(self, angles: list[float],
+                           current: list[float] | None = None) -> str | None:
+        """Soft-limit check, plus the controller's own verdict when connected.
+
+        Reads the live joint angles so the base class can allow recovery moves when a
+        joint is parked outside its soft limit — otherwise tightening a limit strands
+        the arm with every move refused.
+        """
+        if current is None and self._api is not None:
+            try:
+                current = self.get_joints()
+            except Exception:
+                current = None      # fall back to the plain in-range check
+        reason = super().check_joint_target(angles, current)
         if reason or self._api is None:
             return reason
         try:
