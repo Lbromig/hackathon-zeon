@@ -41,6 +41,8 @@ G_ABSOLUTE = "G90"
 G_RELATIVE = "G91"
 G_WAIT_MOVES = "M400"     # blocks until the queue drains: the real "arrived"
 G_ENDSTOPS = "M119"
+G_POSITION = "M114.2"     # six-axis position report: X Y Z A B C, uppercase is
+                          # the commanded value, lowercase the realtime readout
 G_ESTOP = "M112"          # latches HALT; needs M999 to clear
 G_CLEAR_HALT = "M999"
 G_STEPPERS_ON = "M17"

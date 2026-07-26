@@ -121,9 +121,7 @@ def _apply_env_overrides(fleet: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if payload:
                 entry["payload_kg"] = float(payload)
         elif kind == "opentrons":
-            port = os.getenv("OT_SERIAL_PORT")
-            if port:
-                entry["port"] = port
+            entry["port"] = _opentrons_port(os.getenv("OT_SERIAL_PORT") or entry.get("port"))
         elif kind in ("camera", "realsense"):
             kind = _apply_camera_type(entry, eid or "")
             val = os.getenv(CAM_ENV.get(eid, ""))
@@ -134,6 +132,44 @@ def _apply_env_overrides(fleet: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     entry["source"] = _camera_source(val)  # UVC index / path / RTSP
             _apply_camera_format(entry, eid or "")
     return out
+
+
+def _opentrons_port(configured: str | None) -> str:
+    """Resolve the OT-One serial port, falling back to detection.
+
+    macOS renumbers `usbmodem` nodes on every re-enumeration — observed live: the
+    board came back as `usbmodem11301` having been `usbmodem11201`, purely because
+    a camera was plugged into the same hub. A hardcoded value therefore goes stale
+    without anything changing about the robot, and the failure is a bare
+    "No such file or directory" that reads like the robot is unplugged.
+
+    So: honour an explicit setting when it actually exists, and otherwise pick the
+    single `cu.usbmodem*` node. Deliberately narrow — Bluetooth and the built-in
+    debug nodes are not `usbmodem`, so they cannot be selected by accident. If
+    several are present nothing is guessed, because opening the wrong board is
+    worse than failing to open any.
+    """
+    import glob
+
+    if configured and os.path.exists(configured):
+        return configured
+
+    candidates = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if configured and not os.path.exists(configured):
+        if len(candidates) == 1:
+            print(f"[config] OT_SERIAL_PORT={configured!r} does not exist; "
+                  f"using the detected {candidates[0]!r} instead")
+            return candidates[0]
+        print(f"[config] OT_SERIAL_PORT={configured!r} does not exist and "
+              f"{len(candidates)} usbmodem ports were found; leaving it as set")
+        return configured
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        print(f"[config] several usbmodem ports {candidates}; set OT_SERIAL_PORT "
+              f"to choose, refusing to guess which board is the OT")
+    return configured or ""
 
 
 def _apply_camera_type(entry: dict[str, Any], eid: str) -> str:
