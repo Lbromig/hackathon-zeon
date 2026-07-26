@@ -23,22 +23,42 @@ and `ok=True` — and the hero workflow's `_execute` was **wired**: a data-drive
 (left clamps the tube, right pulls the cap straight up and parks it, takes the tube, presents it under the OT
 tip, OT aspirates) drives real capability calls against **taught poses**, guarded by a loud `preflight`, so
 `run()` now genuinely executes → verifies → retries. For the first time the real verdicts **gate real motion**,
-not just twin geometry (`backend/tests/test_workflow_execute.py`). **This cycle the whole stack landed in git**
-(commits `2b0ed34`..`e641f56`; HEAD `e641f56`) — the multi-cycle "uncommitted WIP" gap that was the single
-biggest threat for three straight reviews is closed, and a clean checkout of `agent-loop-p0` now runs the real
-thing. The bottleneck is now **purely hardware bring-up**, and it is narrow: (1) the Opentrons `aspirate`
-transport is still a no-op (`connect`/`_send` TODO), so the narrative climax is currently mimed until
-`origin/feat/ot-one-serial-driver` is merged; and (2) the floor path needs its 12 poses hand-taught on the real
-bench (`data/teach_poses.json`, absent on disk) or `preflight` correctly refuses to run. The **dexterity half
-remains the strong half**: the arm is teachable (free-drive mode), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured into config), and re-runnable. The next
-block's job is narrow, unglamorous, and can only be done at the bench: **wire the OT serial transport and teach
-the poses** — then one real `ok=False` stops one real aspirate. No new substrate, no more code on the critical
-path.
+not just twin geometry (`backend/tests/test_workflow_execute.py`). The whole stack is in git
+(commits `2b0ed34`..`e641f56`; HEAD `e641f56`) and a clean checkout of `agent-loop-p0` runs the real thing.
+**The remaining gap is three items, and — corrected this cycle — not all of it is hardware.** (1) The Opentrons
+`aspirate` transport is still a no-op (`connect`/`_send` TODO), so the narrative climax is mimed until
+`origin/feat/ot-one-serial-driver` is merged. (2) Bench teaching has **started** — `data/teach_poses.json` is now
+on disk with 2 of 12 poses taught on the real right arm — but the rest and the whole left arm are untaught, so
+`preflight` still refuses the full choreography. (3) **New, and the honest correction to last cycle's optimism:**
+the verify→retry loop — Track C's *verification* half — is **partially hollow on the real bench**, because
+`reparent()` and motion→twin updates live only in tests; nothing in `_execute` or `twin_fusion` mutates the twin
+on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
+true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
+half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. The next block's job is
+narrow and mostly at the bench — **merge the OT transport, finish teaching the poses, and wire a minimal
+reparent-on-grasp** (or scope the demo's verify moment onto a geometry-only predicate perception can drive) —
+then one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T02:11Z — A bench is being taught — and a hole opened under the verify loop: its parent-based half is a no-op on real hardware.
+
+**Demo-readiness score: 7.0/10 for the *stated* PoC (verified uncap→aspirate) — a deliberate half-point *down* from 7.5, not because anything regressed but because last review over-credited the verify loop.** ~8/10 for the teleop + streaming-UI + safe-motion show (unchanged). Two things moved the needle this cycle in opposite directions: real bench-teaching **started** (a genuine plus), and a closer read of the code exposed that the verify→retry loop — the half of Track C that isn't dexterity — is **hollow for the grasp step on the live bench** (a correction that lowers the honest number). No new commits landed since `d6f06da`; the change is on disk and in the reading, not in git history.
+
+**What genuinely moved forward — the bench is live.** `data/teach_poses.json`, absent every prior cycle, is now on disk with 2 of 12 poses taught on the real **right** arm (`cap_grasp_approach`, `cap_grasp`, saved 02:00Z — *after* the last review at 01:42Z). This is the first hard evidence that a real arm is connected and being taught, not just simulated. Q-POSES-1 moves from "not started, hardware-only" to "in progress, 2/12." The team also added two untracked planning docs (`docs/INTEGRATION_PLAN.md`, `docs/NEXT_STEPS.md`) that are sharp and code-checked — the integration plan is the one that surfaced the finding below.
+
+**The single biggest threat this cycle — the verify loop's parent-based predicates can't fire on real hardware (Q-TWIN-COUPLING).** `grep` finds **zero** `reparent` calls in production `backend/app/` or `core/`; `WorldModel.reparent()` and every motion→twin pose update are exercised *only* in tests (`test_worldmodel`, `test_integration_loop`, `test_verification`). Neither `_execute`/`CHOREOGRAPHY` nor `twin_fusion` mutates parent links when the arm actually manipulates something. Consequence: `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s reparent clause can **never turn true from a real grasp** — the twin is a correct topology over placeholder geometry. Last review said the real verdicts "gate real motion, not just twin geometry." On the mock that's true; on the bench, for the parent-based steps, it is not. For a track literally titled *"…and Physical Verification,"* a verify loop that greens over an unmutated twin is the most on-theme way to fail. It sits *co-equal* with the long-standing Q-OT-1 (the OT `aspirate` is still a physical no-op — `connect`/`_send` remain `TODO`), and together they are the same shape of risk: a green tick over nothing. Two green ticks over nothing is worse than one honest failure.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only.
+- **KEEP:** the committed `_execute` + choreography; the real verifiers + fusion loop; the P0 agent loop; the teach + safe-motion layer; fiducial detection + live camera transport.
+- **ADD, in strict priority:** (1) **wire a minimal reparent-on-grasp/place into `_execute`** — the tests already show the exact call (`wm.reparent("tube_1", "right_tool")`); lifting that one line into the execution path is a few hours and makes `grasp_secure` honest, *or* deliberately scope the demo's verify moment onto `tube_aligned`/`cap_removed`-separation, which perception can drive today (Q-TWIN-COUPLING). (2) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws (Q-OT-1). (3) **finish teaching the 12 poses on both arms** (Q-POSES-1) — now 2/12, in progress. (4) script **one deliberate failure injection** on whichever predicate is genuinely live after (1) (Q-DEMO-1).
+- **DECIDE:** which single verify moment is the demo's hero. If reparent-wiring slips, pick a geometry-only predicate *now* and rehearse to it — don't discover on stage that `grasp_secure` is stuck.
+
+**Opposing view (steelman).** Reparenting is one line the tests already spell out, and pose-teaching is underway — so this looks like a half-day of wiring plus a teaching session, and the score arguably shouldn't drop at all. Fair on effort. But the point of a critical review is honesty about *what would run if the demo were called now*, and right now a real grasp would not flip `grasp_secure`, and the pipette would not draw — two of the three beats the narrative promises. The half-point down is a truth adjustment, not a morale statement: the fix is cheap, but until it's in, the demo's two climaxes are both mimed. Wire the reparent line and merge the serial driver first; they convert the most narrative per hour.
 
 ### 2026-07-26T01:42Z — It shipped: the working demo is committed. Only the bench and a serial port stand between here and real.
 

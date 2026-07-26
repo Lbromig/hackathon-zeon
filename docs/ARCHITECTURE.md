@@ -158,13 +158,25 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
 - **Wired but not physically demonstrable yet / placeholder:** the OT-One driver's `connect()` / `_send()`
   remain `TODO` (`connect()` stores `object()`, `_send()` returns `None`; a `feat/ot-one-serial-driver` branch
   exists on `origin` but is **not merged** here), so the wired `aspirate` no-ops on hardware — no real aspirate
-  has run, and the narrative climax mimes until the serial transport lands (Q-OT-1). The floor choreography's
-  12 poses must still be hand-taught on the real bench (`data/teach_poses.json`, gitignored — absent on disk
-  here), or `preflight` correctly **refuses to run** (Q-POSES-1) — a green test suite is not a moving demo.
-  Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are
+  has run, and the narrative climax mimes until the serial transport lands (Q-OT-1). Bench teaching of the floor
+  choreography's **12 poses has begun** on the real rig: `data/teach_poses.json` (gitignored) is now present on
+  disk with **2 of 12 poses taught** (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z);
+  the remaining 10 poses and the entire **left** arm are untaught, so `preflight` still correctly **refuses to
+  run** the full choreography (Q-POSES-1) — a green test suite is not a moving demo, but a real arm is now being
+  taught. Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are
   placeholder (the `PlaceholderScanAdapter`) and fused/projected world coords are camera-frame until calibrated;
   `MARKER_MAP` now uses **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity
   offsets (0.02 placeholder).
+- **Twin↔physics coupling is not wired in the live path (verifier-critical):** `WorldModel.reparent()` and any
+  motion-driven twin pose update are exercised **only in tests** (`test_worldmodel.py`, `test_integration_loop.py`,
+  `test_verification.py`) — `grep` finds **zero** `reparent` calls in `backend/app/` or `core/` production code, and
+  neither `_execute`/`CHOREOGRAPHY` nor `twin_fusion` mutates parent links on manipulation. So on the real bench the
+  twin is a correct *topology over placeholder geometry*: the geometry-based verifiers (`cap_removed` separation,
+  `tube_aligned` distance) can still be driven by perception, but the **parent-based** predicates
+  (`grasp_secure` = tube parented to a `TOOL`, and `cap_removed`'s reparent clause) can never turn true from real
+  manipulation until arm-FK pose updates + manipulation-time reparenting are wired into the live loop
+  (Q-TWIN-COUPLING; surfaced in the team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the intended
+  coupling — it is designed, not yet built.
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only
