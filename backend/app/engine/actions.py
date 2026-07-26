@@ -459,7 +459,25 @@ def validate_action(data: Any) -> ActionBase:
 # --- typed outputs, one model per kind ---------------------------------------
 
 class OutputsBase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Base for every action's typed outputs.
+
+    ``allow_inf_nan=False`` matches ``ActionBase`` and is load-bearing on the way *out*, not
+    just the way in. Outputs are serialized to the websocket, and Python's ``json`` emits bare
+    ``Infinity`` / ``NaN`` — which are not JSON, and which ``JSON.parse`` rejects outright. One
+    non-finite float would therefore break the event stream for every connected client, not
+    just mis-render one row.
+
+    This is not hypothetical: ``condition_number`` is the natural output of an SVD on a
+    singular matrix, and ``inf`` is exactly what a degenerate camera geometry produces. The
+    contract for handlers is therefore: **a value you cannot compute is ``None``, with a stated
+    reason** — never an infinity. ``OffsetOutputs`` makes every such field optional for this
+    reason, and carries ``refusal`` to say why.
+
+    Failing here is loud and local (the action fails validation) rather than silent and global
+    (invalid JSON on a shared socket), which is the trade worth making.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class InitializeOutputs(OutputsBase):

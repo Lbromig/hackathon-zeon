@@ -27,14 +27,25 @@ from ..actions import (Action, ArmDecap, ArmGripper, ArmTraverse, ArmWaypoint,
                        CameraSnapshot, Initialize, LHRelative, Loop,
                        VisionIdentify, VisionSolveOffset, validate_action)
 
-#: Cameras the servo loop looks through. Two viewpoints, so the offset solve has something
-#: to fuse; taken from config rather than named here, because which physical camera sits at
-#: which viewpoint is a bench fact that has already changed once.
-#:
-#: NOTE: on this bench only one unit delivers colour — the others expose their IR/depth UVC
-#: function (see REQUIREMENTS §17.7 C1). The detectors must therefore work on IR frames.
-#: Nothing in this file assumes colour.
-SERVO_CAMERAS: tuple[str, ...] = ("handover_cam", "gripper_cam")
+
+def servo_cameras() -> tuple[str, ...]:
+    """Cameras the servo loop looks through — read from config, never named here.
+
+    Two viewpoints, so the offset solve has something to fuse. This is a **function, not a
+    constant**, because which physical camera sits at which viewpoint is a bench fact that has
+    already changed once: the slot named `gripper_left_cam` is the *right* arm's camera, and
+    the slot named `gripper_cam` looks across the room and detected **zero AprilTags in 53
+    sampled frames**. A module-level tuple captured at import time invites exactly the drift
+    that made a blind camera the servo pair's second view (D19).
+
+    NOTE: on this bench only one unit delivers colour — the others expose their IR/depth UVC
+    function (REQUIREMENTS §17.7 C1). The detectors must work on IR frames. Nothing in this
+    file assumes colour.
+    """
+    from core.config import settings
+
+    return tuple(settings.servo_cameras)
+
 
 #: Convergence gate for the servo loop. `threshold_mm` is the **remaining offset**, not the
 #: disagreement between the two views — terminating on disagreement can leave a converged
@@ -88,7 +99,7 @@ def _servo_iteration_body() -> list[Action]:
     (R-VIS-8) rather than collapsing into one opaque row.
     """
     body: list[Action] = []
-    for cam in SERVO_CAMERAS:
+    for cam in servo_cameras():
         body += [
             CameraSnapshot(device=cam, fresh=True, store=True, into_slot="frame",
                            label=f"snapshot {cam}"),
@@ -247,5 +258,5 @@ def validate() -> list[Action]:
     return [validate_action(a.model_dump()) for a in build()]
 
 
-__all__ = ["MAX_SERVO_ITERATIONS", "OFFSET_THRESHOLD_MM", "SERVO_CAMERAS", "build",
+__all__ = ["MAX_SERVO_ITERATIONS", "OFFSET_THRESHOLD_MM", "servo_cameras", "build",
            "build_startup", "validate", "waypoints_used"]

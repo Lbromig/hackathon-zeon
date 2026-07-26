@@ -180,12 +180,42 @@ def test_the_servo_loop_is_bounded_in_both_ways():
     assert loop.no_progress_abort > 0
 
 
+def test_the_servo_cameras_come_from_config_not_a_module_constant():
+    """D19: never name the servo cameras in plan data.
+
+    This bit once. A module-level tuple said `("handover_cam", "gripper_cam")` while config
+    said `("handover_cam", "gripper_left_cam")` — and `gripper_cam` is the slot that looks
+    across the room and detected **zero AprilTags in 53 sampled frames**. The plan would have
+    written frames into a slot the solve never read, so the loop could not converge, and the
+    entire cause was one identifier.
+
+    Reading config at build time also means the bench can re-point a viewpoint without a code
+    change, which is the point of R-CAM-6.
+    """
+    from core.config import settings
+
+    assert handover.servo_cameras() == tuple(settings.servo_cameras)
+    assert not hasattr(handover, "SERVO_CAMERAS"), (
+        "a module-level constant re-introduces exactly the drift this replaced"
+    )
+
+
+def test_the_loop_only_looks_through_cameras_the_fleet_actually_has():
+    """A servo camera absent from the fleet is a plan that cannot run, not a slow one."""
+    from core.config import settings
+
+    for cam in handover.servo_cameras():
+        assert cam in settings.cameras, (
+            f"{cam!r} is a servo camera but not a configured camera slot"
+        )
+
+
 def test_the_loop_body_looks_through_both_servo_cameras():
     loop = next(a for a in handover.build() if isinstance(a, Loop))
     body = list(loop.body)
     snaps = [a for a in body if isinstance(a, CameraSnapshot)]
-    assert {a.device for a in snaps} == set(handover.SERVO_CAMERAS)
-    for cam in handover.SERVO_CAMERAS:
+    assert {a.device for a in snaps} == set(handover.servo_cameras())
+    for cam in handover.servo_cameras():
         targets = {a.target for a in body
                    if isinstance(a, VisionIdentify) and a.device == cam}
         assert targets == {"tip", "tube"}, f"{cam} must identify both tip and tube"
