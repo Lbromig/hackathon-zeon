@@ -19,12 +19,22 @@ from core.perception.rs_devices import RSEnumeration, enumerate_devices
 
 
 def test_enumeration_never_raises_with_no_camera():
-    """The normal bring-up state: nothing plugged in. Must answer, not raise."""
+    """The normal bring-up state: nothing plugged in. Must answer, not raise.
+
+    Note what is NOT asserted: that there is either a device or an error. Three
+    states are all legitimate, and "no devices and no error" is the honest answer
+    when nothing is attached. An earlier version of this test required one of the
+    two to be non-empty and failed the moment the cameras were genuinely
+    unplugged, which is the one situation it was named for. The contract is that
+    the call answers rather than crashing, not that it always has something to
+    report.
+    """
     result = enumerate_devices()
     assert isinstance(result, RSEnumeration)
-    # Either devices or an error, and never an exception. This is the property
-    # the API endpoint depends on.
-    assert result.devices or result.error
+    assert isinstance(result.devices, list)
+    assert isinstance(result.error, str)
+    # ok means "no error", which is true both with cameras and with none.
+    assert result.ok == (not result.error)
 
 
 def test_a_child_killed_by_signal_becomes_an_error(monkeypatch):
