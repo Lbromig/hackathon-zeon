@@ -26,8 +26,13 @@ calib/
 # and the image volume grows without bound, so never committed.
 temp/
 
-# poses taught through the UI (per-lab, not source)
-data/
+# Bench-local data. `data/` is ignored wholesale EXCEPT the taught waypoint library:
+# those poses are hours of hand-guiding a real arm, they are unreproducible without the
+# bench, and nothing else backs them up. A test that escaped its isolation fixture once
+# overwrote this file and five taught poses were lost for good — tracking it means the
+# next such accident is a `git checkout` instead of a re-teach.
+data/*
+!data/teach_poses.json
 
 # PM-agent scratch state (machine-generated)
 .pm-agent/

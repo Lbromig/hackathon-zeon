@@ -56,11 +56,51 @@ def isolated_teach_poses(tmp_path, monkeypatch):
 
     Empty by default so tests that exercise teaching start from a known-clean slate,
     and so anything depending on a taught pose has to say so via ``taught_poses``.
+
+    The teardown assertion is not paranoia — it is a regression guard. ``monkeypatch`` is
+    one function-scoped instance shared with the test, so a test calling
+    ``monkeypatch.undo()`` to drop its *own* patch also silently reverts this one. That
+    happened: the next direct ``_write_poses`` wrote to the developer's real library and
+    five hand-taught poses were lost. Failing loudly here turns that from data loss into
+    a red test.
     """
     path = tmp_path / "teach_poses.json"
     path.write_text("{}")
     monkeypatch.setattr(settings, "teach_poses_file", str(path))
-    return path
+    yield path
+    in_force = str(getattr(settings, "teach_poses_file", ""))
+    assert in_force == str(path), (
+        "pose-file isolation was reverted during this test — writes would have hit "
+        f"{in_force!r} instead of the tmp library. A monkeypatch.undo() in the test "
+        "reverts this autouse fixture too; use a fresh MonkeyPatch context instead."
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_pose_library_is_never_touched():
+    """Backstop: the bench's real taught-pose library must survive the whole session.
+
+    Belt and braces with ``isolated_teach_poses``, which only guards tests that keep the
+    fixture in force. This one compares the real file's bytes before and after the entire
+    run, so any escape route — a direct write, a subprocess, a fixture ordering bug —
+    still gets caught. The library is unreproducible without the bench, which is why it
+    is worth a session-scoped check.
+    """
+    real = os.path.abspath(settings.teach_poses_file)
+    before = None
+    if os.path.exists(real):
+        with open(real, "rb") as f:
+            before = f.read()
+    yield
+    after = None
+    if os.path.exists(real):
+        with open(real, "rb") as f:
+            after = f.read()
+    assert after == before, (
+        f"the test suite modified the real taught-pose library at {real} — those poses "
+        "cost hours of hand-guiding a real arm and cannot be regenerated off-bench. "
+        "Find the test that escaped the isolated_teach_poses fixture."
+    )
 
 
 @pytest.fixture
