@@ -90,6 +90,53 @@ legitimate inventory — but its index column is not OpenCV's index column. The 
 duplicated at `core/config.py`'s `camera_exclude_indices` comment, which survives the deletion
 pass.
 
+## 3b. The route the requirements table does not mention — `scripts/identify_cameras.py`
+
+**Read this before implementing R-CAM-6.** `scripts/identify_cameras.py` (289 LOC) and
+`scripts/avfsnap.swift` (159 LOC) **survive the deletion pass** and are not on the delete list.
+They implement a third identity route that §17.3's table does not list, and it is better than
+the content fingerprint alone:
+
+**AVFoundation `uniqueID` embeds the USB `locationID`.**
+
+```
+0x124300080860b5b
+  ^^^^  locationID 0x01243000  -> the physical USB port
+                               -> ioreg gives that port's "USB Serial Number"
+```
+
+So `uniqueID` identifies a **physical port**, and the USB serial identifies the **unit plugged
+into it**. Both survive macOS renumbering, and — unlike librealsense — **neither needs root**.
+
+The pieces already written:
+
+| Function | What it does |
+|---|---|
+| `avf_cameras()` | `system_profiler SPCameraDataType` → `[{name, unique_id}]`. system_profiler reports uniqueID; **ffmpeg does not**. |
+| `usb_serials()` | `ioreg -p IOUSB -l -w 0` → `{locationID_hex: {product, serial}}` |
+| `location_of(unique_id)` | `uniqueID` → the locationID it embeds (`'0x124300080860b5b'` → `'1243000'`) |
+| `ffmpeg_order()` | printed **for reference only**, so a stale `CAM_*` index in `.env` can be recognised as stale. Deliberately not used to select a device. |
+| `avfsnap.swift` | captures via `AVCaptureDevice(uniqueID:)`, and **fails loudly** when there is no such device |
+
+Three measured warnings from that file, all of which are the reason it fingerprints every frame
+rather than trusting the binding:
+
+1. **macOS renumbers video devices between two consecutive `ffmpeg -list_devices` calls seconds
+   apart, with nothing touched.** Not only on replug. This is stronger than the instability
+   `startup_snapshot.py` documents.
+2. `ffmpeg -f avfoundation -i "<exact device name>"` *does* bind correctly and refuses an
+   unknown name — **but the two D405s share one name**, so a name cannot separate them.
+3. `ffmpeg -f avfoundation -i "<uniqueID>"` **does not match the uniqueID.** It silently opens
+   the *default* device and exits zero. A bogus uniqueID also "succeeds". So you get a plausible
+   frame from the wrong camera with a green exit status — the exact failure R-CAM-7 forbids.
+
+Reconciling this with §2's "USB enumeration cannot be mapped to a cv2 index": both are true and
+they are not in conflict. `ioreg` alone cannot be mapped to a cv2 index — correct. But
+`uniqueID` **can** be mapped to a USB unit *and* opened directly (via AVFoundation, not cv2),
+which sidesteps the cv2 index entirely. If S3 opens cameras through cv2 indices, §2 stands and
+the content fingerprint is the mechanism; if a child process can capture via `avfsnap`, the
+port+serial pair is an exact identity. **Either way the fingerprint stays**, because of warning 3.
+
 ## 4. Two operational facts worth carrying into the child process
 
 * **Settle frames.** `SETTLE_FRAMES = 5` — "auto-exposure needs a few frames; frame 1 routinely

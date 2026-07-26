@@ -32,14 +32,16 @@ TEACH_LIMITS: dict[str, Any] = {
 # self-collision detection models the arm's own links ONLY — it knows nothing about
 # the RealSense camera bolted to the flange, and will happily fold the wrist until
 # the camera hits the forearm (observed: collision error 31). These bounds were
-# measured with scripts/find_joint_limit.py and are enforced on joint moves AND on
-# cartesian moves (the driver solves IK and checks the result).
+# measured with the (now deleted) scripts/find_joint_limit.py and are enforced on joint
+# moves AND on cartesian moves (the driver solves IK and checks the result). The script was
+# a bench diagnostic; this constant is its *output*, which is the part worth keeping.
 #
 # Measured 2026-07-25 on the .13 arm at J3 ~= -108 deg, 5 deg margin applied, and used
 # for BOTH arms: each carries a flange camera, so both have the same class of obstruction.
-# The .11 arm has not been measured independently — if its camera mount differs, run
-# scripts/find_joint_limit.py against it and split this into per-arm constants. Clearance
-# depends on the J3/J5 pair, so re-measure before working at a markedly more folded J3.
+# The .11 arm has not been measured independently — if its camera mount differs, recover
+# find_joint_limit.py from git history (deleted in the v2 scope reduction), re-measure and
+# split this into per-arm constants. Clearance depends on the J3/J5 pair, so re-measure
+# before working at a markedly more folded J3.
 FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}
 
 DEFAULT_FLEET: list[dict[str, Any]] = [
