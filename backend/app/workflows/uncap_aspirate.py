@@ -78,19 +78,21 @@ CHOREOGRAPHY: dict[str, list[Act]] = {
     "uncap": [
         Act("left",  "move",    pose="tube_hold_approach"),
         Act("left",  "move",    pose="tube_hold"),
-        Act("left",  "grip",    note="clamp the tube body so the cap can be pulled"),
+        Act("left",  "grip",    attach="tube_1", to="left_tool",
+            note="clamp the tube body so the cap can be pulled"),
         Act("right", "move",    pose="cap_grasp_approach"),
         Act("right", "move",    pose="cap_grasp"),
-        Act("right", "grip",    note="close on the cap"),
+        Act("right", "grip",    attach="tube_1_cap", to="right_tool", note="close on the cap"),
         Act("right", "move",    pose="cap_lift", note="snap-cap: straight up, no twist"),
         Act("right", "move",    pose="cap_dropoff"),
-        Act("right", "release", note="park the cap"),
+        Act("right", "release", attach="tube_1_cap", to="dropzone", note="park the cap"),
         Act("right", "move",    pose="cap_dropoff_retreat"),
     ],
     "transport": [
         Act("right", "move",    pose="tube_grasp_approach"),
         Act("right", "move",    pose="tube_grasp"),
-        Act("right", "grip",    note="take the open tube from the left arm"),
+        Act("right", "grip",    attach="tube_1", to="right_tool",
+            note="take the open tube from the left arm"),
         Act("left",  "release", note="left lets go once right has it"),
         Act("right", "move",    pose="transport_safe"),
     ],
@@ -228,6 +230,26 @@ def _run_act(act: Act, dm: DeviceManager) -> None:
 
     else:
         raise WorkflowError(f"unknown act kind {act.kind!r}")
+
+    _apply_twin_effect(act)
+
+
+def _apply_twin_effect(act: Act) -> None:
+    """Reflect a grip/release in the twin by reparenting (W4). Best-effort: guarded by
+    entity existence and never allowed to break the physical workflow — the motion is
+    what matters, the twin update is bookkeeping that lets verification see the change."""
+    if not (act.attach and act.to):
+        return
+    from ..services import twin
+
+    wm = twin.get_world()
+    if wm is None:
+        return
+    try:
+        if act.attach in wm.entities and act.to in wm.entities:
+            wm.reparent(act.attach, act.to, keep_world_pose=act.keep_world)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[workflow] twin reparent {act.attach}->{act.to} failed: {e}")
 
 
 def _collect_evidence(step: Step, dm: DeviceManager) -> Evidence:
