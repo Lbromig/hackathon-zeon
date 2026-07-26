@@ -15,15 +15,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.config import settings
+from core.obs import configure as configure_logging
+from core.obs import get_logger
 
 from .api import cameras, instruments, teach
 from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
 
+log = get_logger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # First, before anything that might want to report a problem. `core.config` already
+    # emitted its records through module loggers at import time; those predate the handlers
+    # and are lost, which is the price of settings being importable from anywhere — so the
+    # resolved configuration is restated here, where it lands in the file.
+    configure_logging(path=settings.log_file, level=settings.log_level,
+                      console=settings.log_console, max_bytes=settings.log_max_bytes,
+                      backup_count=settings.log_backup_count)
+    log.info("logging to %s", settings.log_file, extra={"event": "run_start"})
+    # D29 makes simulation the default, so which mode this is must be stated loudly and
+    # per device — a simulated run that reads as real is the failure that default trades for.
+    log.info("simulation: HZ_SIM=%s -> %s", settings.sim.spec,
+             ", ".join(sorted(settings.sim.device_ids)) or "nothing (real hardware)",
+             extra={"event": "device_state",
+                    "simulated": sorted(settings.sim.device_ids),
+                    "servo_cameras": list(settings.servo_cameras)})
     device_manager.load_fleet()
     # One frame per camera slot, written to temp/captures/<slot>/. Backgrounded: a UVC open
     # can block uninterruptibly on macOS, and the API must come up regardless.

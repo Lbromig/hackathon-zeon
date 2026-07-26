@@ -32,6 +32,9 @@ from fastapi import APIRouter, HTTPException
 from drivers import ArmDriver, ConnectionState, DriverError, InstrumentKind, Pose
 
 from core.config import settings
+from core.obs import get_logger
+
+log = get_logger(__name__)
 from core.motion import cap_ops
 
 from ..schemas import (
@@ -575,7 +578,7 @@ def _load_poses() -> dict[str, dict[str, dict[str, Any]]]:
         with open(path) as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[teach] could not read {path}: {e}")
+        log.warning("could not read %s: %s", path, e)
         return {}
 
 

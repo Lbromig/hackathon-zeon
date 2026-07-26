@@ -14,12 +14,18 @@ Two SDK footguns this driver exists to contain:
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 from typing import Any
 
 from ..base import ConnectionState, DeviceInfo, DriverError, InstrumentKind
 from ..capabilities.arm import ArmDriver, ArmLimits, GripperInfo, GripperKind, Pose
+
+# Plain stdlib logging: `drivers/` deliberately depends on nothing in `core/`.
+# The handlers `core/obs/log.py` installs stamp these records with the action that
+# caused them anyway, which is the point of binding context on the handler (D23).
+log = logging.getLogger(__name__)
 
 try:  # SDK is optional at import time so the backend can boot without hardware
     from xarm.wrapper import XArmAPI
@@ -217,7 +223,8 @@ class XArmDriver(ArmDriver):
                     self._wait_until_stopped(api)
             except Exception as e:  # pragma: no cover - hardware dependent
                 verb = "brake" if brake else "stop"
-                print(f"[xarm {self.device_id}] WARNING: could not {verb} on disconnect: {e}")
+                log.warning("could not %s on disconnect: %s", verb, e,
+                            extra={"device": self.device_id})
             finally:
                 try:
                     api.disconnect()
@@ -237,7 +244,8 @@ class XArmDriver(ArmDriver):
         # motor_brake_states: 0 = brake engaged, 1 = released
         brakes = list(api.motor_brake_states or [])[: self._axis or 6]
         if brakes and not all(b == 0 for b in brakes):
-            print(f"[xarm {self.device_id}] WARNING: brakes not all engaged: {brakes}")
+            log.warning("brakes not all engaged: %s", brakes,
+                        extra={"device": self.device_id})
 
     @staticmethod
     def _wait_until_stopped(api: "XArmAPI", timeout: float = 10.0) -> bool:
@@ -363,7 +371,8 @@ class XArmDriver(ArmDriver):
             try:
                 self._check(api.clean_gripper_error(), "clean_gripper_error")
             except DriverError as e:
-                print(f"[xarm {self.device_id}] gripper error not cleared: {e}")
+                log.warning("gripper error not cleared: %s", e,
+                            extra={"device": self.device_id})
         self._gripper_ready = False   # force a re-enable on the next grip
         self._check(api.motion_enable(True), "motion_enable")
         self._check(api.set_mode(0), "set_mode(0)")

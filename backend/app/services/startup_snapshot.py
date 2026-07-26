@@ -24,6 +24,10 @@ from typing import Any
 
 from drivers import ConnectionState, InstrumentKind
 
+from core.obs import get_logger
+
+log = get_logger(__name__)
+
 # Frames to pull and throw away before keeping one. The first frames off a UVC camera are
 # auto-exposure settling and routinely come back saturated or black — a snapshot taken from
 # frame 1 would misrepresent a perfectly good camera.
@@ -82,7 +86,7 @@ def _snapshot_one(driver: Any, root: str) -> tuple[str, str]:
 def run(blocking: bool = False) -> threading.Thread | None:
     """Snapshot every camera slot. Returns the worker thread, or None if disabled."""
     if os.getenv("HZ_STARTUP_SNAPSHOT", "1").strip().lower() in ("0", "false", "no"):
-        print("[startup-snapshot] disabled (HZ_STARTUP_SNAPSHOT)")
+        log.info("disabled (HZ_STARTUP_SNAPSHOT)")
         return None
 
     # Never under pytest. Every TestClient enters the app lifespan, so without this the
@@ -100,14 +104,15 @@ def run(blocking: bool = False) -> threading.Thread | None:
 
         cameras = [d for d in device_manager.all() if _is_camera(d)]
         if not cameras:
-            print("[startup-snapshot] no camera slots in the fleet")
+            log.warning("no camera slots in the fleet")
             return
 
         root = settings.capture_dir
-        print(f"[startup-snapshot] capturing {len(cameras)} camera slot(s) -> {root}")
+        log.info("capturing %d camera slot(s) -> %s", len(cameras), root)
         for driver in cameras:
             cam_id, outcome = _snapshot_one(driver, root)
-            print(f"[startup-snapshot]   {cam_id}: {outcome}")
+            log.info("%s: %s", cam_id, outcome, extra={"device": cam_id,
+                                                       "event": "camera_event"})
 
     if blocking:
         _work()

@@ -22,6 +22,10 @@ from typing import Any, Iterator
 
 from drivers import CameraDriver, ConnectionState, InstrumentDriver, InstrumentKind
 
+from core.obs import get_logger
+
+log = get_logger(__name__)
+
 CAPTURE_FPS = 15.0
 DETECT_EVERY = 3          # detect on every Nth frame -> ~5 Hz at 15 fps
 JPEG_QUALITY = 80
@@ -101,7 +105,7 @@ def _detector(camera_matrix: Any = None) -> Any:
 
         return FiducialDetector(camera_matrix=camera_matrix)
     except Exception as e:  # pragma: no cover - depends on the install
-        print(f"[camera_hub] fiducial detection unavailable: {e}")
+        log.warning("fiducial detection unavailable: %s", e)
         return None
 
 
@@ -112,7 +116,7 @@ def _shape_detector(intrinsics: dict[str, Any] | None = None) -> Any:
 
         return ShapeDetector(intrinsics)
     except Exception as e:  # pragma: no cover - depends on the install
-        print(f"[camera_hub] shape detection unavailable: {e}")
+        log.warning("shape detection unavailable: %s", e)
         return None
 
 
@@ -213,7 +217,8 @@ class CameraWorker(threading.Thread):
             try:
                 self.driver.disconnect()
             except Exception as e:  # pragma: no cover - teardown must not raise
-                print(f"[camera_hub] {self.driver.device_id} disconnect failed: {e}")
+                log.warning("%s disconnect failed: %s", self.driver.device_id, e,
+                            extra={"device": self.driver.device_id})
 
     def _pump(self) -> None:
         frame_no = 0
@@ -267,7 +272,8 @@ class CameraWorker(threading.Thread):
 
     def _reopen(self) -> None:
         """Close and reopen the device after repeated grab failures."""
-        print(f"[camera_hub] {self.driver.device_id}: reopening after repeated grab failures")
+        log.warning("%s: reopening after repeated grab failures", self.driver.device_id,
+                    extra={"device": self.driver.device_id, "event": "camera_event"})
         try:
             self.driver.disconnect()
         except Exception:
@@ -313,7 +319,8 @@ class CameraWorker(threading.Thread):
         try:
             found = self._detector.detect(frame)
         except Exception as e:  # a detector fault must not kill the video
-            print(f"[camera_hub] {self.driver.device_id} detect failed: {e}")
+            log.warning("%s detect failed: %s", self.driver.device_id, e,
+                        extra={"device": self.driver.device_id})
             return []
         out = []
         for d in found:
@@ -339,7 +346,8 @@ class CameraWorker(threading.Thread):
         try:
             shapes = self._shapes.detect(frame, depth)
         except Exception as e:  # a CV fault must not kill the video/detection
-            print(f"[camera_hub] {self.driver.device_id} shape detect failed: {e}")
+            log.warning("%s shape detect failed: %s", self.driver.device_id, e,
+                        extra={"device": self.driver.device_id})
             return []
         return [Detection(**s.as_detection_kwargs()) for s in shapes]
 

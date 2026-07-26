@@ -6,6 +6,9 @@ from typing import Any
 from drivers import DriverError, InstrumentDriver, build_driver
 
 from core.config import settings
+from core.obs import get_logger
+
+log = get_logger(__name__)
 
 
 class DeviceManager:
@@ -26,7 +29,7 @@ class DeviceManager:
             try:
                 self._drivers[cfg["id"]] = build_driver(cfg)
             except Exception as e:  # keep booting even if one driver is misconfigured
-                print(f"[device_manager] skipped {cfg.get('id')}: {e}")
+                log.warning("skipped %s: %s", cfg.get("id"), e)
 
     def get(self, device_id: str) -> InstrumentDriver:
         if device_id not in self._drivers:
@@ -68,7 +71,7 @@ class DeviceManager:
             try:
                 d.disconnect()
             except Exception as e:
-                print(f"[device_manager] {d.device_id} failed to disconnect cleanly: {e}")
+                log.warning("%s failed to disconnect cleanly: %s", d.device_id, e)
 
     def snapshot(self) -> list[dict[str, Any]]:
         out = []

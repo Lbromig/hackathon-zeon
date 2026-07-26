@@ -10,10 +10,21 @@ choreography asks for.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 
 import pytest
 
-from core.config import settings
+# Before `core.config` is imported, because `settings` is built at import time. Two reasons:
+# the suite must not append to the developer's real log while it runs, and it must not leave
+# a `data/logs/` behind in a fresh clone. `setdefault`, so an explicit HZ_LOG_FILE still wins.
+os.environ.setdefault("HZ_LOG_FILE",
+                      os.path.join(tempfile.gettempdir(), "hz-test-logs", "zeon.jsonl"))
+# Quiet console handler: the lifespan configures logging, and a StreamHandler on the root
+# duplicates every record into pytest's captured output for the whole session.
+os.environ.setdefault("HZ_LOG_CONSOLE", "0")
+
+from core.config import settings  # noqa: E402  -- must follow the env setup above
 
 # The choreography in workflows/uncap_aspirate.py references these by name. Values are
 # arbitrary but well-formed: the mock arms accept anything, and the real driver is
