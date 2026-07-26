@@ -18,10 +18,17 @@ from core.config import settings
 from core.obs import configure as configure_logging
 from core.obs import get_logger
 
-from .api import cameras, instruments, logs, teach
+from .api import cameras, engine, instruments, logs, runs, teach
+# Importing the handler package **is** the handler registration (`handlers/__init__.py`):
+# `handler_for(kind)` returns None for a kind nobody claimed, and pre-flight turns that into
+# "this step cannot run" (R-ENG-17). Without this import every kind is `no_handler` and every
+# plan's readiness is `failed` — so the import is load-bearing, not cosmetic, and the `noqa`
+# is there because nothing in this module references the name.
+from .engine import handlers as _handlers  # noqa: F401
 from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
+from .services.run_manager import run_manager
 
 log = get_logger(__name__)
 
@@ -47,7 +54,16 @@ async def lifespan(app: FastAPI):
     # One frame per camera slot, written to temp/captures/<slot>/. Backgrounded: a UVC open
     # can block uninterruptibly on macOS, and the API must come up regardless.
     startup_snapshot.run()
+    # Initialization is a *plan* on the engine's own runner (D5/R-INIT), so it gets indices,
+    # per-action logs, readiness and pause for free, and the Workflow tab can show it. Also on
+    # a daemon thread and never awaited: an arm controller can sit in a TCP connect and a UVC
+    # open can block uninterruptibly, and the API must come up regardless of any of it
+    # (R-START-7). Every failure inside is recorded per device, not raised.
+    run_manager.boot_init()
     yield
+    # Stop the run before the drivers it is commanding are torn down — `disconnect_all` is also
+    # what brakes an arm, and doing that under a live worker leaves a move half executed.
+    run_manager.shutdown()
     # Stop the frame workers before the drivers they hold go away, or a worker
     # keeps grabbing from a released VideoCapture during shutdown.
     camera_hub.stop_all()
@@ -90,6 +106,12 @@ app.include_router(instruments.state_router)
 app.include_router(teach.router)
 app.include_router(cameras.router)
 app.include_router(logs.router)
+app.include_router(engine.router)
+# Prefix-less, and it must stay that way: an APIRouter prefix applies to websocket routes too,
+# so including this on `engine.router` would rename the path to `/api/engine/ws/engine` and
+# every client would see nothing but a closed socket.
+app.include_router(engine.ws_router)
+app.include_router(runs.router)
 
 
 @app.get("/api/health")
