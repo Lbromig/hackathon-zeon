@@ -47,7 +47,7 @@ docs/v2/ARCHITECTURE_REVIEW.md Q-WP-1.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Iterable
 
 from core import teach_poses
 from core.speeds import SpeedTier
@@ -76,10 +76,6 @@ class WaypointSpec:
     step: int
     speed: SpeedTier
     note: str
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.device, self.name)
 
 
 # The 15 waypoints, in the order the workflow visits them.
@@ -548,13 +544,3 @@ def progress(device: str, *, path: str | None = None) -> DeviceProgress:
         waypoints=rows,
         extra=sorted(n for n in taught_names if n not in spec_names),
     )
-
-
-def as_dict(obj: Any) -> dict[str, Any]:
-    """Dataclass -> plain dict, for the API layer and the logs. Kept here so the JSON
-    field names live next to the fields they come from."""
-    from dataclasses import asdict, is_dataclass
-
-    if not is_dataclass(obj) or isinstance(obj, type):
-        raise TypeError(f"{obj!r} is not a waypoint dataclass instance")
-    return asdict(obj)
