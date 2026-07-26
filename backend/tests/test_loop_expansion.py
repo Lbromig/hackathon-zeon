@@ -323,6 +323,99 @@ def test_a_per_camera_watch_slot_warns_rather_than_guessing_which_view_to_believ
     assert [w.code for w in result.warnings] == ["watch_slot_per_camera"]
 
 
+# --- the blackboard between iterations ---------------------------------------
+#
+# B2. `blackboard.clear` documented that a loop iteration clears the per-camera slots, and no
+# caller existed. The consequence the review reproduced (probe 8) is the oscillation the
+# freshness contract is for: an iteration whose capture did not happen solved against the
+# previous iteration's frame and re-commanded an offset that had already been applied.
+
+
+def test_each_iteration_starts_with_the_per_camera_slots_and_the_watch_slot_empty(
+        handlers, runner_factory):
+    """The invariant, asserted directly. It has to be structural: a contract every handler must
+    remember is one that a handler returning early on `found=False` breaks silently."""
+    seen: list = []
+
+    def snapshot(action, ctx):
+        seen.append((ctx.blackboard.peek("frame", device=action.device),
+                     ctx.blackboard.peek("tip", device=action.device),
+                     ctx.blackboard.peek("selected_offset")))
+        ctx.blackboard.set("frame", {"n": len(seen)}, device=action.device)
+        ctx.blackboard.set("tip", {"n": len(seen)}, device=action.device)
+        return A.SnapshotOutputs(width=4, height=4, captured_at="now")
+
+    World(offset=8.0, gain=2.0).install(handlers)
+    handlers("camera.snapshot", snapshot)
+    runner = runner_factory([_loop(threshold_mm=1.5, max_iterations=8,
+                                   body=[{"kind": "camera.snapshot",
+                                          "device": "handover_cam"},
+                                         {"kind": "lh.move_relative", "device": "ot",
+                                          "dz": -1.0},
+                                         {"kind": "vision.solve_offset"}])])
+    loop_aid = runner.plan.aids()[0]
+    assert runner.run_to_completion(timeout=10.0) == "complete"
+    assert len(seen) == 4, "four iterations, and every one of them started from empty"
+    assert seen == [(None, None, None)] * 4
+    # The last iteration's value still survives the loop, for anything after it to read.
+    assert runner.blackboard.peek("selected_offset") is not None
+    assert runner.plan.result(loop_aid).outputs.outcome == "converged"
+
+
+def test_an_iteration_whose_capture_failed_cannot_solve_against_the_previous_frame(
+        handlers, runner_factory):
+    """Probe 8, and the reason this matters rather than merely being untidy. The capture is
+    marked `on_failure="continue"`, so the iteration carries on after it fails — and the solve
+    must then find nothing rather than compute a plausible offset from the last iteration's
+    frame and hand the liquid handler a correction it has already applied."""
+    world = World(offset=8.0, gain=2.0)
+    captures = {"n": 0}
+
+    def snapshot(action, ctx):
+        captures["n"] += 1
+        if captures["n"] == 2:
+            raise RuntimeError("the camera child did not answer the snapshot request")
+        # The frame carries the offset visible at capture time, which is what makes a stale
+        # frame a *wrong number* rather than merely an old one.
+        ctx.blackboard.set("frame", {"offset": world.offset}, device=action.device)
+        return A.SnapshotOutputs(width=4, height=4, captured_at="now")
+
+    def solve(action, ctx):
+        frame = ctx.blackboard.get("frame", device="handover_cam")   # SlotEmpty when skipped
+        outputs = A.OffsetOutputs(
+            residual_offset_mm={"x": 0.0, "y": 0.0, "z": frame["offset"]},
+            magnitude_mm=frame["offset"], observed_axes=["x", "y", "z"], method="tag_3d")
+        ctx.blackboard.set("selected_offset", outputs)
+        return outputs
+
+    def move(action, ctx):
+        world.moves += 1
+        world.offset = max(0.0, world.offset - world.gain)
+        return A.LHMoveOutputs(applied_mm={"z": -world.gain})
+
+    handlers("camera.snapshot", snapshot)
+    handlers("vision.solve_offset", solve)
+    handlers("lh.move_relative", move)
+    runner = runner_factory([_loop(threshold_mm=1.5, max_iterations=8,
+                                   body=[{"kind": "camera.snapshot",
+                                          "device": "handover_cam",
+                                          "on_failure": "continue"},
+                                         {"kind": "vision.solve_offset"},
+                                         {"kind": "lh.move_relative", "device": "ot",
+                                          "dz": -1.0}])])
+    loop_aid = runner.plan.aids()[0]
+    assert runner.run_to_completion(timeout=10.0) == "failed"
+
+    rows = {(r.iteration, r.kind): r for r in runner.plan.rows() if r.parent_aid == loop_aid}
+    assert rows[(2, "camera.snapshot")].state == "failed"
+    solve_2 = rows[(2, "vision.solve_offset")]
+    assert solve_2.state == "failed", "no solve against iteration 1's frame"
+    assert solve_2.result.error.type == "SlotEmpty"
+    assert rows[(2, "lh.move_relative")].state == "planned"
+    assert world.moves == 1, "iteration 1's offset was never commanded a second time"
+    assert runner.plan.result(loop_aid).outputs.iterations == 2
+
+
 # --- pause, abort and injection inside a loop --------------------------------
 
 def test_a_pause_inside_a_loop_lands_between_iterations_rows(handlers, runner_factory):

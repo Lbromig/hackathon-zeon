@@ -127,9 +127,19 @@ class Blackboard:
     def clear(self, slot: str | None = None) -> None:
         """Clear one slot or all of them.
 
-        A loop iteration clears the per-camera slots before it starts, so iteration 4 cannot
-        solve against iteration 3's detections if a capture fails — a stale detection silently
-        reused is the same class of bug as a stale frame (D20), and just as hard to see.
+        The caller that matters is `Runner._clear_iteration_slots`: every loop iteration clears
+        `frame`, `tip`, `tube` and the loop's `watch_slot` as it is materialized, so iteration 4
+        cannot solve against iteration 3's detections if a capture fails — a stale detection
+        silently reused is the same class of bug as a stale frame (D20), and just as hard to see.
+        Before that call existed this docstring described an invariant nothing enforced, and the
+        review reproduced the consequence: an aborted iteration-2 snapshot let iteration 2's
+        solve complete against iteration 1's frame and the loop re-commanded an offset it had
+        already applied.
+
+        The other half of the contract belongs to the handlers: **write your slot on every
+        outcome, including a refusal.** A `vision.solve_offset` that refuses and returns without
+        writing used to leave the previous offset in place for the liquid handler to re-apply;
+        now it leaves the slot empty, and `SlotEmpty` downstream is the loud, honest failure.
         """
         with self._lock:
             if slot is None:

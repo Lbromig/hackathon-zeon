@@ -953,6 +953,7 @@ class Runner:
                     break
                 iteration += 1
                 materialized += len(copies)
+                self._clear_iteration_slots(loop)
                 self._emit_plan()
 
             # Drive off "the first row in this loop's region that has not run", re-read every
@@ -1004,6 +1005,34 @@ class Runner:
         return LoopOutputs(outcome=outcome,  # type: ignore[arg-type]
                            iterations=iteration, materialized=materialized,
                            final_magnitude_mm=magnitude, threshold_mm=loop.threshold_mm)
+
+    def _clear_iteration_slots(self, loop: Loop) -> None:
+        """Every iteration starts from an empty blackboard, structurally rather than by
+        convention.
+
+        The three per-camera slots (`frame`, `tip`, `tube`) plus the loop's own `watch_slot`.
+        Without this, a capture that fails, an identify that finds nothing, or a solve that
+        refuses leaves the previous iteration's value in the slot and the next action consumes
+        it as if it were fresh — reproduced: an aborted iteration-2 snapshot let iteration 2's
+        solve complete against iteration 1's frame, and the loop re-commanded an offset it had
+        already applied. That is the oscillation the freshness contract (D20) exists to
+        prevent. With the clear, `SlotEmpty` is the honest failure for a skipped write, and it
+        is loud.
+
+        `watch_slot` is cleared for the same reason plus one more: `_watch` reads it *after*
+        the iteration's rows have run, so a refused solve that returned without writing would
+        otherwise be scored against the previous iteration's magnitude — the loop would report
+        progress, or even convergence, on a number this iteration never produced. Everything
+        that writes it runs later in the same iteration, so nothing legitimate is lost; and
+        the last iteration's value survives the loop, so an action after the loop can still
+        read it.
+
+        Only on materialization, never on a resume into a half-run iteration: those rows'
+        earlier siblings wrote the slots this pass, and that is the same iteration's data.
+        """
+        for slot in ("frame", "tip", "tube"):
+            self.blackboard.clear(slot)
+        self.blackboard.clear(loop.watch_slot)
 
     def _watch(self, loop: Loop, ctx: ActionContext) -> tuple[float | None, dict[str, float]]:
         """The remaining offset the loop terminates on, and its reported uncertainty.
