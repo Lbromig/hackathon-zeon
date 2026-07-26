@@ -38,8 +38,8 @@ from drivers.opentrons.driver import (  # noqa: E402
     DriverError,
     OpentronsDriver,
 )
+from scripts import require_port  # noqa: E402
 
-DEFAULT_PORT = "/dev/cu.usbmodem11201"
 
 
 def connect(port: str) -> OpentronsDriver:
@@ -114,7 +114,8 @@ def phase_measure(d: OpentronsDriver, axis: str, mm: float) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default=DEFAULT_PORT)
+    ap.add_argument("--port", default=None,
+                    help="serial port; detected from /dev/cu.usbmodem* if omitted")
     ap.add_argument("--identify", action="store_true", help="phase 1")
     ap.add_argument("--measure", action="store_true", help="phase 2")
     ap.add_argument("--axis", choices=list(PLUNGER_AXES), help="phase 2: mounted axis")
@@ -129,7 +130,7 @@ def main() -> int:
     if args.mm <= 0:
         ap.error("--mm must be positive")
 
-    d = connect(args.port)
+    d = connect(require_port(args.port))
     try:
         if args.identify:
             phase_identify(d, min(args.mm, MAX_PLUNGER_JOG_MM))
