@@ -87,11 +87,21 @@ class WaypointSpec:
 # tube across. Steps 19 (the vision servo loop) and 20 (liquid handler retracts Z) name no
 # waypoint and so appear nowhere below.
 #
-# Speed tiers follow the brief: every APPROACH_* is `fast` except APPROACH_TUBE_TRANSFER,
-# which is `medium`; the terminal precision moves — TUBE, CAP_GRAB, CAP_STORE — and HOME
-# are `slow`; the long table traverses are `fast`. LIQUID_HANDLER_DECK is the one tier the
-# brief does not state: it is `slow` here because it is a terminal precision move into the
-# deck with the servo loop starting from it, and getting that one wrong is expensive.
+# Speed tiers are taken from the brief verbatim, NOT from a general "approach fast, place
+# slow" pattern — the cap-store pair is deliberately the other way round, and inferring the
+# pattern gets it backwards:
+#
+#   APPROACH_CAP_STORE is `slow`  — this move lifts a just-unscrewed cap clear of the tube
+#                                   mouth. It is the delicate one, even though it is an
+#                                   APPROACH_*.
+#   CAP_STORE          is `fast`  — by then the cap is clear of everything and the arm is
+#                                   only getting out of the way.
+#
+# The rest: APPROACH_RACK / APPROACH_TUBE_GRAB / APPROACH_CAP_GRAB and the three table
+# traverses are `fast`; APPROACH_TUBE_TRANSFER is `medium`; TUBE and CAP_GRAB are `slow`;
+# HOME is `slow`. LIQUID_HANDLER_DECK is the one tier the brief does not state: `slow`
+# here, because it is a terminal precision move into the deck that the servo loop starts
+# from, and getting it wrong is expensive.
 SPEC: tuple[WaypointSpec, ...] = (
     # --- right arm: tube out of the rack -------------------------------------------
     WaypointSpec(
@@ -116,12 +126,12 @@ SPEC: tuple[WaypointSpec, ...] = (
         "closed onto the cap at grip height — decap (360° in 90° bites) runs from here",
     ),
     WaypointSpec(
-        "APPROACH_CAP_STORE", LEFT, 9, "fast",
-        "cap carried clear of the tube, standing off above its store position",
+        "APPROACH_CAP_STORE", LEFT, 9, "slow",
+        "cap lifted straight up clear of the tube mouth — slow: this is the delicate move",
     ),
     WaypointSpec(
-        "CAP_STORE", LEFT, 10, "slow",
-        "cap lowered into the store — the jaws open here and leave it behind",
+        "CAP_STORE", LEFT, 10, "fast",
+        "cap carried out of the way to its store position and released — clear of everything",
     ),
     # --- right arm: carry the open tube to the deck ---------------------------------
     WaypointSpec(

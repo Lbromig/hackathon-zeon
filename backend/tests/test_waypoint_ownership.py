@@ -65,13 +65,28 @@ def test_speed_tiers_follow_the_workflow():
     tier = {(s.device, s.name): s.speed for s in waypoints.SPEC}
     assert tier[("right", "TUBE")] == "slow"
     assert tier[("left", "CAP_GRAB")] == "slow"
-    assert tier[("left", "CAP_STORE")] == "slow"
     assert tier[("right", "APPROACH_TUBE_TRANSFER")] == "medium"
     assert tier[("left", "HOME")] == tier[("right", "HOME")] == "slow"
     for name in ("APPROACH_RACK", "APPROACH_TUBE_GRAB"):
         assert tier[("right", name)] == "fast"
-    for name in ("APPROACH_CAP_GRAB", "APPROACH_CAP_STORE"):
-        assert tier[("left", name)] == "fast"
+    assert tier[("left", "APPROACH_CAP_GRAB")] == "fast"
+
+
+def test_the_cap_store_pair_is_slow_then_fast_not_the_other_way_round():
+    """The one place a generic "approach fast, place slow" reading gets it backwards.
+
+    The brief states step 12 "left arm move up to cap store approach" as **slow** and step
+    13 "left arm move out of the way to store cap" as **fast** — because the slow move is
+    the one lifting a just-unscrewed cap clear of the tube mouth, and by the time the arm
+    is carrying it away it is clear of everything.
+
+    Asserted separately, and loudly, because the pattern-matched inversion was written once
+    already: getting it wrong means the delicate extraction runs fast and the free transit
+    runs slow.
+    """
+    tier = {(s.device, s.name): s.speed for s in waypoints.SPEC}
+    assert tier[("left", "APPROACH_CAP_STORE")] == "slow"
+    assert tier[("left", "CAP_STORE")] == "fast"
 
 
 def test_specs_are_ordered_by_workflow_step():
