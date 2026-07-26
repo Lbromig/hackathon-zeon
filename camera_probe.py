@@ -355,19 +355,35 @@ except Exception as exc:
 """
 
 
-def uvc_holds_the_device(devices: list[Device]) -> bool:
-    """True when the macOS UVC stack currently owns the RealSense.
+def running_as_root() -> bool:
+    """True when this process can seize a USB interface another driver holds.
 
-    Observed reliably on this bench: a RealSense that librealsense has claimed
-    DISAPPEARS from `system_profiler SPCameraDataType`, because UVCAssistant no
-    longer has it. So its presence in that list means the OS holds the exclusive
-    lock and any SDK claim will be refused.
-
-    That matters more than it sounds: librealsense does not fail cleanly in this
-    case, it SIGSEGVs, and on macOS every segfault raises a "Python quit
-    unexpectedly" dialog at the user. Checking first turns a crash and a dialog
-    into a sentence explaining what to do.
+    Root satisfies the IOKit authorisation that `USBInterfaceOpenSeize` needs, so
+    it takes the interface from UVCAssistant instead of racing it. Everything
+    about whether a claim is worth attempting hinges on this.
     """
+    import os
+
+    return os.geteuid() == 0
+
+
+def uvc_holds_the_device(devices: list[Device]) -> bool:
+    """True when the UVC stack owns the RealSense AND we cannot take it from it.
+
+    A RealSense that librealsense has claimed DISAPPEARS from
+    `system_profiler SPCameraDataType`, so its presence there means the OS holds
+    the exclusive lock. Unprivileged, that lock is final: librealsense does not
+    fail cleanly against it, it SIGSEGVs, and every segfault raises a "Python
+    quit unexpectedly" dialog. Checking first turns a crash into a sentence.
+
+    As root the lock is NOT final, so returning True there is wrong. An earlier
+    version ignored privilege and skipped the claim unconditionally, which meant
+    running under sudo -- the documented fix, which this very tool recommends --
+    reported EXCLUSIVE_ACCESS without ever attempting the thing that works.
+    A guard that suppresses the fix it prints is worse than no guard.
+    """
+    if running_as_root():
+        return False
     return any(d.is_realsense for d in devices)
 
 
@@ -821,7 +837,22 @@ class FrameFeed:
                 self.error = "cv2 is not installed in this interpreter."
                 return None
             if self._cap is None:
-                cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
+                # Retry, and do not give up on the first refusal. OpenCV's
+                # AVFoundation backend calls requestAccessForMediaType and then
+                # spins the run loop, so the opens issued while that request is
+                # still pending fail with "not authorized ... requesting" even
+                # though access is about to be granted. Trying once made `serve`
+                # refuse to start moments before the very same call succeeded.
+                cap = None
+                for attempt in range(6):
+                    cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
+                    if cap.isOpened():
+                        break
+                    cap.release()
+                    cap = None
+                    time.sleep(0.4 if attempt < 3 else 0.8)
+                if cap is None:
+                    cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
                 if not cap.isOpened():
                     cap.release()
                     result = probe_opencv(detect())
@@ -926,8 +957,9 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
     else:
         cams = [d for d in _cached_devices() if d.is_realsense and d.serial]
         feeds = [
-            FrameFeed(serial=d.serial, label=f"{d.model or d.name} ({d.serial})")
-            for d in cams
+            FrameFeed(serial=d.serial, index=i,
+                      label=f"{d.model or d.name} ({d.serial})")
+            for i, d in enumerate(cams)
         ] or [FrameFeed(label="default")]
     feed = feeds[0]
     boundary = "frameboundary"
