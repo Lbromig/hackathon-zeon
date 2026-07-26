@@ -48,6 +48,46 @@ func listDevices() {
     }
 }
 
+/// Encodes a CGImage to JPEG bytes.
+func jpegData(_ image: CGImage, quality: Double) -> Data? {
+    let data = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(
+        data as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality:
+                                             quality] as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else { return nil }
+    return data as Data
+}
+
+/// Writes frames to stdout as a bare JPEG sequence (MJPEG without the multipart wrapper).
+///
+/// A JPEG self-delimits (FFD8 ... FFD9), so the reader splits the stream on those markers —
+/// the same parse the repo already does for the remote camera driver's MJPEG.
+final class FrameStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    private let ciContext = CIContext()
+    private let quality: Double
+
+    init(quality: Double) { self.quality = quality }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let ci = CIImage(cvImageBuffer: pixels)
+        guard let cg = ciContext.createCGImage(ci, from: ci.extent),
+              let jpeg = jpegData(cg, quality: quality) else { return }
+        jpeg.withUnsafeBytes { raw in
+            var off = 0
+            while off < raw.count {
+                let n = write(1, raw.baseAddress!.advanced(by: off), raw.count - off)
+                // The consumer went away (backend restarted, worker stopped). Exit rather
+                // than spin: the parent owns the lifetime and will respawn if it wants more.
+                if n <= 0 { exit(0) }
+                off += n
+            }
+        }
+    }
+}
+
 /// Collects frames off the capture session and hands back the Nth one.
 final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let wanted: Int
@@ -76,30 +116,36 @@ final class FrameGrabber: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
 }
 
-func grab(uniqueID: String, to path: String, width: Int?, height: Int?) -> Int32 {
-    guard let device = AVCaptureDevice(uniqueID: uniqueID) else {
-        // Hard failure, deliberately: falling back to "some camera" is the exact bug this
-        // tool exists to avoid.
-        FileHandle.standardError.write("no device with uniqueID \(uniqueID)\n".data(using: .utf8)!)
-        return 6
-    }
+func err(_ message: String) {
+    FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
+}
 
+/// Build a running capture session for the device with this uniqueID.
+///
+/// Returns nil after printing the reason. There is deliberately no fallback to "some other
+/// camera": that is the bug this tool exists to prevent.
+func openSession(uniqueID: String, width: Int?, height: Int?,
+                 delegate: AVCaptureVideoDataOutputSampleBufferDelegate,
+                 queueLabel: String) -> (AVCaptureSession, AVCaptureDevice)? {
+    guard let device = AVCaptureDevice(uniqueID: uniqueID) else {
+        err("no device with uniqueID \(uniqueID)")
+        return nil
+    }
     let session = AVCaptureSession()
     session.beginConfiguration()
     guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
-        FileHandle.standardError.write("cannot open \(device.localizedName)\n".data(using: .utf8)!)
-        return 7
+        err("cannot open \(device.localizedName) — another process may hold it")
+        return nil
     }
     session.addInput(input)
 
     let output = AVCaptureVideoDataOutput()
-    // Drop late frames rather than queueing them: only the newest frame matters here.
+    // Drop late frames rather than queueing them: only the newest frame matters.
     output.alwaysDiscardsLateVideoFrames = true
-    let grabber = FrameGrabber(settleFrames: 15)
-    output.setSampleBufferDelegate(grabber, queue: DispatchQueue(label: "avfsnap.frames"))
+    output.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: queueLabel))
     guard session.canAddOutput(output) else {
-        FileHandle.standardError.write("cannot add output\n".data(using: .utf8)!)
-        return 7
+        err("cannot add video output")
+        return nil
     }
     session.addOutput(output)
 
@@ -121,18 +167,24 @@ func grab(uniqueID: String, to path: String, width: Int?, height: Int?) -> Int32
             device.activeFormat = match
             device.unlockForConfiguration()
         } else if match == nil {
-            FileHandle.standardError.write(
-                "warning: \(w)x\(h) not offered; using device default\n".data(using: .utf8)!)
+            err("warning: \(w)x\(h) not offered by \(device.localizedName); using default")
         }
     }
     session.commitConfiguration()
-
     session.startRunning()
+    return (session, device)
+}
+
+func grab(uniqueID: String, to path: String, width: Int?, height: Int?) -> Int32 {
+    let grabber = FrameGrabber(settleFrames: 15)
+    guard let (session, device) = openSession(uniqueID: uniqueID, width: width, height: height,
+                                              delegate: grabber, queueLabel: "avfsnap.grab")
+    else { return 6 }
     let image = grabber.wait(timeout: 15)
     session.stopRunning()
 
     guard let image else {
-        FileHandle.standardError.write("no frame from \(device.localizedName)\n".data(using: .utf8)!)
+        err("no frame from \(device.localizedName)")
         return 8
     }
     let url = URL(fileURLWithPath: path)
@@ -144,6 +196,18 @@ func grab(uniqueID: String, to path: String, width: Int?, height: Int?) -> Int32
     return 0
 }
 
+func stream(uniqueID: String, width: Int?, height: Int?, quality: Double) -> Int32 {
+    let streamer = FrameStreamer(quality: quality)
+    guard let (_, device) = openSession(uniqueID: uniqueID, width: width, height: height,
+                                        delegate: streamer, queueLabel: "avfsnap.stream")
+    else { return 6 }
+    // Progress goes to stderr: stdout is the JPEG stream and must carry nothing else.
+    err("streaming \(device.localizedName) [\(uniqueID)]")
+    // Frames are delivered on the session's own queue; park the main thread forever. The
+    // process ends when the consumer closes the pipe (see FrameStreamer) or on a signal.
+    dispatchMain()
+}
+
 let args = CommandLine.arguments
 switch args.count >= 2 ? args[1] : "" {
 case "list":
@@ -152,8 +216,14 @@ case "grab" where args.count >= 4:
     let w = args.count >= 6 ? Int(args[4]) : nil
     let h = args.count >= 6 ? Int(args[5]) : nil
     exit(grab(uniqueID: args[2], to: args[3], width: w, height: h))
+case "stream" where args.count >= 3:
+    let w = args.count >= 5 ? Int(args[3]) : nil
+    let h = args.count >= 5 ? Int(args[4]) : nil
+    let q = args.count >= 6 ? (Double(args[5]) ?? 85) / 100.0 : 0.85
+    exit(stream(uniqueID: args[2], width: w, height: h, quality: q))
 default:
     print("usage: avfsnap list")
-    print("       avfsnap grab <uniqueID> <out.png> [width height]")
+    print("       avfsnap grab   <uniqueID> <out.png> [width height]")
+    print("       avfsnap stream <uniqueID> [width height [jpegQuality]]")
     exit(2)
 }
