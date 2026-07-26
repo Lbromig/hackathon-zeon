@@ -23,7 +23,6 @@ from .camera_hub import camera_hub
 from .device_manager import device_manager
 
 FUSE_HZ = 10.0
-_lock = threading.Lock()
 
 
 def _camera_ids() -> list[str]:
@@ -37,7 +36,7 @@ def fuse_once(fuser: TwinFuser) -> list[dict[str, Any]]:
     if wm is None:
         return []
     out: list[dict[str, Any]] = []
-    with _lock:
+    with wm.lock:                       # one atomic fusion pass over the twin
         for cam_id in _camera_ids():
             worker = camera_hub.get(cam_id)
             if worker is None:

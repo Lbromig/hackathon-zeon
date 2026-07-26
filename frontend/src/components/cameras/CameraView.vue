@@ -26,7 +26,17 @@ const connectError = ref("");
 const selected = ref<string | null>(null);
 
 const online = computed(() => props.camera.connected);
-const showVideo = computed(() => online.value && wantLive.value);
+/**
+ * Ask for the stream unless a previous attempt failed.
+ *
+ * NOT gated on `camera.connected`: a camera only reports connected while a hub
+ * worker holds it, and the worker only starts when someone requests the stream —
+ * gating on it deadlocks, and every camera sits at "offline" forever. The stream
+ * endpoint opens the device on demand, so requesting it *is* how a camera comes
+ * online. `imgError` latches after one failure so an absent camera is probed
+ * once per page load rather than in a retry loop.
+ */
+const showVideo = computed(() => wantLive.value && !imgError.value);
 const src = computed(() =>
   wantLive.value ? streamUrl(props.camera.id, nonce.value) : snapshotUrl(props.camera.id),
 );
@@ -123,8 +133,8 @@ watch(() => props.camera.id, reconnect);
         <template v-else>{{ configured }} · {{ camera.state }}</template>
       </span>
       <div class="ml-auto flex gap-1">
-        <button v-if="!online" class="btn btn-sm btn-primary" :disabled="connecting" @click="connect">
-          {{ connecting ? "Connecting…" : "Connect" }}
+        <button v-if="imgError" class="btn btn-sm btn-primary" :disabled="connecting" @click="connect">
+          {{ connecting ? "Connecting…" : "Retry" }}
         </button>
         <template v-else>
           <button class="btn btn-sm" @click="toggleLive">{{ wantLive ? "Pause" : "Go live" }}</button>
@@ -150,7 +160,7 @@ watch(() => props.camera.id, reconnect);
         :style="{ aspectRatio: `${width} / ${height}` }"
       >
         <span class="text-sm font-semibold text-deck-200">
-          {{ online ? "paused" : "camera offline" }}
+          {{ imgError ? "camera offline" : "paused" }}
         </span>
         <span class="num text-xs text-deck-400">
           serial {{ camera.serial || "not pinned" }} · {{ configured }}

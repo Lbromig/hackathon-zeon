@@ -20,8 +20,10 @@ class MarkerSpec:
     T_marker_to_entity: Transform = field(default_factory=identity)  # marker frame -> entity origin
 
 
-# The board that defines the world frame + (with the ruler) metric scale.
-WORLD_BOARD_IDS: tuple[int, ...] = (0, 1, 2, 3)
+# The shared world-frame anchor: tag36h11 ids 210 & 211, mounted so BOTH the overview
+# and handover cameras see them. Each fixed camera solves its own T_world_cam against
+# these (W2), which is what puts all cameras into one metric frame.
+WORLD_BOARD_IDS: tuple[int, ...] = (210, 211)
 
 # entity <- marker associations. Use real stock ids (tag36h11 180-224); ids below are
 # EXAMPLES using the low end of the stock — replace offsets with measured values.

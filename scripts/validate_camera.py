@@ -507,6 +507,10 @@ PROBE_INDICES = 6   # fallback index count when device names cannot be enumerate
 # misconfiguration look like a working camera.
 LAB_DEVICE_MARKER = "realsense"
 
+# Every fleet type that backs a camera slot. Kept as one list so adding a driver does not
+# silently drop a slot from validation — a slot that is never checked reads as "fine".
+CAMERA_TYPES = ("camera", "realsense", "still", "mock_camera", "mock_tag_camera")
+
 
 def avfoundation_devices() -> "list[tuple[int, str]] | None":
     """[(index, name)] for AVFoundation video devices, or None if it cannot be determined.
@@ -550,14 +554,18 @@ def is_lab_camera(name: str) -> bool:
     return LAB_DEVICE_MARKER in name.lower()
 
 
-def describe_index(index: int, devices: "list[tuple[int, str]] | None") -> str:
-    """Name for a UVC index, or a marker that it could not be identified."""
-    if devices is None:
-        return "unidentified (ffmpeg unavailable)"
-    for i, name in devices:
-        if i == index:
-            return name
-    return "no such device"
+def excluded_indices() -> frozenset:
+    """UVC indices this bench forbids opening (CAM_EXCLUDE_INDICES).
+
+    This replaces an earlier attempt to identify an index by its AVFoundation *name*, which
+    was wrong: ffmpeg and OpenCV enumerate the same devices in different orders. Verified on
+    this bench — ffmpeg reports index 3 as the D405, while OpenCV's index 3 is the built-in
+    MacBook camera. Any protection derived from that correspondence protects the wrong
+    device, so the exclusion has to be stated explicitly rather than inferred.
+    """
+    from core.config import Settings
+
+    return Settings.load().camera_exclude_indices
 
 
 def stage_probe_uvc(count: int = PROBE_INDICES, persist: bool = True) -> int:
@@ -579,29 +587,32 @@ def stage_probe_uvc(count: int = PROBE_INDICES, persist: bool = True) -> int:
     root = Settings.load().capture_dir
     devices = avfoundation_devices()
 
-    if devices is None:
-        _line(WARN, "could not enumerate device names (ffmpeg missing) — falling back to "
-                    "opening indices blind, which cannot tell a bench camera from the "
-                    "built-in one. Install ffmpeg (`brew install ffmpeg`) for named output.")
-        targets = list(range(count))
-    else:
+    # Device names tell you WHAT is attached. They deliberately do NOT drive index
+    # selection: ffmpeg's list order and OpenCV's differ (measured on this bench — ffmpeg
+    # index 3 is the D405, OpenCV index 3 is the built-in camera), so choosing indices from
+    # names opens the wrong device while appearing rigorous.
+    if devices:
         print()
+        _line("      ", "attached (ffmpeg order — NOT the cv2 index order):")
         for i, name in devices:
-            tag = OK if is_lab_camera(name) else "      "
-            note = "" if is_lab_camera(name) else "   (not a lab camera — skipped)"
-            _line(tag, f"index {i}: {name}{note}")
-        targets = [i for i, name in devices if is_lab_camera(name)]
-        print()
-        if not targets:
-            _line(FAIL, "no RealSense camera is visible to AVFoundation")
+            _line("      ", f"  ffmpeg[{i}] {name}")
+        n_lab = sum(1 for _i, name in devices if is_lab_camera(name))
+        _line(OK if n_lab else FAIL, f"{n_lab} RealSense unit(s) attached")
+        if not n_lab:
             print(
-                "       Nothing on this machine is a bench camera right now. Check the USB\n"
-                "       connection, then confirm the OS sees the unit at all:\n"
+                "       No RealSense is visible to AVFoundation. Check USB, then:\n"
                 "         ioreg -p IOUSB -w0 -l | grep -i realsense\n"
-                "       A D4xx that enumerates on USB but not here is usually on a port or\n"
-                "       hub that did not bring up its UVC function — replug it directly."
+                "       A unit that enumerates on USB but not here is usually on a hub that\n"
+                "       did not bring up its UVC function — try a direct port."
             )
             return 6
+
+    blocked = excluded_indices()
+    targets = [i for i in range(count) if i not in blocked]
+    if blocked:
+        _line("      ", f"skipping forbidden index/indices {sorted(blocked)} "
+                        "(CAM_EXCLUDE_INDICES)")
+    print()
 
     live, blank, dead = [], [], []
     for index in targets:
@@ -699,7 +710,7 @@ def stage_fleet(frames: int, persist: bool = False) -> int:
     from core.config import Settings
     from drivers import build_driver
 
-    entries = [e for e in Settings.load().fleet if e.get("type") in ("camera", "realsense")]
+    entries = [e for e in Settings.load().fleet if e.get("type") in CAMERA_TYPES]
     if not entries:
         _line(FAIL, "no camera slots in the fleet")
         return 6
@@ -710,27 +721,24 @@ def stage_fleet(frames: int, persist: bool = False) -> int:
     # both open, both stream, and the rig reports one viewpoint twice under two names. A
     # `camera` slot with no source configured is part of this — the driver falls back to
     # index 0, so "unconfigured" and "the first camera" become indistinguishable.
-    # Identity check, before anything is opened. This is the gate that a brightness test
-    # cannot be: "a camera in a dark room" and "the wrong camera" look identical by
-    # brightness, but a name says which physical device an index actually is.
-    devices = avfoundation_devices()
+    # Forbidden-index check, before anything is opened. Note this is an explicit list, not
+    # an inference from device names — ffmpeg and OpenCV enumerate AVFoundation in different
+    # orders, so a name cannot tell you what a cv2 index will open.
+    blocked = excluded_indices()
     wrong_device = []
     for e in entries:
         if e.get("type") != "camera" or not isinstance(e.get("source"), int):
             continue
-        eid = e.get("id", "?")
-        name = describe_index(int(e["source"]), devices)
-        if devices is not None and not is_lab_camera(name):
+        eid, src = e.get("id", "?"), int(e["source"])
+        if src in blocked:
             wrong_device.append(eid)
-            _line(FAIL, f"{eid}: source={e['source']} is \"{name}\" — not a bench camera")
-        else:
-            _line(OK, f"{eid}: source={e['source']} is \"{name}\"")
+            _line(FAIL, f"{eid}: source={src} is on the CAM_EXCLUDE_INDICES list")
     if wrong_device:
         print(
-            f"       {', '.join(wrong_device)} would stream a device that is not part of the\n"
-            "       rig — the built-in camera, Desk View, a Continuity iPhone or the screen.\n"
-            "       These are always present, so the slot looks healthy while showing the\n"
-            "       operator or their desktop instead of the bench. Re-identify the indices:\n"
+            f"       {', '.join(wrong_device)} points at an index this bench forbids —\n"
+            "       normally the built-in laptop camera. It is always present, so the slot\n"
+            "       would look healthy while streaming the operator instead of the bench.\n"
+            "       Re-identify the indices by looking at a frame from each:\n"
             "         .venv/bin/python scripts/validate_camera.py --probe-uvc"
         )
 
