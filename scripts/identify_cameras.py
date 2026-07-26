@@ -180,6 +180,42 @@ def describe(path: str) -> str:
             f"mean={gray.mean():.0f} std={gray.std():.0f}")
 
 
+def verify_distinct(frames: dict[str, str], threshold: float = 8.0) -> bool:
+    """Fail loudly if two 'different' cameras returned the same picture.
+
+    This is the guard against a silent fallback: every wrong-camera bug seen here produced a
+    perfectly valid frame, so the only way to catch it is to notice that two units returned
+    the same view. Compared as small greyscale images, since exposure differs run to run.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return True
+
+    def thumb(path):
+        im = cv2.imread(path)
+        return None if im is None else cv2.cvtColor(
+            cv2.resize(im, (256, 144)), cv2.COLOR_BGR2GRAY).astype("int16")
+
+    thumbs = {s: t for s, t in ((s, thumb(p)) for s, p in frames.items()) if t is not None}
+    clashes = []
+    serials = sorted(thumbs)
+    for i, a in enumerate(serials):
+        for b in serials[i + 1:]:
+            diff = float(np.mean(np.abs(thumbs[a] - thumbs[b])))
+            if diff < threshold:
+                clashes.append((a, b, diff))
+    if clashes:
+        print("FAIL: identical frames from units that should differ — a capture was "
+              "served by the wrong device:")
+        for a, b, diff in clashes:
+            print(f"  {a} and {b} differ by only {diff:.2f}")
+        return False
+    print(f"verified: all {len(thumbs)} frames are distinct views")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -207,19 +243,22 @@ def main() -> int:
 
     lab = [c for c in cams if LAB_MARKER in c["name"].lower()]
     skipped = [c for c in cams if c not in lab]
+    names = [c["name"] for c in lab]
 
     print(f"\n{len(lab)} lab camera(s), {len(skipped)} Apple camera(s) ignored\n")
-    rc = 0
+    rc, frames = 0, {}
     for cam in lab:
         loc = location_of(cam["unique_id"])
         entry = usb.get(loc, {})
         serial = entry.get("serial") or "?"
-        idx = order.get(cam["name"])
+        # A shared name means the ffmpeg table cannot say which of them this row is, so
+        # print nothing rather than the first match's index.
+        idx = None if names.count(cam["name"]) > 1 else order.get(cam["name"])
         print(f"  {cam['name']}")
         print(f"    uniqueID     {cam['unique_id']}       <- bind to THIS")
         print(f"    USB serial   {serial}")
         print(f"    USB location 0x0{loc}")
-        print(f"    ffmpeg index {idx if idx is not None else '?'}  "
+        print(f"    ffmpeg index {idx if idx is not None else 'ambiguous'}  "
               "(unstable — reference only, never bind to it)")
         if args.snapshot:
             model = re.sub(r"[^A-Za-z0-9]+", "_", cam["name"]).strip("_")
@@ -227,9 +266,13 @@ def main() -> int:
             got = snapshot(cam["unique_id"], dest, args.width, args.height)
             if got:
                 print(f"    frame        {os.path.relpath(got)}  {describe(got)}")
+                frames[serial] = got
             else:
                 rc = 7
         print()
+
+    if len(frames) > 1 and not verify_distinct(frames):
+        rc = 8
 
     for cam in skipped:
         print(f"  ignored: {cam['name']}  ({cam['unique_id']})")

@@ -141,61 +141,6 @@ export const gotoPose = (id: string, name: string, speed?: number) =>
 export const setFreeDrive = (id: string, on: boolean) =>
   post<ActionResult>(`/api/arms/${id}/free_drive`, { on });
 
-/** A hand-guided travel route, stored as joint waypoints. */
-export interface TaughtPath {
-  name: string;
-  waypoints: number[][];
-  recorded_at: string;
-  note: string;
-  raw_samples: number;
-  length_deg: number;
-}
-
-export interface PathRecordState {
-  recording: boolean;
-  name: string;
-  samples: number;
-  duration_s: number;
-  detail: string;
-}
-
-export const listPaths = (id: string) => request<TaughtPath[]>(`/api/arms/${id}/paths`);
-export const getPathRecording = (id: string) =>
-  request<PathRecordState>(`/api/arms/${id}/paths/recording`);
-/** Starts sampling AND switches the arm to hand-guiding — you cannot walk a route
- *  the arm will not let you move. */
-export const startPathRecording = (id: string, name: string) =>
-  post<ActionResult>(`/api/arms/${id}/paths/${encodeURIComponent(name)}/record`);
-export const stopPathRecording = (id: string, name: string, note = "") =>
-  post<ActionResult>(
-    `/api/arms/${id}/paths/${encodeURIComponent(name)}/record/stop?note=${encodeURIComponent(note)}`,
-  );
-export const deletePath = (id: string, name: string) =>
-  request<TaughtPath[]>(`/api/arms/${id}/paths/${encodeURIComponent(name)}`, { method: "DELETE" });
-/** `blend` (deg) arcs through corners instead of stopping at each waypoint. It is
- *  clamped server-side to the shortest segment, since the controller rejects a radius
- *  longer than the track. */
-export const replayPath = (
-  id: string,
-  name: string,
-  opts: { speed?: number; reverse?: boolean; blend?: number } = {},
-) => {
-  const q = new URLSearchParams();
-  if (opts.speed) q.set("speed", String(opts.speed));
-  if (opts.reverse) q.set("reverse", "true");
-  if (opts.blend) q.set("blend", String(opts.blend));
-  const qs = q.toString();
-  return post<ActionResult>(
-    `/api/arms/${id}/paths/${encodeURIComponent(name)}/replay${qs ? `?${qs}` : ""}`,
-  );
-};
-
-/** Thin a saved path in place — fewer waypoints, fewer stops. Destructive. */
-export const simplifyPath = (id: string, name: string, tolerance: number) =>
-  post<TaughtPath>(
-    `/api/arms/${id}/paths/${encodeURIComponent(name)}/simplify?tolerance=${tolerance}`,
-  );
-
 export type CapAction = "grab" | "ungrab" | "unscrew";
 
 /** Cap manipulation. `unscrew` is a ratchet: 180° bites with the jaws opening and the

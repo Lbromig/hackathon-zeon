@@ -14,7 +14,6 @@ import GripperControl from "./GripperControl.vue";
 import JogPad from "./JogPad.vue";
 import JointJog from "./JointJog.vue";
 import MoveTo from "./MoveTo.vue";
-import PathTeach from "./PathTeach.vue";
 import PoseLibrary from "./PoseLibrary.vue";
 
 const t = useTeach();
@@ -268,7 +267,6 @@ onUnmounted(() => {
       <GripperControl />
       <CapTools />
       <PoseLibrary />
-      <PathTeach />
       <CommandLog />
     </div>
 

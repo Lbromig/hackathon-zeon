@@ -32,9 +32,7 @@ from fastapi import APIRouter, HTTPException
 from drivers import ArmDriver, ConnectionState, DriverError, InstrumentKind, Pose
 
 from core.config import settings
-from core import teach_paths
-from core.motion import cap_ops, path_teach
-from core.motion.path_teach import TaughtPath
+from core.motion import cap_ops
 
 from ..schemas import (
     ArmActionResult,
@@ -48,14 +46,11 @@ from ..schemas import (
     GripperRequest,
     JogRequest,
     MoveToRequest,
-    PathRecordState,
     PoseModel,
     StopRequest,
-    TaughtPathModel,
     TaughtPose,
 )
 from ..services.device_manager import device_manager
-from ..services.path_recorder import path_recorder
 
 router = APIRouter(prefix="/api/arms", tags=["teach"])
 
@@ -470,177 +465,6 @@ def stop(device_id: str, req: StopRequest) -> ArmActionResult:
     except Exception as e:
         detail, ok = f"stop failed: {e}", False
     return ArmActionResult(ok=ok, detail=detail, state=_state(arm, read_gripper=False))
-
-
-# --- taught paths (hand-guided travel routes) ---------------------------------
-
-def _path_model(p: TaughtPath) -> TaughtPathModel:
-    return TaughtPathModel(
-        name=p.name, waypoints=p.waypoints, recorded_at=p.recorded_at,
-        note=p.note, raw_samples=p.raw_samples, length_deg=round(p.length_deg, 1),
-    )
-
-
-@router.get("/{device_id}/paths", response_model=list[TaughtPathModel])
-def list_paths(device_id: str) -> list[TaughtPathModel]:
-    _arm(device_id)
-    return [_path_model(teach_paths.get(device_id, n))
-            for n in sorted(teach_paths.load().get(device_id, {}))]
-
-
-@router.get("/{device_id}/paths/recording", response_model=PathRecordState)
-def path_recording_state(device_id: str) -> PathRecordState:
-    _arm(device_id)
-    rec = path_recorder.active(device_id)
-    if rec is None:
-        return PathRecordState(recording=False)
-    return PathRecordState(recording=True, name=rec.name, samples=len(rec.samples),
-                           duration_s=round(rec.duration_s, 1), detail=rec.error)
-
-
-@router.post("/{device_id}/paths/{name}/record", response_model=ArmActionResult)
-def start_path_recording(device_id: str, name: str) -> ArmActionResult:
-    """Begin sampling joints so the operator can hand-guide a route.
-
-    Switches the arm into free-drive as part of starting, because recording a path you
-    cannot physically move is pointless — and forgetting that step is the obvious way to
-    end up with a recording of the arm standing still.
-    """
-    def action(arm: ArmDriver) -> str:
-        if arm.state != ConnectionState.CONNECTED:
-            raise DriverError(f"{arm.device_id} is not connected")
-        try:
-            arm.set_free_drive(True)
-        except NotImplementedError as e:
-            raise DriverError(str(e)) from e
-        try:
-            path_recorder.start(arm, name)
-        except RuntimeError as e:
-            raise ValueError(str(e)) from e
-        return (f"recording {name!r} — hand-guide the arm along the route, "
-                f"then press stop")
-    return _command(device_id, action)
-
-
-@router.post("/{device_id}/paths/{name}/record/stop", response_model=ArmActionResult)
-def stop_path_recording(device_id: str, name: str, note: str = "") -> ArmActionResult:
-    """Stop sampling, simplify, and save. Also leaves free-drive.
-
-    Free-drive off is not optional here: the very next thing anyone does is replay the
-    path, and commanded motion does not behave normally in a teaching mode.
-    """
-    def action(arm: ArmDriver) -> str:
-        try:
-            rec = path_recorder.stop(device_id)
-        except RuntimeError as e:
-            raise ValueError(str(e)) from e
-        finally:
-            try:
-                arm.set_free_drive(False)
-            except Exception:
-                pass
-        if rec.error:
-            raise DriverError(rec.error)
-
-        waypoints = path_teach.simplify(rec.samples)
-        try:
-            path_teach.validate(waypoints, arm.axis_count)
-        except path_teach.PathError as e:
-            raise ValueError(str(e)) from e
-
-        teach_paths.save(TaughtPath(
-            name=name, device_id=device_id, waypoints=waypoints, note=note,
-            raw_samples=len(rec.samples),
-            recorded_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        ))
-        return (f"saved {name!r}: {len(waypoints)} waypoints "
-                f"from {len(rec.samples)} samples over {rec.duration_s:.0f}s")
-    return _command(device_id, action)
-
-
-@router.post("/{device_id}/paths/{name}/simplify", response_model=TaughtPathModel)
-def simplify_path(device_id: str, name: str, tolerance: float = 8.0,
-                  deadband: float = 0.0) -> TaughtPathModel:
-    """Thin an already-recorded path — fewer waypoints means fewer stops.
-
-    Re-runs the simplifier at a coarser tolerance over the saved waypoints, so a route
-    can be smoothed without walking the arm again. Destructive by design: it overwrites
-    the stored path, because keeping every intermediate version is how a pose library
-    becomes unusable. Re-record if you thin it too far.
-    """
-    arm = _arm(device_id)
-    try:
-        path = teach_paths.get(device_id, name)
-    except LookupError as e:
-        raise HTTPException(404, str(e))
-
-    before = len(path.waypoints)
-    thinned = path_teach.simplify(path.waypoints, deadband_deg=deadband,
-                                  rdp_tol_deg=tolerance)
-    try:
-        path_teach.validate(thinned, arm.axis_count)
-    except path_teach.PathError as e:
-        raise HTTPException(400, f"cannot thin {name!r} that far: {e}")
-
-    path.waypoints = thinned
-    path.note = (f"{path.note} · " if path.note else "") + \
-                f"thinned {before}->{len(thinned)} @ tol {tolerance:g}°"
-    teach_paths.save(path)
-    return _path_model(path)
-
-
-@router.delete("/{device_id}/paths/{name}", response_model=list[TaughtPathModel])
-def delete_path(device_id: str, name: str) -> list[TaughtPathModel]:
-    _arm(device_id)
-    if not teach_paths.delete(device_id, name):
-        raise HTTPException(404, f"no taught path {name!r} for {device_id}")
-    return list_paths(device_id)
-
-
-@router.post("/{device_id}/paths/{name}/replay", response_model=ArmActionResult)
-def replay_path(device_id: str, name: str, speed: float | None = None,
-                reverse: bool = False, blend: float = 0.0) -> ArmActionResult:
-    """Drive the arm through the taught waypoints in order.
-
-    Every waypoint is checked against the joint soft limits *before the first move*.
-    Stopping halfway along a travel path can leave the arm somewhere nobody chose —
-    over the deck, or between the two instruments.
-    """
-    try:
-        path = teach_paths.get(device_id, name)
-    except LookupError as e:
-        raise HTTPException(404, str(e))
-
-    def action(arm: ArmDriver) -> str:
-        _require_movable(arm)
-        if _state(arm, read_gripper=False).free_drive:
-            raise DriverError("hand-guiding is on — switch it off before replaying")
-        waypoints = list(reversed(path.waypoints)) if reverse else path.waypoints
-        for i, wp in enumerate(waypoints):
-            reason = arm.check_joint_target(wp)
-            if reason:
-                raise ValueError(f"waypoint {i + 1}/{len(waypoints)} rejected: {reason}")
-
-        # Blending: queue every waypoint but the last with wait=False and a radius, so
-        # the controller arcs through the corners instead of stopping at each one. The
-        # radius is capped by the shortest segment — exceeding the track length is
-        # rejected outright by the controller.
-        cap = path_teach.max_blend_radius(waypoints)
-        radius = min(blend, cap) if (blend and cap) else None
-        joint_speed = _speed(arm, speed, angular=True)
-
-        for wp in waypoints[:-1]:
-            arm.move_joints(wp, speed=joint_speed, wait=radius is None, radius=radius)
-        # The final waypoint is always exact and always waited on: this is where the
-        # path is supposed to *end*, and a cut corner there would miss the target.
-        arm.move_joints(waypoints[-1], speed=joint_speed, wait=True)
-        if radius is not None and not arm.wait_for_idle():
-            raise DriverError("replay queued but the arm did not come to rest in time")
-
-        how = f"blended r={radius:.1f}°" if radius else "point-to-point"
-        return (f"replayed {name!r} {'in reverse ' if reverse else ''}"
-                f"({len(waypoints)} waypoints, {how})")
-    return _command(device_id, action)
 
 
 # --- taught poses ------------------------------------------------------------

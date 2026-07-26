@@ -157,24 +157,6 @@ class FreeDriveRequest(BaseModel):
     on: bool = True
 
 
-class TaughtPathModel(BaseModel):
-    """A hand-guided travel route, stored as joint waypoints."""
-    name: str = Field(min_length=1, max_length=64)
-    waypoints: list[list[float]] = []
-    recorded_at: str = ""
-    note: str = ""
-    raw_samples: int = 0          # samples captured before simplification
-    length_deg: float = 0.0       # total joint travel, a proxy for replay duration
-
-
-class PathRecordState(BaseModel):
-    recording: bool = False
-    name: str = ""
-    samples: int = 0
-    duration_s: float = 0.0
-    detail: str = ""
-
-
 class CapRequest(FiniteModel):
     """Cap manipulation. `unscrew` runs the ratchet described in core/motion/cap_ops.py."""
     action: Literal["grab", "ungrab", "unscrew"]

@@ -11,8 +11,6 @@ import type {
   ActionResult,
   ArmState,
   ArmSummary,
-  PathRecordState,
-  TaughtPath,
   TaughtPose,
 } from "../api/teach";
 
@@ -56,9 +54,6 @@ const arms = ref<ArmSummary[]>([]);
 const selectedId = ref<string>(localStorage.getItem("teach.arm") ?? "");
 const state = ref<ArmState | null>(null);
 const poses = ref<TaughtPose[]>([]);
-// Hand-taught travel routes, and whether one is being recorded right now.
-const paths = ref<TaughtPath[]>([]);
-const recording = ref<PathRecordState | null>(null);
 const log = ref<LogEntry[]>([]);
 const sending = ref(false);
 const loadError = ref("");
@@ -134,7 +129,7 @@ async function select(id: string) {
   poses.value = [];
   if (!id) return;
   localStorage.setItem("teach.arm", id);
-  await Promise.all([tick(), refreshPoses(), refreshPaths()]);
+  await Promise.all([tick(), refreshPoses()]);
 }
 
 async function refreshPoses() {
@@ -239,60 +234,6 @@ const setFreeDrive = (on: boolean) =>
   send(on ? "hand-guide ON" : "hand-guide off", () => api.setFreeDrive(selectedId.value, on),
        { force: true });
 
-// --- taught travel paths -----------------------------------------------------
-
-async function refreshPaths() {
-  if (!selectedId.value) return;
-  try {
-    paths.value = await api.listPaths(selectedId.value);
-    recording.value = await api.getPathRecording(selectedId.value);
-  } catch {
-    /* advisory in the UI; the backend is the source of truth */
-  }
-}
-
-async function startRecording(name: string) {
-  const ok = await send(`record path "${name}"`, () =>
-    api.startPathRecording(selectedId.value, name),
-  );
-  await refreshPaths();
-  return ok;
-}
-
-async function stopRecording(name: string, note = "") {
-  const ok = await send(`save path "${name}"`, () =>
-    api.stopPathRecording(selectedId.value, name, note),
-  );
-  await refreshPaths();
-  return ok;
-}
-
-async function deletePath(name: string) {
-  const startedAt = performance.now();
-  try {
-    paths.value = await api.deletePath(selectedId.value, name);
-    pushLog(`delete path "${name}"`, true, "", startedAt);
-  } catch (e) {
-    pushLog(`delete path "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
-  }
-}
-
-const replayPath = (name: string, reverse = false, blend = 0) =>
-  send(`replay "${name}"${reverse ? " reversed" : ""}${blend ? ` blend ${blend}°` : ""}`, () =>
-    api.replayPath(selectedId.value, name, { speed: settings.speed, reverse, blend }),
-  );
-
-async function simplifyPath(name: string, tolerance: number) {
-  const startedAt = performance.now();
-  try {
-    const p = await api.simplifyPath(selectedId.value, name, tolerance);
-    pushLog(`thin "${name}" @ ${tolerance}°`, true, `${p.waypoints.length} waypoints`, startedAt);
-    await refreshPaths();
-  } catch (e) {
-    pushLog(`thin "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
-  }
-}
-
 const grabCap = (width?: number) =>
   send("grab cap", () => api.capAction(selectedId.value, "grab", { width }));
 const ungrabCap = () =>
@@ -314,8 +255,6 @@ export function useTeach() {
     selectedId,
     state,
     poses,
-    paths,
-    recording,
     log,
     sending,
     loadError,
@@ -328,7 +267,6 @@ export function useTeach() {
     stopPolling,
     refreshArms,
     refreshPoses,
-    refreshPaths,
     select,
     persistSettings,
     // commands
@@ -348,11 +286,6 @@ export function useTeach() {
     deletePose,
     gotoPose,
     setFreeDrive,
-    startRecording,
-    stopRecording,
-    deletePath,
-    replayPath,
-    simplifyPath,
     grabCap,
     ungrabCap,
     unscrewCap,
