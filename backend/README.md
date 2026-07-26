@@ -20,6 +20,58 @@ Domain logic (world model, calibration, motion planner, verification agents,
 settings/fleet) lives in the repo-root `core/` package so it can be reused
 without importing FastAPI.
 
+## Camera API (`/api/cameras`)
+
+| | |
+|---|---|
+| `GET /api/cameras` | fleet cameras: depth support, pinned serial, configured format, intrinsics |
+| `GET /api/cameras/devices` | attached RealSense units — the serials for `CAM_*` in `.env` |
+| `GET /api/cameras/{id}/stream` | MJPEG (`multipart/x-mixed-replace`) — point an `<img>` at it |
+| `GET /api/cameras/{id}/snapshot` | single JPEG |
+| `GET /api/cameras/{id}/detections` | latest detections, normalized `[0,1]` polygons |
+| `POST /api/cameras/{id}/connect` | open the device; reports *why* it failed |
+| `POST /api/cameras/{id}/stop` | release the device now instead of at the idle timeout |
+
+`/ws/state` carries the same detections per camera, so the UI needs no extra
+connection. `services/camera_hub.py` owns the single thread allowed to read each
+device — `cv2.VideoCapture` is not safe to read from two threads, and the overlay
+must describe the frame the viewer is actually looking at. Detection runs on every
+Nth frame (~5 Hz at 15 fps capture) so it can never stall the video. Workers start
+on the first stream viewer and stop after a short idle linger, so booting the
+backend doesn't hold a webcam open.
+
+Detection is AprilTag `tag36h11` via `core/perception/fiducials.py`.
+
+**RGB-D cameras carry the metric half.** When a driver reports `has_depth` and
+`intrinsics()` — which a RealSense does from the factory, no ChArUco pass — the hub
+does three extra things per detection:
+
+* builds the detector with the camera matrix, so each tag gets a solvePnP pose
+  (`distance_m`),
+* samples the aligned depth map under the tag centre (`depth_m`), taking a median
+  over a small patch and ignoring zeros, since a RealSense returns 0 for "no return",
+* back-projects the centre to camera-frame metres (`camera_xyz`).
+
+Depth is preferred over the tag pose for back-projection: a 20 mm tag subtends few
+pixels, so its PnP range is much noisier than a direct depth reading. Colour-only
+cameras leave all three fields `null` rather than guessing. Colour and depth come
+from one `capture_rgbd()` frameset, so the depth under a tag belongs to the frame
+that tag was found in.
+
+Camera-frame metres are not yet world coordinates: commanding the arm additionally
+needs `T_world_cam` (`docs/CAMERA_UI_PLAN.md` C3–C4).
+
+Cameras are configured entirely from `.env` — `CAM_GRIPPER` / `CAM_OVERVIEW` /
+`CAM_HANDOVER` pin a serial to each fleet id, and `CAM_WIDTH` / `CAM_HEIGHT` /
+`CAM_FPS` (optionally suffixed `_<FLEET_ID>`) set the stream format.
+
+For hardware-free work, `fleet.mock.json` provides `mock_tag_camera` devices that
+render genuine tag36h11 markers:
+
+```bash
+HZ_FLEET_FILE=fleet.mock.json uv run uvicorn backend.app.main:app --reload
+```
+
 ## Teach / jog API (`/api/arms`)
 
 Backs the frontend's Teach tab — hand-driving an arm during bring-up.

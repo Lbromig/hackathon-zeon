@@ -4,77 +4,6 @@ Goal: **Cooperative Uncap → Aspirate**, verified. Three owners, one per device
 owning their driver + the matching capability/verification slice + their share of the
 backend and UI.
 
-## Objective — OT-One free-space motion, then agent-directed positioning
-
-**The pipette can move in all directions, so that we can build a real-world
-understanding with depth perception, and have an AI agent drive the pipette to
-where the tube actually is.**
-
-That is the target. It decomposes into four steps, and they are strictly ordered
-because each one is meaningless without the one before it.
-
-1. **Move every axis under software control.** **Done.** All six axes jog from the
-   UI (`/api/liquid-handlers/{id}/jog`): X, Y, Z, A plus both plungers B and C.
-   Y turned out to be joggable all along — the fault was specific to *homing*
-   (`G28.2 Y` searches for an endstop that never reports and grinds); a bounded
-   relative move does no search. Homing stays Z-only. Motion is continuous, not
-   stepped: coordinated multi-axis `G0`s queued as one path, measured at +6 ms
-   per leg of overhead over an 806 mm 3D sweep that closed to 0.00 on all axes.
-2. **Establish a coordinate frame.** Perceive the deck and express positions in a
-   frame shared with the world model.
-3. **Depth perception.** Recover the tube's position in 3D, not just in the image
-   plane, and put it into `core/worldmodel/` as a pose like any other entity.
-4. **Agent-directed motion.** The agent asks for a pose; the driver executes it
-   and a verification agent confirms arrival.
-
-### The blocker, stated plainly
-
-Steps 2 to 4 all assume the machine can be told *"go to this coordinate."* **It
-cannot.** No endstop on any axis registers with the board — `M119` was polled for
-18 s while the Z limit switch was pressed by hand and no bit ever changed, and the
-firmware config holds no axis limit entries. `G28.2` therefore never terminates on
-a limit; it drives a fixed search distance into the mechanical stop and zeroes the
-counter there. So `Z=0` is not a physical datum and absolute coordinates reference
-a position that was never established. Everything working today is *relative*
-jogging, which needs no datum. Details in `docs/OT_ONE_HARDWARE.md`.
-
-This means an AI agent cannot currently be handed a target position at all, no
-matter how good the perception is: there is no frame to express it in. Vision
-would recover where the tube is and the machine would still have no way to be told
-where to go.
-
-There are two ways through, and one has to be chosen:
-
-- **Repair the reference.** Fix the endstop wiring or the firmware config so
-  `G28.2` terminates on a switch. This makes homing a true datum, unblocks Y, and
-  makes absolute positioning trustworthy. Cleanest, and it also removes the fact
-  that every home currently drives into a hard stop.
-- **Close the loop with vision instead.** Never trust machine coordinates; have
-  the camera measure the pipette *and* the tube, and jog relatively until the
-  error is small. Slower and needs the camera calibrated to the deck, but it
-  works on the hardware exactly as it is, and it is closer to the verification
-  approach the rest of Track C already uses.
-
-### Status
-
-| Step | State |
-|------|-------|
-| All six axes relative jog (X Y Z A B C), from UI and REST | working, on hardware |
-| Continuous multi-axis motion | working — 806 mm 3D sweep, +6 ms/leg overhead |
-| Tip pickup | working — 53 mm engagement, measured |
-| Y axis | jogs fine; **never home it** — `G28.2 Y` grinds against a hard stop |
-| Aspirate / dispense | **blocked on one measurement** — see Q-OT-PLUNGER-1 |
-| Absolute positioning / any coordinate frame | **blocked** — no datum exists |
-| Depth perception → tube pose | not started, blocked on a frame |
-| Agent-directed move-to-tube | not started, blocked on the above |
-
-One safety property to carry into the agent work: with no endstops and no current
-sensing, **a crash is invisible to software.** A stalled stepper skips steps and
-the call returns exactly as it would on a clean move. Motion duration proves a
-move ran, never that the path was clear. An agent given authority to move this
-machine has no feedback channel that would tell it that it hit something, so
-vision has to supply that before it is left unattended.
-
 ## Ownership
 
 | Owner | Device | Owns |
@@ -101,15 +30,22 @@ Beyond the hardcoded chain in `workflows/uncap_aspirate.py`, a **P0 agent loop**
 `/ws/agent`). It observes → decides → executes a vetted skill → verifies → repeats, defaulting to
 an offline `RuleBasedPolicy` (no API key/hardware needed) with a gated `ClaudePolicy` behind
 `ANTHROPIC_API_KEY`. It reuses the same skills, twin, and verification agents, so it does not
-replace the plan — it realizes the P0 rung of `docs/AGENT_ORCHESTRATION.md`. Caveat: it can only
-be as honest as the verifiers — which, as of `c29a76c`, are real and fail closed (see Risks).
+replace the plan — it realizes the P0 rung of `docs/AGENT_ORCHESTRATION.md`. **Both named blockers are
+now closed on disk:** the verifiers are real (previous cycle) *and* `_execute` now drives real motion
+this cycle — it runs a data-driven `CHOREOGRAPHY` table via `_run_act` (capability calls: `move_joints`/
+`move_to` gated by `check_joint_target`/`check_pose_target`, `grip`/`release`, OT `aspirate`), replaying
+**taught poses** with a loud `preflight` that refuses to start on any untaught pose. `run()` now genuinely
+executes → verifies → retries per step (`backend/tests/test_workflow_execute.py`). Remaining caveats: it is
+now **committed and pushed** (Q-COMMIT-1 closed), and the OT serial transport is real and
+hardware-verified on this branch (Q-OT-1: transport answered, a real *aspirate* still pending plunger
+calibration — Q-OT-PLUNGER-1). What remains is a taught real bench to move (Q-POSES-1) — see Risks.
 
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. The **xArm safety/teaching layer deepened**: manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the clearance the controller can't model — J5 on the left arm is now bounded to `[-78.4, 113.9]` from a hand-confirmed sweep. **The OT-One now has its real action too**, on this branch (not on `feat/ot-one-serial-driver`): `drivers/opentrons/driver.py` has zero `TODO`s and drives G-code over USB serial to the Smoothieboard `v1.0.3`. Verified on hardware — all six axes jog (4 gantry + 2 plungers), tip pickup at a measured 53 mm engagement depth, and a closed 200 mm XY tour returning to net 0.00/0.00 mm. Driveable from the browser (`OpentronsJog.vue` → `/api/liquid-handlers/{id}/jog`), so a click moves the gantry. *Still unverified: a real **aspirate**, which needs the plunger calibrated — see Q-OT-PLUNGER-1.*
-- [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
-- [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose), the calibration pipeline now runs and publishes the twin (`/ws/calibrate`), the camera transport is now mounted (`cameras.router` + `camera_hub`, detections on `/ws/state`), and `MARKER_MAP` now carries real stock ids (180–224). Still open — unchanged this cycle: verification agents remain `ok=True` stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder; marker→entity offsets unmeasured.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. The **xArm safety/teaching layer** landed in git this cycle (commit `3800c2c`): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model. The **measured J5 override is now in config for both arms** (`FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}`, measured 2026-07-25 on one arm and reused for the other, since both carry a flange camera — the second arm is still unmeasured, see Q-JLIMIT-1). Genuine dexterity groundwork, and this cycle it is committed. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
+- [~] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Code-complete on disk this cycle: `uncap_aspirate.py::_execute` is now wired — a data-driven `CHOREOGRAPHY` (left clamps the tube; right pulls the cap straight up, parks it, takes the tube, presents it under the OT tip; OT aspirates) driven through the capability interfaces against **taught poses**, with a `preflight` that refuses to run on any untaught pose and a `run()` that executes→verifies→retries. Asserted by `backend/tests/test_workflow_execute.py`. **Not yet demonstrable end-to-end** because: it is uncommitted WIP (Q-COMMIT-1), the OT `aspirate` transport is a no-op so the pipette never draws (Q-OT-1), and the 12 choreography poses must be taught on the real bench (Q-POSES-1).*
+- [~] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Both halves have now landed on disk. Verifiers (previous cycle): all four `core/verification/agents.py` agents return **real verdicts** — `cap_removed` (cap reparented off the tube + separation gate, torque-drop telemetry bonus), `grasp_secure` (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to the pipette nozzle < 15 mm), `aspiration_ok` (positive aspirated volume) — each with a dedicated `ok=False`/`ok=True` test (`backend/tests/test_verification.py`). Wiring (this cycle): `_execute` now drives the choreography for real, so the real verdicts finally **gate real motion** in `run()`. A **perception→twin fusion loop** feeds the verifiers: `core/perception/fusion.py::TwinFuser` composes marker detections with the camera's twin pose to correct entity positions, driven by `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), with a RealSense RGB-D driver (`drivers/camera/realsense.py`) on disk; new `projection.py` (twin→image overlay) and `shapes.py` (Hough-circle detection of untagged labware) round out perception. **Caveat (critical):** all of the above is **uncommitted WIP** — HEAD (`3800c2c`) still contains the old `ok=True` stubs *and* the empty `_execute`. Still open: OT transport no-op (Q-OT-1); calibration hand-eye/world-frame/scan steps TODO so world poses are placeholder (Q-CALIB-1); marker→entity offsets unmeasured; right-arm J5 override unmeasured (Q-JLIMIT-1); dual-arm ratchet-unscrew (TARGET rung) not encoded — the wired path is the snap-cap FLOOR.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
 - [ ] **H+22** — Freeze features, rehearse demo, record backup video
 - [ ] **H+24** — Present
@@ -122,40 +58,32 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
 
 ## Risks
 
-- ~~**Verification is entirely stubbed (top risk).**~~ **Closed `c29a76c`.** All four agents are
-  real and **fail closed** — absent evidence returns `ok=False` with a reason, where the stubs
-  returned `ok=True, confidence=0.0`. `cap_removed` fuses a wrist-torque collapse with cap-marker
-  travel. Note the originally-assumed signal did not exist: the Lite 6 has no F/T sensor and the
-  SDK rejects `grip(force=…)`, so there is no gripper-force channel — `joints_torque` carries it.
-- **Nothing moves yet (now the top risk).** `uncap_aspirate._execute` still has every driver call
-  commented out, and the agent toolbox's `Skill.run` reuses it. Because the verifiers are now
-  honest, the chain correctly **stops at step 1** rather than falsely reporting four green steps.
-  Wiring the floor path through `core/motion/pick_place.py` is the one thing between here and an
-  end-to-end run.
-- Dual-arm unscrew is the long pole → Dale starts first; snap-cap fallback ready.
+- ~~**The entire working demo is uncommitted WIP.**~~ **Closed** — committed in 14 targeted commits
+  (`3800c2c..e641f56`) and merged to `initial-setup-and-repo-structure`; 126 tests pass. Original note: Both named blockers
+  are now fixed *on disk* — real verifiers (last cycle) and a wired `_execute` (this cycle) — but the last team
+  code commit, HEAD (`3800c2c`), still ships the `ok=True` stubs **and** the empty `_execute`. A clean checkout
+  of HEAD is pure theater. The `_execute` wiring, the four verifiers, `TwinFuser`, the `twin_fusion` loop, the
+  RealSense driver, `projection`/`shapes`/`capture`, `teach_poses`, and all their tests must be committed onto
+  the demo branch before freeze. This is the single highest-leverage action left and it writes no new code
+  (Q-COMMIT-1).
+- **The Opentrons reveal is currently mimed (honesty risk on the narrative climax).** `_execute` now calls
+  `ot.aspirate(...)` for real, but the OT-One `connect()`/`_send()` are **still** `TODO` (`connect()` stores
+  `object()`, `_send()` returns `None`), so the pipette never physically draws. `aspiration_ok` would then judge
+  a twin/telemetry value with no real aspirate behind it. Merge/cherry-pick `origin/feat/ot-one-serial-driver`
+  or the demo's climax passes green while nothing moves (Q-OT-1).
+- **The wired floor path needs a taught bench to move (demo-day risk latent behind the win).** `_execute` replays
+  12 named taught poses; the unit suite uses a fixture, but the real bench library (`data/teach_poses.json`,
+  gitignored) may be empty on the demo machine — `preflight` will then correctly *refuse to run*. A green test
+  suite is not a moving demo; the poses must be hand-taught on the two-arm + OT rig (Q-POSES-1).
+- **Verifiers/fusion gate twin geometry until calibration is real (honesty risk).** The agents query a twin
+  populated by calibration seeding + kinematics + camera fusion; hand-eye/world-frame calibration is still `TODO`
+  (Q-CALIB-1), so fused world poses are camera-frame until calibrated. A green `tube_aligned` proves the twin is
+  consistent, not that the arm physically placed the tube — decide the *minimum* real calibration for the demo.
+- Dual-arm unscrew is the long pole → Dale starts first; the wired path is the snap-cap **floor** (straight-up
+  cap lift, no ratchet); dual-arm ratchet-unscrew (TARGET) is not yet encoded in the choreography.
 - Arm↔OT alignment → wide-mouth tube / funnel lead-in for slack.
-- **The OT can move but cannot yet aspirate.** All six axes jog and tip pickup is
-  measured, but `aspirate`/`dispense`/`drop_tip` refuse: `plunger_axis` and
-  `plunger_ul_per_mm` are measurements this unit has never had taken, and neither
-  is inferable (the board's config has no plunger entries, and `M119` reports
-  `min_b` but no `min_c`, so the plungers are not symmetric). Code is ready and
-  offline-verified; one bench session with `scripts/calibrate_plunger.py` closes
-  it. This is the OT half of the floor rung.
-- **The OT has no coordinate frame, so it cannot be sent to a pose.** No endstop
-  registers on any axis, so `G28.2` zeroes the counter at a mechanical stop rather
-  than a reference. Everything working is *relative* jogging. Any plan to have an
-  agent drive the OT to a perceived tube position has to either repair the endstop
-  wiring or close the loop visually — perception alone does not unblock it,
-  because there is no frame in which to express the target. See the Objective
-  section and `docs/OT_ONE_HARDWARE.md`.
-- **A crash on the OT is invisible to software.** No endstops and no current
-  sensing, so a stalled stepper skips steps and a blocked move returns exactly
-  like a clean one. Motion duration proves a move ran, never that the path was
-  clear. Any autonomous OT motion needs vision as its feedback channel before it
-  runs unattended.
-- Live chaining → the verify→retry loop is the safety net; prefer deliberate failure injection in the demo.
-- The hero workflow `_execute` is still empty (commented TODOs); wire at least the floor path so the
-  chain and the agent loop drive real hardware, not no-ops.
+- Live chaining → the verify→retry loop is now a real, wired safety net (verdicts can fail *and* gate real
+  motion); script a deliberate failure injection for the demo (Q-DEMO-1).
 - Camera feed is now wired (was the top infra gap last cycle): `main.py` mounts `cameras.router`, so
   `/api/cameras/{id}/stream` (MJPEG) + `/detections` are reachable and per-camera detections ride
   `/ws/state`. The vision-verifier path is no longer blocked at the transport — what's missing is the
@@ -163,11 +91,10 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
 - Fiducial poses will still be wrong until measured: `core/calibration/markers.py::MARKER_MAP` now uses
   **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity offsets
   (0.02 placeholder). Measure the marker→entity offsets before trusting twin poses for any verifier.
-- **Prioritization risk (now three cycles).** Three straight reviews named exactly two blockers — real
-  verifiers and a wired `_execute`. This cycle again shipped *around* them: deeper xArm safety/teaching
-  (free-drive mode, joint soft-limit enforcement + `check_pose_target` pre-flight, `find_joint_limit.py`),
-  more camera-hub and validation scripts — real dexterity progress, but **neither blocker moved**. The arm
-  is now genuinely operable and self-collision-safe; the *scored* half of Track C (verification) is exactly
-  as stubbed as it was three cycles ago. Everything needed to make one verifier real has sat on disk for
-  three cycles. The next block must spend on the verdict, not more substrate — or the team must state
-  explicitly that it is betting the demo on the dexterity ceiling (Q-PRIORITY-1).
+- **Prioritization risk — substantively resolved; the residual is a git problem, not a code one.** Three
+  straight reviews named two blockers (real verifiers, a wired `_execute`). Both are now fixed on disk:
+  verifiers went real last cycle, `_execute` was wired this cycle, so real verdicts now gate real motion in
+  `run()`. Q-PRIORITY-1 is answered *in substance*. The one residual is mechanical and sits at the git
+  boundary: the win is uncommitted (Q-COMMIT-1). The next block's job is unambiguous and unglamorous —
+  **commit the WIP**, teach the bench (Q-POSES-1), wire the OT serial transport (Q-OT-1); do **not** open new
+  substrate.

@@ -1,6 +1,12 @@
-"""OpenCV-backed camera driver (USB / on-arm / external webcams)."""
+"""OpenCV-backed camera driver (USB / on-arm / external webcams).
+
+Also the root-free way to reach a RealSense on macOS: the D4xx exposes its IR
+sensor as an ordinary UVC device, so this driver gets a live mono stream where
+librealsense cannot open the camera at all. No depth, no factory intrinsics.
+"""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ..base import ConnectionState, DeviceInfo, DriverError, InstrumentKind
@@ -34,14 +40,40 @@ class OpenCVCameraDriver(CameraDriver):
         if cv2 is None:
             raise DriverError("opencv-python not installed")
         self._state = ConnectionState.CONNECTING
-        self._cap = cv2.VideoCapture(self.config.get("source", 0))
+        source = self.config.get("source", 0)
+        # A UVC device admits exactly one process. The common cause of a failed
+        # open is our own previous backend still holding it — uvicorn --reload in
+        # particular overlaps old and new workers for a moment — so retry briefly
+        # before giving up, and name that cause, because OpenCV's own answer is a
+        # bare False with no reason attached.
+        attempts = int(self.config.get("open_attempts", 3))
+        for attempt in range(attempts):
+            self._cap = cv2.VideoCapture(source)
+            if self._cap.isOpened():
+                break
+            self._cap.release()
+            if attempt < attempts - 1:
+                time.sleep(0.7)
+        else:
+            self._state = ConnectionState.ERROR
+            raise DriverError(
+                f"camera source {source!r} would not open after {attempts} attempts — "
+                "another process is probably holding it (a previous backend, Photo Booth, "
+                "or a browser tab), or this process lacks macOS camera permission"
+            )
+
         if self.config.get("width"):
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config["width"])
         if self.config.get("height"):
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config["height"])
-        if not self._cap.isOpened():
-            self._state = ConnectionState.ERROR
-            raise DriverError("camera failed to open")
+
+        # Discard the first frames: auto-exposure starts wide open, so a cold
+        # camera's first frame is often a white-out that detects no markers and
+        # looks broken in the UI. Measured on a D435 IR node: ~237 mean brightness
+        # settling to ~105 within a dozen frames.
+        for _ in range(int(self.config.get("warmup_frames", 10))):
+            if not self._cap.read()[0]:
+                break
         self._state = ConnectionState.CONNECTED
 
     def disconnect(self) -> None:

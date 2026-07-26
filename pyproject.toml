@@ -12,6 +12,13 @@ dependencies = [
     # perception / verification
     "numpy",
     "opencv-contrib-python",   # contrib build required for cv2.aruco (AprilTag tag36h11)
+    # Intel RealSense RGB-D cameras (imported lazily by the driver).
+    # PyPI ships ONLY manylinux x86_64 and win_amd64 wheels: nothing for macOS, and
+    # nothing for linux-arm64 (which is what an Apple-silicon Docker image is). An
+    # unguarded dependency hard-fails `uv sync` on both, taking the whole backend
+    # with it. macOS builds it from source instead (see the README); everywhere
+    # else the driver degrades gracefully, because the import is lazy.
+    "pyrealsense2 ; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
     # robot control (vendored in third_party/, see [tool.uv.sources])
     "xarm-python-sdk",
     # config
@@ -30,6 +37,13 @@ package = false
 
 [tool.uv.sources]
 xarm-python-sdk = { path = "third_party/xArm-Python-SDK", editable = true }
+# Intel publishes no macOS wheel; this one is vendored so the bench Mac can drive
+# the RealSense cameras. Linux/Windows keep resolving from PyPI.
+# NOTE: pyrealsense2 is deliberately NOT sourced from the vendored macOS wheel in
+# third_party/wheels. Locking a local wheel records its hash, so every rebuild by
+# scripts/build_pyrealsense2_macos.sh invalidates uv.lock and breaks `uv run` for
+# everyone until someone re-locks. On macOS the script installs it into .venv
+# directly; see "RealSense cameras on macOS" in the README.
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

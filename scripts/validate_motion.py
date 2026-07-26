@@ -69,7 +69,7 @@ def _fmt(xyz) -> str:
 
 
 def validate(ip: str, name: str = "", *, step: float, tol: float, speed: float,
-             gripper: str, dry_run: bool) -> bool:
+             gripper: str, dry_run: bool, brake: bool = True) -> bool:
     label = name or ip
     legs = _legs(step)
     print(f"\n=== Motion validation: '{label}' @ {ip} ===")
@@ -129,9 +129,10 @@ def validate(ip: str, name: str = "", *, step: float, tol: float, speed: float,
         print(f"  FAIL: {type(e).__name__}: {e}")
         return False
     finally:
-        # Also brakes the arm — see XArmDriver.disconnect().
-        driver.disconnect()
-        print(f"  [{label}] disconnected (arm braked)")
+        driver.disconnect(brake=brake)
+        print(f"  [{label}] disconnected — "
+              + ("arm braked (servos off)" if brake
+                 else "arm left ENERGIZED and holding (no brake cycle, no clunk)"))
 
 
 def _require_healthy(driver: XArmDriver, when: str) -> None:
@@ -171,6 +172,9 @@ def main() -> int:
                     help="end-effector (default none — this script never actuates it)")
     ap.add_argument("--yes", action="store_true",
                     help="actually move the arm; without this it's a dry run")
+    ap.add_argument("--leave-enabled", action="store_true",
+                    help="leave the servos energized and holding instead of braking, so "
+                         "back-to-back runs don't cycle the brakes. Don't leave it unattended")
     args = ap.parse_args()
 
     targets = _fleet_targets() if args.fleet else [(ip, "") for ip in args.ip]
@@ -186,7 +190,8 @@ def main() -> int:
               f"the workspace must be clear.")
     results = {label or ip: validate(ip, label, step=args.step, tol=args.tol,
                                      speed=args.speed, gripper=args.gripper,
-                                     dry_run=not args.yes)
+                                     dry_run=not args.yes,
+                                     brake=not args.leave_enabled)
                for ip, label in targets}
 
     print("\n=== Summary ===")

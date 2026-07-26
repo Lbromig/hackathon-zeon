@@ -54,6 +54,9 @@ export interface ArmState {
   gripper: Gripper;
   error_code: number | null;
   warn_code: number | null;
+  /** Hand-guiding is active (xArm mode 2): the arm is back-drivable and commanded
+   *  motion will not behave normally until it is switched off. */
+  free_drive: boolean;
   detail: string;
 }
 
@@ -70,6 +73,24 @@ export interface TaughtPose {
   gripper_width: number | null;
   note: string;
   saved_at: string;
+}
+
+/** A pose the hero workflow needs. Derived server-side from the choreography, so
+ *  this list cannot drift from what the workflow actually visits. */
+export interface RequiredPose {
+  device: string;
+  name: string;
+  step: string;
+  order: number;
+  note: string;
+  taught: boolean;
+  saved_at: string;
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  problems: string[];
+  required: RequiredPose[];
 }
 
 export type JogSpace = "cartesian" | "joint";
@@ -132,3 +153,13 @@ export const gotoPose = (id: string, name: string, speed?: number) =>
   post<ActionResult>(
     `/api/arms/${id}/poses/${encodeURIComponent(name)}/goto${speed ? `?speed=${speed}` : ""}`,
   );
+
+/** Hand-guiding. The arm becomes back-drivable — support it before enabling, and
+ *  note that commanded moves do not behave normally until it is switched off. */
+export const setFreeDrive = (id: string, on: boolean) =>
+  post<ActionResult>(`/api/arms/${id}/free_drive`, { on });
+
+// Workflow readiness. Lives under /api/workflow but is consumed by the teach tab:
+// the checklist is what gets the operator from "nothing taught" to a green pre-flight.
+export const listRequiredPoses = () => request<RequiredPose[]>("/api/workflow/required_poses");
+export const getPreflight = () => request<PreflightResult>("/api/workflow/preflight");

@@ -28,12 +28,15 @@ from .api import (
 )
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
+from .services.twin_fusion import twin_fusion
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     device_manager.load_fleet()
+    twin_fusion.start()          # corrective camera->twin fusion (no-op until a twin exists)
     yield
+    twin_fusion.stop()
     # Stop the frame workers before the drivers they hold go away, or a worker
     # keeps grabbing from a released VideoCapture during shutdown.
     camera_hub.stop_all()

@@ -6,6 +6,9 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
+from core import teach_poses
+
+from ..schemas import PreflightResult, RequiredPose
 from ..services.camera_hub import camera_hub
 from ..services.device_manager import device_manager
 from ..workflows import uncap_aspirate
@@ -19,6 +22,43 @@ def plan() -> list[dict]:
         {"step": s.key, "capability": s.capability, "devices": s.devices, "verifier": s.verifier}
         for s in uncap_aspirate.PLAN
     ]
+
+
+@router.get("/api/workflow/required_poses", response_model=list[RequiredPose])
+def required_poses() -> list[RequiredPose]:
+    """Every taught pose the workflow needs, and whether it exists yet.
+
+    Derived from ``uncap_aspirate.CHOREOGRAPHY`` rather than a hand-maintained list,
+    so the teach checklist can never drift from what the workflow actually visits:
+    add a waypoint to the choreography and it shows up here as untaught.
+    """
+    library = teach_poses.load()
+    out: list[RequiredPose] = []
+    for step in uncap_aspirate.PLAN:
+        order = 0
+        for act in uncap_aspirate.CHOREOGRAPHY.get(step.key, []):
+            if act.kind != "move":
+                continue
+            order += 1
+            entry = library.get(act.device, {}).get(act.pose)
+            out.append(RequiredPose(
+                device=act.device, name=act.pose, step=step.key, order=order,
+                note=act.note, taught=entry is not None,
+                saved_at=(entry or {}).get("saved_at", ""),
+            ))
+    return out
+
+
+@router.get("/api/workflow/preflight", response_model=PreflightResult)
+def workflow_preflight() -> PreflightResult:
+    """Exactly the check ``run()`` performs before it moves anything.
+
+    Same function, so a green banner here means the workflow will get past its own
+    pre-flight — the UI cannot disagree with the orchestrator about readiness.
+    """
+    problems = uncap_aspirate.preflight(device_manager)
+    return PreflightResult(ok=not problems, problems=problems,
+                           required=required_poses())
 
 
 @router.websocket("/ws/workflow")
