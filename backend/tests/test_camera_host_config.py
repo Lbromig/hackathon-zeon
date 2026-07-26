@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from core.config import CAM_ENV, Settings
+from core.config import CAM_ENV, CAMERA_TYPES, Settings
 
 HOST = "http://bench.local:8100"
 
@@ -27,6 +27,9 @@ def clean_env(monkeypatch):
     """
     for var in ("HZ_CAMERA_HOST", "HZ_FLEET_FILE"):
         monkeypatch.delenv(var, raising=False)
+    # Real hardware, explicitly. Simulation is the default now (D29), and a simulated slot
+    # is rewritten to a mock type — which is exactly what this file asserts it is not.
+    monkeypatch.setenv("HZ_SIM", "none")
     # Derived from CAM_ENV, not a hardcoded slot list: adding a camera to the fleet used to
     # leave its var un-neutralized here, so the bench .env leaked into the test and it
     # failed for a reason that had nothing to do with what it checks.
@@ -44,7 +47,13 @@ def cameras(fleet):
 def test_unset_leaves_local_hardware_alone():
     s = Settings.load()
     assert s.camera_host == ""
-    assert {e["type"] for e in cameras(s.fleet)} == {"realsense"}
+    # A *local* driver type, whichever one the bench currently uses — `avf` today, since the
+    # slots are pinned by AVFoundation uniqueID (core/cameras.py). Asserting the exact type
+    # would make this test fail for every legitimate driver change, which is not what it is
+    # about: the point is that nothing became `remote`.
+    kinds = {e["type"] for e in cameras(s.fleet)}
+    assert kinds and kinds <= set(CAMERA_TYPES)
+    assert "remote" not in kinds
 
 
 def test_every_camera_slot_becomes_remote(monkeypatch):
