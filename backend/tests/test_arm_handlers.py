@@ -480,6 +480,15 @@ def test_a_width_on_a_gripper_that_has_none_is_refused():
 
 
 # --- arm.decap (R-ARM-5 / D12) ------------------------------------------------------
+#
+# Which way the wrist turns to loosen is `cap_ops.UNSCREW_SIGN` — bench configuration, since it
+# depends on how the gripper is bolted to the flange, and the bench found a hardcoded direction
+# *tightening* caps. The decap assertions below therefore derive the sign rather than spelling
+# it, so re-mounting a gripper does not make this file wrong.
+
+#: Signed degrees of cap rotation for a `deg`-sized turn in the loosening direction.
+UNSCREW = cap_ops.UNSCREW_SIGN
+
 
 def test_decap_takes_four_ninety_degree_bites_and_turns_the_cap_once():
     arm = make_arm("left")
@@ -490,7 +499,7 @@ def test_decap_takes_four_ninety_degree_bites_and_turns_the_cap_once():
 
     assert out.bites == 4
     assert out.step_deg == 90.0
-    assert out.total_rotation_deg == pytest.approx(360.0)
+    assert out.total_rotation_deg == pytest.approx(UNSCREW * 360.0), "a full turn, loosening"
     assert out.net_wrist_travel_deg == pytest.approx(0.0)
     assert out.preflight_ok is True
     assert arm.get_joints() == pytest.approx(joints_before), "net-zero wrist travel"
@@ -502,9 +511,10 @@ def test_the_decap_plan_is_assertable_without_an_arm():
     on if the open/close were the wrong way round — is checkable on its own."""
     steps = cap_ops.plan_ratchet(90.0, 360.0)
     assert cap_ops.count_bites(steps) == 4
-    assert cap_ops.gripped_rotation(steps) == pytest.approx(360.0)
+    assert cap_ops.gripped_rotation(steps) == pytest.approx(UNSCREW * 360.0)
     assert cap_ops.net_wrist_travel(steps) == pytest.approx(0.0)
-    assert steps[-2:] == [("open", 0.0), ("turn", -90.0)], "ends released and unwound"
+    assert steps[-2:] == [("open", 0.0), ("turn", -UNSCREW * 90.0)], \
+        "ends released and unwound, the unwind opposing the loosening turn"
 
 
 def test_decap_rotates_the_tool_axis_in_joint_space_and_never_as_a_cartesian_yaw():
@@ -553,22 +563,29 @@ def test_a_wrist_parked_too_far_round_is_rewound_and_the_rewind_is_reported():
     """From the bench: "J6 would reach 484°" is a starting position, not an impossible
     request. The rewind is jaws-open and turns no cap — but it is motion nobody asked for,
     so it has to be reachable rather than only logged."""
-    arm = make_arm("left", limits=[[-360, 360]] * 6, joints=[0, 0, 0, 0, 0, 304.0])
+    # 304° round in the loosening direction, so a 180° bite would reach 484° past the 360°
+    # limit it is heading for. Which limit that is flips with the sign; the overshoot does not.
+    parked = UNSCREW * 304.0
+    arm = make_arm("left", limits=[[-360, 360]] * 6, joints=[0, 0, 0, 0, 0, parked])
     arm.grip(width=420.0)
     action = actions.ArmDecap(device="left", step_deg=180.0, grip_counts=420.0)
     ctx = make_ctx(action, Devices(left=arm))
 
     out = ctx and arm_handlers.decap(action, ctx)
 
-    assert out.total_rotation_deg == pytest.approx(360.0), "the cap still turns a full turn"
+    assert out.total_rotation_deg == pytest.approx(UNSCREW * 360.0), \
+        "the cap still turns a full turn"
     assert out.net_wrist_travel_deg == pytest.approx(0.0), "no drift across the bites"
-    # 304 - (124° overshoot + UNWIND_MARGIN_DEG): the rewind clears the limit with room, so
+    # The 124° overshoot plus UNWIND_MARGIN_DEG: the rewind clears the limit with room, so
     # a real arm landing slightly short of the commanded rewind still pre-flights.
     rewind = 304.0 + 180.0 - (360.0 - cap_ops.UNWIND_MARGIN_DEG)
-    assert arm.get_joints()[-1] == pytest.approx(304.0 - rewind), "inside the limit, with margin"
+    assert arm.get_joints()[-1] == pytest.approx(UNSCREW * (304.0 - rewind)), \
+        "inside the limit, with margin"
+    assert out.rewind_deg == pytest.approx(UNSCREW * rewind), "the rewind is a recorded output"
     warning = next(w for w in ctx.collected_warnings()
                    if w.code == "wrist_rewound_before_decap")
-    assert "124" in warning.message and "jaws open" in warning.message
+    assert f"{rewind:.0f}" in warning.message, warning.message
+    assert "jaws open" in warning.message
 
 
 def test_every_intermediate_angle_is_pre_flighted_not_just_the_endpoints():
@@ -590,7 +607,7 @@ def test_a_smaller_bite_makes_the_same_decap_legal():
     arm = make_arm("left", limits=limits)
     out = run(actions.ArmDecap(device="left", step_deg=45.0), Devices(left=arm))
     assert out.bites == 8
-    assert out.total_rotation_deg == pytest.approx(360.0)
+    assert out.total_rotation_deg == pytest.approx(UNSCREW * 360.0)
 
 
 def test_checkpoint_is_called_between_decap_bites():
