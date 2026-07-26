@@ -256,27 +256,40 @@ def _ioreg_usb_detail(devices: list[Device]) -> None:
     if not raw:
         return
 
+    # Split the registry into one block per USB device node before reading any
+    # property. An earlier version scanned the whole dump for the first matching
+    # property and assigned it to every RealSense, which is invisibly wrong with
+    # one camera attached and actively misleading with two: both were reported
+    # with the same serial. A serial that is confidently wrong is worse than a
+    # missing one, because it is exactly what callers match on.
+    blocks: list[str] = []
+    for match in re.finditer(r"\+-o .*?<class IOUSBHostDevice", raw):
+        nxt = raw.find("<class IOUSBHostDevice", match.end())
+        blocks.append(raw[match.start() : nxt if nxt != -1 else len(raw)])
+
+    def block_for(dev: Device) -> str | None:
+        """The registry block whose product id matches this device."""
+        for block in blocks:
+            pid = re.search(r'"idProduct" = (\d+)', block)
+            if pid and dev.product_id is not None and int(pid.group(1)) == dev.product_id:
+                return block
+        return None
+
     for dev in devices:
         if not dev.is_realsense:
             continue
-        # Locate the device node by product string, then read only the lines
-        # belonging to it. The registry is a flat indented dump, so the node's
-        # own properties are the ones before the next sibling node begins.
-        start = raw.find("RealSense")
-        while start != -1:
-            block = raw[start : start + 20000]
-            serial = re.search(r'"USB Serial Number" = "([^"]+)"', block)
-            speed = re.search(r'"UsbLinkSpeed" = (\d+)', block)
-            if serial and dev.serial is None:
-                dev.serial = serial.group(1)
-            if speed and dev.link_speed_bps is None:
-                dev.link_speed_bps = int(speed.group(1))
-            if dev.serial and dev.link_speed_bps:
-                break
-            start = raw.find("RealSense", start + 1)
+        block = block_for(dev)
+        if block is None:
+            continue  # leave the fields None rather than borrow another device's
 
+        serial = re.search(r'"USB Serial Number" = "([^"]+)"', block)
+        speed = re.search(r'"UsbLinkSpeed" = (\d+)', block)
+        if serial:
+            dev.serial = serial.group(1)
+        if speed:
+            dev.link_speed_bps = int(speed.group(1))
         for driver in ("UVCAssistant", "AppleUSBHostCompositeDevice"):
-            if driver in raw:
+            if driver in block:
                 dev.claimed_by.append(driver)
 
 
@@ -682,9 +695,15 @@ class FrameFeed:
     can never be mistaken for the bench. Do not remove that stamp.
     """
 
-    def __init__(self, synthetic: bool = False, index: int = 0, view: str = "color") -> None:
+    def __init__(self, synthetic: bool = False, index: int = 0, view: str = "color",
+                 serial: str | None = None, label: str = "") -> None:
         self.synthetic = synthetic
         self.index = index
+        # Which physical camera this feed owns. With more than one attached,
+        # leaving it None means the SDK picks for you and two feeds can fight
+        # over the same device while another goes unread.
+        self.serial = serial
+        self.label = label
         self.view = view          # color | depth
         self.error = ""
         self.source = "none"      # which path actually produced frames
@@ -716,8 +735,13 @@ class FrameFeed:
         try:
             pipe = rs.pipeline()
             cfg = rs.config()
-            cfg.enable_stream(rs.stream.depth, rs.format.z16, 30)
-            cfg.enable_stream(rs.stream.color, rs.format.bgr8, 30)
+            if self.serial:
+                cfg.enable_device(self.serial)
+            # 640x480 rather than 720p: two D435-class cameras streaming colour
+            # plus depth on one 5 Gbps bus will exhaust USB bandwidth at 720p,
+            # and the failure shows up as dropped frames mid-run, not at start.
+            cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
             profile = pipe.start(cfg)
         except Exception as exc:
             self.error = f"realsense: {exc}"
@@ -838,6 +862,8 @@ _PAGE = """<!doctype html><meta charset=utf-8>
          font-size:12px;font-weight:700;margin-bottom:12px;letter-spacing:.04em}
  .row{display:flex;gap:8px;align-items:center;margin-top:12px}
  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+ .camrow{margin-bottom:18px}
+ .camname{font-size:12px;font-weight:600;color:#cad6ec;margin-bottom:6px}
  .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#6b7a90;margin-bottom:4px}
  @media(max-width:700px){.grid{grid-template-columns:1fr}}
  button{background:#2e6bff;color:#fff;border:0;border-radius:8px;padding:8px 14px;
@@ -850,13 +876,7 @@ _PAGE = """<!doctype html><meta charset=utf-8>
  <div class=sub>__SUB__</div>
  <div class=card>
   __BANNER__
-  <div class=grid>
-   <div><div class=lbl>color</div>
-    <img src="/stream" alt="color stream"
-     onerror="document.getElementById('e').textContent='stream ended - see the diagnosis below'"></div>
-   <div><div class=lbl>depth (colourised for viewing)</div>
-    <img src="/depth" alt="depth stream"></div>
-  </div>
+  __CAMS__
   <div class=row>
    <button onclick="fetch('/snapshot',{method:'POST'}).then(r=>r.json()).then(j=>
      document.getElementById('s').textContent='saved '+j.name)">Snapshot</button>
@@ -901,10 +921,18 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
         print("serve needs cv2 for JPEG encoding. Use an interpreter that has it.")
         return 1
 
-    feed = FrameFeed(synthetic=synthetic, view=view)
+    if synthetic:
+        feeds = [FrameFeed(synthetic=True, label="synthetic")]
+    else:
+        cams = [d for d in _cached_devices() if d.is_realsense and d.serial]
+        feeds = [
+            FrameFeed(serial=d.serial, label=f"{d.model or d.name} ({d.serial})")
+            for d in cams
+        ] or [FrameFeed(label="default")]
+    feed = feeds[0]
     boundary = "frameboundary"
 
-    if not synthetic and feed.jpeg() is None:
+    if not synthetic and all(f.jpeg() is None for f in feeds):
         # Refuse to start rather than serve a page whose video will never load.
         print("Cannot start: no capture path.\n")
         preflight()
@@ -928,6 +956,9 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
         def do_GET(self) -> None:
             if self.path.startswith("/stream") or self.path.startswith("/depth"):
                 want = "depth" if self.path.startswith("/depth") else "color"
+                m = re.search(r"[?&]cam=(\d+)", self.path)
+                idx = int(m.group(1)) if m else 0
+                src = feeds[idx] if 0 <= idx < len(feeds) else feeds[0]
                 self.send_response(200)
                 self.send_header(
                     "Content-Type", f"multipart/x-mixed-replace; boundary={boundary}"
@@ -935,7 +966,7 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
                 self.end_headers()
                 try:
                     while True:
-                        jpeg = feed.jpeg(view=want)
+                        jpeg = src.jpeg(view=want)
                         if jpeg is None:
                             break  # never hold a stale frame on screen
                         self.wfile.write(
@@ -988,7 +1019,18 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
                 if synthetic
                 else ""
             )
-            page = _PAGE.replace("__SUB__", sub).replace("__BANNER__", banner)
+            cams_html = "".join(
+                f"<div class=camrow><div class=camname>{f.label}</div>"
+                f"<div class=grid>"
+                f"<div><div class=lbl>color</div>"
+                f'<img src="/stream?cam={i}" alt="color"></div>'
+                f"<div><div class=lbl>depth (colourised for viewing)</div>"
+                f'<img src="/depth?cam={i}" alt="depth"></div>'
+                f"</div></div>"
+                for i, f in enumerate(feeds)
+            )
+            page = (_PAGE.replace("__SUB__", sub).replace("__BANNER__", banner)
+                    .replace("__CAMS__", cams_html))
             self._send(200, "text/html; charset=utf-8", page.encode())
 
         def do_POST(self) -> None:
@@ -1018,7 +1060,9 @@ def serve(port: int = 8765, synthetic: bool = False, view: str = "color") -> int
     _cached_devices()
 
     with Server(("127.0.0.1", port), Handler) as httpd:
-        print(f"serving on http://127.0.0.1:{port}  source={feed.source}")
+        print(f"serving on http://127.0.0.1:{port}  {len(feeds)} camera(s)")
+        for f in feeds:
+            print(f"  {f.label}: source={f.source} scale={f.depth_scale or 0:.3e}")
         if feed.depth_scale:
             print(f"depth scale {feed.depth_scale:.3e} m/count")
         if synthetic:
