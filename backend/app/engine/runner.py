@@ -149,9 +149,11 @@ class EventSink:
     re-fetches the snapshot instead — which is why the snapshot exists and why the buffer is
     allowed to be bounded.
 
-    **Subscribers are called on the emitting thread**, which is the worker. An asyncio
+    **Subscribers are called on the emitting thread**, which is usually the worker. An asyncio
     consumer must therefore hop the loop itself (`loop.call_soon_threadsafe`); doing that here
-    would tie this module to an event loop it deliberately does not know about.
+    would tie this module to an event loop it deliberately does not know about. Since the API
+    thread also emits (an injection refusal, a plan mutation), two events can reach a
+    subscriber out of order under contention: **`seq` is the ordering authority**, not arrival.
     """
 
     def __init__(self, *, run_id: str = "", sequence: EventSequence | None = None,
@@ -541,8 +543,11 @@ class Runner:
     def snapshot(self) -> RunSnapshot:
         """The full current state, for a reconnect or a second tab (D24/R-ENG-18).
 
-        `seq` is taken *after* the rows, so a client applying later events on top can only
-        ever re-apply something it already has, never miss one.
+        `seq` is read **before** the rows, deliberately. If an event lands in between, the rows
+        already include its effect and the client will apply it again — and every event that
+        carries state (`plan_replaced`, `action_finished`) is absolute rather than a delta, so
+        re-applying is a no-op. Reading `seq` afterwards would have the opposite error, which
+        is not recoverable: the client would skip an event it never saw.
         """
         return self.plan.snapshot(
             seq=self.sink.last_seq, run_id=self.run_id, state=self.state,
