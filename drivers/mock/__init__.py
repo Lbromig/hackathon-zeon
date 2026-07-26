@@ -8,13 +8,28 @@ end on a laptop.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
+
+from core.sim import world as sim_world
 
 from ..base import ConnectionState, DeviceInfo, DriverError, InstrumentKind
 from ..capabilities.arm import ArmDriver, GripperInfo, Pose
 from ..capabilities.camera import CameraDriver
-from ..capabilities.liquid_handler import DeckLocation, LiquidHandlerDriver
+from ..capabilities.liquid_handler import (DeckLocation, LiquidHandlerDriver, MoveLimits,
+                                           RelativeMoveReport)
 from ..registry import register
+
+#: R-LH-4, for the mock as much as for the real machine. The simulated handler tracks what it
+#: *commanded*, which is dead reckoning; the world applies a gain error it cannot see. Reporting
+#: `measured` here would make the simulation easier than the bench in exactly the dimension the
+#: servo loop's correctness depends on.
+MOCK_LH_PROVENANCE = {
+    "source": "commanded_steps",
+    "encoders": False,
+    "referenced": False,
+    "note": "dead-reckoned from commanded moves; the world applies a gain error this cannot see",
+}
 
 
 def _cv2() -> Any:
@@ -269,12 +284,57 @@ class MockTagCameraDriver(CameraDriver):
 
 
 class MockLiquidHandlerDriver(LiquidHandlerDriver):
-    """A liquid handler that tracks tip state and aspirated volume."""
+    """A liquid handler that tracks tip state, aspirated volume, and **moves the sim world**.
+
+    The relative-move half is what makes the servo loop worth simulating (D3/R-SIM-5): every
+    ``move_relative`` decrements the shared tip↔tube offset in `core.sim.world`, which the
+    synthetic camera then renders. So the loop converges *because the commanded moves close the
+    offset*, and a wrong-signed jacobian is a reproducible pytest failure rather than a bench
+    surprise with a pipette in it.
+
+    **Task frame throughout**, per the capability: ``+z`` is up, away from the deck, and the
+    offset is ``tube − tip`` so commanding the offset closes it. (This mock has no controller
+    frame to convert from — that inversion is the OT-One's, and it lives in its driver.)
+
+    **This mock's position is dead reckoning, deliberately.** It accumulates what it *commanded*,
+    not what the world applied, and reports ``provenance: dead_reckoned``. The world applies a
+    gain error the driver cannot see, exactly as a real stalled axis is invisible to a step
+    counter — measured on this bench, a 10 mm retract advanced the counter 10 mm while the camera
+    showed ~2 mm. Giving the mock ground truth would make simulation *easier* than reality in the
+    one dimension that matters, and would hide the class of bug the world exists to expose: the
+    discrepancy must only ever be visible through the camera.
+
+    Config: ``{"sim_world": SimWorld, "envelope": {"z": [-50, 120]},
+    "max_step_mm": {"z": 50}, "retract_z_mm": 30}``. ``sim_world`` is how a test isolates itself
+    from the process-wide world without touching the singleton; omitted, it shares the singleton,
+    which is the whole point of D3.
+    """
+
+    #: Per-axis single-move bound, mm, task frame. Generous enough for the plan's closing
+    #: ``dz=+40`` retract and tight enough that a unit slip of 10x is refused rather than run.
+    DEFAULT_MAX_STEP_MM = {"x": 50.0, "y": 50.0, "z": 50.0}
+
+    #: How far :meth:`initialize` wiggles each axis. Small: this is a "does it move" check, not a
+    #: calibration.
+    INIT_STEP_MM = {"x": 3.0, "y": 3.0, "z": 2.0}
+
+    #: Default retract at the end of :meth:`initialize`.
+    DEFAULT_RETRACT_MM = 30.0
 
     def __init__(self, device_id: str, config: dict[str, Any] | None = None) -> None:
         super().__init__(device_id, config)
         self._has_tip = False
         self._aspirated_ul = 0.0
+        self._position = {axis: 0.0 for axis in sim_world.AXES}
+        #: Every relative move commanded, in order — the mock's equivalent of the loopback
+        #: transport's wire log, and what a test asserts against.
+        self.commanded: list[dict[str, float]] = []
+
+    @property
+    def world(self) -> "sim_world.SimWorld":
+        """The simulated world this handler moves. The shared one unless config says otherwise."""
+        given = self.config.get("sim_world")
+        return given if isinstance(given, sim_world.SimWorld) else sim_world.world()
 
     @property
     def info(self) -> DeviceInfo:
@@ -283,7 +343,11 @@ class MockLiquidHandlerDriver(LiquidHandlerDriver):
 
     def status(self) -> dict[str, Any]:
         return {"state": self._state, "connected": self._state == ConnectionState.CONNECTED,
-                "has_tip": self._has_tip, "aspirated_ul": self._aspirated_ul}
+                "has_tip": self._has_tip, "aspirated_ul": self._aspirated_ul,
+                "position": dict(self._position),
+                "offset_mm": self.world.offset(),
+                # Right next to the numbers, so nothing can read them as measurements (R-LH-4).
+                "provenance": dict(MOCK_LH_PROVENANCE)}
 
     def connect(self) -> None:
         self._state = ConnectionState.CONNECTED
@@ -308,6 +372,122 @@ class MockLiquidHandlerDriver(LiquidHandlerDriver):
 
     def move_to(self, location: DeckLocation) -> None:
         pass
+
+    # --- relative motion, the servo loop's one action (R-LH-1) ---------------
+    def move_relative(self, dx: float = 0.0, dy: float = 0.0,
+                      dz: float = 0.0) -> RelativeMoveReport:
+        """Move the head by a task-frame offset, and move the simulated world with it.
+
+        ``+dz`` raises the head, so the shared offset's ``z`` decreases — that subtraction is what
+        the whole simulation is for. Refuses rather than clamps (R-LH-3), and refuses a non-finite
+        delta: every ``abs(delta) > limit`` comparison is False against NaN, so a naive check would
+        wave it through here just as it would on hardware.
+        """
+        requested = {"x": float(dx), "y": float(dy), "z": float(dz)}
+        limits = self.move_limits()
+        for axis, delta in requested.items():
+            if not math.isfinite(delta):
+                raise DriverError(f"{self.device_id}: {axis} delta is not a finite number")
+            reason = limits.refusal_for(axis, delta, self._position)
+            if reason:
+                raise DriverError(f"{self.device_id}: {reason}")
+
+        moving = {a: v for a, v in requested.items() if v}
+        before = dict(self._position)
+        if not moving:
+            return RelativeMoveReport(requested_mm=requested, applied_mm={},
+                                      position_before=before, position_after=before,
+                                      provenance="dead_reckoned", moved=False)
+
+        self.commanded.append(dict(moving))
+        self.world.apply_move(**{f"d{a}": v for a, v in moving.items()})
+        for axis, delta in moving.items():
+            # Commanded, not applied. See the class docstring: this machine has no encoders, and
+            # pretending otherwise would make the simulation easier than the bench.
+            self._position[axis] = round(self._position[axis] + delta, 6)
+
+        return RelativeMoveReport(
+            requested_mm=requested, applied_mm=dict(moving),
+            position_before=before, position_after=dict(self._position),
+            provenance="dead_reckoned", moved=True,
+            detail={"offset_mm": self.world.offset()},
+        )
+
+    def move_limits(self) -> MoveLimits:
+        """Per-axis step bound always; absolute envelope only when configured.
+
+        No default envelope, for the same reason the real driver has none: nothing here is homed,
+        so an absolute bound would be a number with no referenced origin — and a meaningless bound
+        that reads as a safety feature is worse than a stated absence.
+        """
+        steps = {**self.DEFAULT_MAX_STEP_MM,
+                 **{str(a).lower(): float(v)
+                    for a, v in (self.config.get("max_step_mm") or {}).items()}}
+        envelope = {str(a).lower(): (float(span[0]), float(span[1]))
+                    for a, span in (self.config.get("envelope") or {}).items()}
+        return MoveLimits(max_step_mm=steps, envelope_mm=envelope)
+
+    def position(self) -> dict[str, Any]:
+        """Task-frame position, and the statement that it is dead reckoning (R-LH-4).
+
+        ``commanded`` and ``actual`` are the same numbers here, and that is not a shortcut — it is
+        what a machine without encoders actually reports. The divergence a real controller shows
+        after a cut-short move comes from its own planner, which this mock does not model; what it
+        does model is the discrepancy that matters, between the counter and the world.
+        """
+        return {"actual": dict(self._position), "commanded": dict(self._position),
+                "offset_mm": {a: 0.0 for a in sim_world.AXES},
+                "provenance": dict(MOCK_LH_PROVENANCE),
+                "frame": "task"}
+
+    # --- initialization (R-LH-2) --------------------------------------------
+    def initialize(self, retract_z: bool | None = None) -> dict[str, Any]:
+        """Wiggle every axis both ways and return, then retract Z up.
+
+        Named ``initialize`` exactly: `lifecycle._init_liquid_handler` probes for that attribute
+        and *warns and skips* when it is absent, so a different name means the wiggle silently
+        never runs — and an initialization that reports success while the head never moved is the
+        failure D6 was written about.
+
+        The wiggle goes through :meth:`move_relative` rather than around it, so the simulated world
+        really does see the head move and come back. Net motion is zero by construction; net world
+        change is zero to within the world's noise, which is the honest simulation of a real
+        wiggle rather than a special case that skips the physics.
+
+        The plungers are never touched — there are none here, and there is no code path that could
+        grow one by accident.
+        """
+        if retract_z is None:
+            retract_z = bool(self.config.get("retract_z_on_init", True))
+
+        report: dict[str, Any] = {"axes": {}, "plungers_touched": False}
+        for axis, step in self.INIT_STEP_MM.items():
+            start = self._position[axis]
+            self.move_relative(**{f"d{axis}": +step})
+            self.move_relative(**{f"d{axis}": -step})
+            report["axes"][axis] = {"moved_mm": step,
+                                    "net_mm": round(self._position[axis] - start, 6),
+                                    "directions": ["+", "-"]}
+        if retract_z:
+            report["retract"] = self.retract_z(self.config.get("retract_z_mm"))
+        report["position"] = dict(self._position)
+        report["provenance"] = dict(MOCK_LH_PROVENANCE)
+        return report
+
+    def retract_z(self, distance_mm: float | None = None) -> dict[str, Any]:
+        """Raise the head. ``+z`` is up, so this is a positive move — see the capability docstring.
+
+        There is no simulated top switch, so the distance is the only bound and a non-positive or
+        non-finite request is refused rather than treated as "no retract": silently doing nothing
+        when asked to move clear of the deck is the failure worth refusing loudly.
+        """
+        distance = self.DEFAULT_RETRACT_MM if distance_mm is None else float(distance_mm)
+        if not math.isfinite(distance) or distance <= 0:
+            raise DriverError(f"{self.device_id}: retract distance must be positive")
+        report = self.move_relative(dz=+distance)
+        return {"requested_mm": distance, "retracted_mm": report.applied_mm.get("z", 0.0),
+                "at_top": False, "already_there": False,
+                "position": dict(self._position)}
 
 
 def register_mocks() -> None:
