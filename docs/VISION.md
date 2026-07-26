@@ -35,22 +35,40 @@ the verify→retry loop — Track C's *verification* half — is **partially hol
 on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
 true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
 half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **For a third cycle the team hardened
-the perimeter, not the critical path** — but this cycle they also *committed* the one perimeter item worth committing:
-the fixed-camera **world-frame calibration** (each fixed camera solves its pose from a shared 210/211 tag board) is now
-in git, with a **top-down world-map visualization** that renders both cameras in the same solved frame — a showable
-proof the shared frame is real and the honest substrate for the geometry-only verifiers (`tube_aligned`,
-`cap_removed`-separation) we'd lean on if reparent-wiring slips. A remote camera driver lets a second machine run the
-whole stack off the bench's cameras. All welcome, all off the critical path — and all three deciding items stood still
-**for the third review running**: the OT still doesn't draw, the bench is still at 2/12, the reparent line is still
-unwritten. The story is no longer *can we build it* — the team demonstrably can — it is **where the remaining hours go.**
-The next block's job is narrow and mostly at the bench: **merge the OT transport, finish teaching the poses, and wire
-the one reparent line** (or deliberately scope the verify moment onto the now-committed geometry predicate — measure the
-one board spacing and it's metrically real), then one real `ok=False` stops one real aspirate.
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **This cycle, for the first time in
+four reviews, new work landed *on* the critical path:** an **arm-FK → twin kinematics loop** (`core/kinematics.py` +
+`services/kinematics.py`, wired into `main.py`) writes each arm's live TCP into the twin at ~12 Hz, so the twin's arms
+finally move with the real hardware — the **motion→twin half** of the verify-loop coupling, and a genuine upgrade for the
+world map and the geometry verifiers (`tube_aligned`, `cap_removed`-separation). Real progress — but held back by the same
+gravity: it is the **laptop-doable half** (the one-line `reparent` that greens the *parent-based* verify climax is still
+unwritten, now with both the RLock substrate and the FK loop sitting ready beside it), and it is **uncommitted** — not in
+git, so a clean checkout still lacks it, a fresh instance of the commit gap the project already paid for. Meanwhile the two
+**room-only** deciding items — the OT serial merge (the pipette still doesn't draw) and pose-teaching (still 2/12) — stood
+still **for a fourth review running.** The story is no longer *can we build it* — the team demonstrably can, and is now
+building the right things — it is **whether the room-only work happens before the clock runs out.** The next block's job is
+narrow and mostly at the bench: **merge the OT transport, finish teaching the poses, and write + commit the one reparent
+line** (or deliberately scope the verify moment onto the now-committed geometry predicate — measure the one board spacing
+and it's metrically real), then one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T05:20Z — The critical path finally moved — but it was the laptop half, uncommitted, and the two room-only items stood still a fourth time.
+
+**Demo-readiness score: 7.0/10 for the *stated* PoC (verified uncap→aspirate) — held flat for a fourth straight review, but for a different reason than last time.** ~8.5/10 for the teleop + world-map + safe-motion show (up a touch: the twin's arms now move). The change this cycle is **on disk, not in git**: an arm-FK → twin kinematics loop (`core/kinematics.py`, `backend/app/services/kinematics.py`, `backend/tests/test_kinematics.py`, `main.py` wired to `kinematics.start()`) — all `??`/`M` in `git status`, uncommitted. It is the **first critical-path progress in four reviews**, and it is real: `update_arm_tcp` writes each connected arm's live TCP into `{arm}_tcp.local` at ~12 Hz, so the whole TCP→tool→`gripper_cam` chain tracks the real arm, with four clean unit tests (unit conversion, TCP-moves-in-world, gripper-cam-rides-the-TCP, unknown-arm-safe). The stated-PoC number still doesn't move because none of the three things that *decide* the demo became demonstrable: the OT still doesn't draw (`connect`/`_send` still `TODO`, re-verified in the working tree), `data/teach_poses.json` is unchanged at 2 of 12, and there are **still zero** `reparent` calls in production.
+
+**What genuinely moved — and this time it was on the critical path.** For four reviews the same three items have decided the demo and for three the team worked *beside* all of them. This cycle they wired the **motion→twin** half of Q-TWIN-COUPLING — the exact "arm motion never updates the twin" gap the team's own `INTEGRATION_PLAN.md` flagged. That is the right instinct and a genuine upgrade: the world map now shows the arms where they actually are, and the geometry verifiers (`tube_aligned` distance, `cap_removed` separation) become honest for the first time because the twin's arm pose is real, not seeded. A world-map frontend tab (`WorldMapTab.vue` + `api/worldmodel.ts`) landed alongside it, completing last cycle's server-side viz into a screen a judge can see.
+
+**The single biggest threat this cycle — allocation drift, fourth cycle, now with a precise signature.** The pattern is no longer just "perimeter over critical path" — it has sharpened into something more specific and more diagnostic: **the team keeps doing the laptop-doable version of the next deciding item and defers the version that can only be done in the room.** This cycle proves it cleanly. Of the three deciding items, the one that can be advanced at a laptop — the FK motion coupling — got done; the two that require the physical bench (the OT serial rig, Q-OT-1; teaching the remaining ten poses on two arms, Q-POSES-1) stood still a fourth time, and even within Q-TWIN-COUPLING the laptop half (FK) was done while the *other* laptop half (the one-line `reparent`) was not — despite three cycles of ready substrate now stacked behind it (RLock + `lock()`, and now the FK loop). Two compounding risks ride along: (1) the new critical-path code is **uncommitted**, re-exposing the Q-COMMIT-1 failure the project already suffered — real work that a clean checkout doesn't have; (2) the world frame the moving twin is measured against still rests on `BOARD_SPACING_M = 0.060`, a `TODO(measure)` — the one caliper reading, undone, because measuring it needs the bench. A hackathon dies exactly here: at hour 24 with a beautiful, well-tested, well-visualized system whose two headline beats never physically happened, because the room work always had a laptop task that could be done first.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged + hardened):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only. Perimeter (cameras, calibration code, viz, concurrency) is frozen. **New this cycle: freeze laptop-side critical-path polish too once the reparent line is in** — the twin coupling is good enough the moment `reparent` joins the FK loop; anything past that is displacement while two climaxes mime.
+- **KEEP:** everything committed — `_execute` + choreography, real verifiers + fusion, world-frame calibration + world-map viz, still/remote camera hedges, P0 agent loop, teach + safe-motion. **And commit the kinematics loop** — it is this cycle's keeper and must not be allowed to vanish.
+- **ADD, in strict priority (room-only first, now overdue by four cycles):** (1) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws — room-only (Q-OT-1). (2) **finish teaching the 12 poses on both arms** — room-only, stalled at 2/12, cannot be pre-staged (Q-POSES-1). (3) **write the one `wm.reparent(...)` line into `_execute` and commit it with the FK loop** — laptop, minutes, the tests spell it out — *or* formally commit to the geometry-only verify moment, which the now-moving twin makes more defensible than ever (Q-TWIN-COUPLING, Q-KIN-1). (4) **measure the 210/211 board spacing** (one caliper reading) so the world frame is metrically real (Q-CALIB-1). (5) then script **one deliberate failure injection** on whichever predicate is genuinely live (Q-DEMO-1).
+- **DECIDE (now urgent, carried):** pick the demo's hero verify moment *this block*. The moving twin + committed world frame make "geometry-only" the strongest it has ever been — if the reparent line won't happen, choose the geometry predicate now, measure the board, and rehearse to it.
+
+**Opposing view (steelman).** The fair read: the team is converging, not drifting. It finally attacked the critical path, picked the half of the twin coupling that unblocks the geometry verifiers *and* makes the world map truthful, and wrote it test-first — arguably a better use of a laptop cycle than a reparent line that greens a topology the OT no-op will undercut anyway. On that view the score should tick up, and the real problem is simply that the two room-only items require people to stop typing and stand at the bench — a scheduling fact, not an engineering one. The counter is unchanged and, at four cycles, close to decisive: everything the team has chosen shares one property — it can be done at a laptop, at any time, including after the demo — while the OT rig and pose-teaching cannot, and every cycle they slide is an hour subtracted from the only window in which they can happen. Held at 7.0 because the stated PoC is exactly as demonstrable as last cycle: the twin is truthier and more showable, the two climaxes no weaker and no stronger. But four cycles of runway have now been spent one merge, ten poses, and one committed line short of the thing that matters — and the next cycle spent the same way is the one where the clock, not the code, decides the demo.
 
 ### 2026-07-26T05:05Z — They committed the right perimeter item — and the three deciding items stood still a third time. The threat is now allocation, not capability.
 

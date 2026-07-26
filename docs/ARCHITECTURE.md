@@ -39,6 +39,7 @@ flowchart TB
       RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
     end
     WM[World model · twin · RLock-guarded<br/>core/worldmodel + services/twin · lock&#40;&#41; for atomic seq<br/>populated after /ws/calibrate · placeholder poses]:::be
+    KIN[Arm FK → twin · REAL on-disk · UNCOMMITTED<br/>core/kinematics + services/kinematics @12Hz<br/>live arm TCP → &#123;arm&#125;_tcp.local · moving parts move<br/>reparent-on-grasp still NOT wired]:::be
     BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
     REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
@@ -103,7 +104,8 @@ flowchart TB
   CAL --> WM
   RC --> WM
   POSE -->|pose + confidence| WM
-  DM -. kinematics FK .-> WM
+  DM -->|live arm TCP| KIN
+  KIN -->|"{arm}_tcp.local"| WM
   WM --> BV
   RC -. render-compare .-> BV
   DM -. torque / width / volume .-> BV
@@ -194,16 +196,21 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   their MJPEG endpoint — selected wholesale by `HZ_CAMERA_HOST` — so a second machine with no cameras plugged in runs the
   whole stack against the bench's viewpoints (frames enter at the driver layer, RGB-only so `has_depth` is False, honestly
   reports `live: True` and errors on a frozen stream; `backend/tests/test_camera_remote.py`).
-- **Twin↔physics coupling is not wired in the live path (verifier-critical):** `WorldModel.reparent()` and any
-  motion-driven twin pose update are exercised **only in tests** (`test_worldmodel.py`, `test_integration_loop.py`,
-  `test_verification.py`) — `grep` finds **zero** `reparent` calls in `backend/app/` or `core/` production code, and
-  neither `_execute`/`CHOREOGRAPHY` nor `twin_fusion` mutates parent links on manipulation. So on the real bench the
-  twin is a correct *topology over placeholder geometry*: the geometry-based verifiers (`cap_removed` separation,
-  `tube_aligned` distance) can still be driven by perception, but the **parent-based** predicates
-  (`grasp_secure` = tube parented to a `TOOL`, and `cap_removed`'s reparent clause) can never turn true from real
-  manipulation until arm-FK pose updates + manipulation-time reparenting are wired into the live loop
-  (Q-TWIN-COUPLING; surfaced in the team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the intended
-  coupling — it is designed, not yet built.
+- **Twin↔physics coupling — the motion half is now written (on disk, UNCOMMITTED); the reparent half is still not (verifier-critical):**
+  This cycle an **arm-FK → twin loop** landed on disk with tests but **uncommitted / untracked** (`?? core/kinematics.py`,
+  `?? backend/app/services/kinematics.py`, `?? backend/tests/test_kinematics.py`; `main.py` modified to `kinematics.start()`).
+  `core.kinematics.update_arm_tcp` writes each connected arm's live TCP pose straight into `{arm}_tcp.local` at ~12 Hz, so
+  the twin's TCP / tool / on-arm `gripper_cam` now track the real arm — the moving parts finally move (and the world map
+  reflects where the arm really is). That closes the **motion→twin** half of the coupling *in code*, though it (a) is not in
+  git, so a clean checkout still lacks it, and (b) no-ops until calibration has built the `{arm}_tcp` entities and the arms
+  are connected. **The reparent half is still unwritten:** `WorldModel.reparent()` is exercised **only in tests**
+  (`test_worldmodel.py`, `test_integration_loop.py`, `test_verification.py`) — `grep` still finds **zero** `reparent` calls in
+  `backend/app/` or `core/` production code, and `_run_act`'s `grip`/`release` never attach the tube to the tool (nor
+  detach the cap). So the **parent-based** predicates — `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s
+  reparent clause — still can **never turn true from a real grasp**; the geometry verifiers (`tube_aligned` distance,
+  `cap_removed` separation) are the ones the moving twin now genuinely helps (Q-TWIN-COUPLING, Q-KIN-1; surfaced in the
+  team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the full intended coupling — the FK half now exists
+  on disk, the reparent half does not.
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only
