@@ -116,36 +116,36 @@ const tone = (d: string) =>
 </template>
 
 <style scoped>
-.muted { color: #6b7a90; font-size: 12px; margin: 4px 0; }
+.muted { color: var(--zeon-muted); font-size: 12px; margin: 4px 0; }
 .note { margin-bottom: 8px; }
 .verdict { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.verdict.ok { color: #22c55e; }
-.verdict.bad { color: #ef4444; }
+.verdict.ok { color: var(--zeon-lime); }
+.verdict.bad { color: var(--zeon-red); }
 .section { margin: 12px 0 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
-           letter-spacing: 0.08em; color: #6b7a90; border-top: 1px solid #24365c; padding-top: 8px; }
+           letter-spacing: 0.08em; color: var(--zeon-muted); border-top: 1px solid var(--zeon-line); padding-top: 8px; }
 .row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7a90; flex: none; }
-.dot.on { background: #22c55e; }
-.name { font-size: 13px; color: #cad6ec; }
-.meta { font-size: 11px; color: #9fb0cc; }
-.meta.bad { color: #ef4444; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--zeon-muted); flex: none; }
+.dot.on { background: var(--zeon-lime); }
+.name { font-size: 13px; color: var(--zeon-text); }
+.meta { font-size: 11px; color: #b5bcb1; }
+.meta.bad { color: var(--zeon-red); }
 .ml { margin-left: auto; }
 .backend { margin-bottom: 8px; }
 .chip { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 4px;
-        border: 1px solid #24365c; color: #9fb0cc; text-transform: uppercase; }
-.chip.ok { border-color: #22c55e; color: #22c55e; }
-.chip.warn { border-color: #eab308; color: #eab308; }
-.chip.bad { border-color: #ef4444; color: #ef4444; }
+        border: 1px solid var(--zeon-line); color: #b5bcb1; text-transform: uppercase; }
+.chip.ok { border-color: var(--zeon-lime); color: var(--zeon-lime); }
+.chip.warn { border-color: var(--zeon-orange); color: var(--zeon-orange); }
+.chip.bad { border-color: var(--zeon-red); color: var(--zeon-red); }
 .detail { font-size: 11px; }
-.remedy { font-size: 11px; color: #9fb0cc; background: #101a2e; border-left: 2px solid #2e6bff;
+.remedy { font-size: 11px; color: #b5bcb1; background: var(--zeon-ink); border-left: 2px solid var(--zeon-blue);
           padding: 6px 8px; margin: 4px 0; border-radius: 0 4px 4px 0; }
 .snaprow { display: flex; gap: 8px; align-items: center; }
-.field { flex: 1; border-radius: 8px; border: 1px solid #24365c; background: #101a2e;
-         color: #cad6ec; padding: 6px 8px; font-size: 12px; outline: none; }
-.field:focus { border-color: #2e6bff; }
-.btn { border: 1px solid #24365c; background: #1e2c4a; color: #cad6ec; border-radius: 8px;
+.field { flex: 1; border-radius: 2px; border: 1px solid var(--zeon-line); background: var(--zeon-ink);
+         color: var(--zeon-text); padding: 6px 8px; font-size: 12px; outline: none; }
+.field:focus { border-color: var(--zeon-lime); }
+.btn { border: 1px solid var(--zeon-line); background: var(--zeon-surface-2); color: var(--zeon-text); border-radius: 2px;
        padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.btn-primary { border-color: #2e6bff; background: #2e6bff; color: #fff; }
+.btn-primary { border-color: var(--zeon-lime); background: var(--zeon-lime); color: #0a0c09; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .num { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 </style>

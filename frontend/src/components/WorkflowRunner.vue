@@ -1,39 +1,145 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useWorkflow } from "../composables/useWorkflow";
 
-const { events, running, run } = useWorkflow();
+const props = withDefaults(defineProps<{
+  available?: boolean;
+  unavailableReason?: string;
+}>(), {
+  available: true,
+  unavailableReason: "Connect the motion fleet before starting.",
+});
 
-const color = (phase: string) =>
-  phase === "passed" ? "#22c55e"
-  : phase === "failed" ? "#ef4444"
-  : phase === "retrying" ? "#f59e0b"
-  : "#38bdf8";
+const { events, running, run } = useWorkflow();
+const plan = [
+  { key: "uncap", number: "01", label: "Cooperative uncap", verifier: "CAP REMOVED" },
+  { key: "transport", number: "02", label: "Transport open tube", verifier: "GRASP SECURE" },
+  { key: "present", number: "03", label: "Present under tip", verifier: "TUBE ALIGNED" },
+  { key: "aspirate", number: "04", label: "Aspirate 100 μL", verifier: "VOLUME OK" },
+];
+
+const latest = computed(() => events.value[events.value.length - 1]);
+const failed = computed(() => events.value.some((event) => event.phase === "failed"));
+const passedSteps = computed(
+  () => plan.filter((step) =>
+    events.value.some((event) => event.step === step.key && event.phase === "passed"),
+  ).length,
+);
+const completed = computed(
+  () => latest.value?.phase === "done" && !failed.value && passedSteps.value === plan.length,
+);
+const progress = computed(() =>
+  completed.value ? 100 : Math.round((passedSteps.value / plan.length) * 100),
+);
+const preflight = computed(() =>
+  [...events.value].reverse().find((event) => event.step === "preflight"),
+);
+const headline = computed(() => {
+  if (failed.value) return "Workflow needs help";
+  if (completed.value) return "Sequence complete";
+  if (!latest.value) return "Physical run staged";
+  if (latest.value.phase === "verifying") return "Verifying " + latest.value.step;
+  if (latest.value.phase === "retrying") return "Retrying " + latest.value.step;
+  if (latest.value.step) return "Running " + latest.value.step;
+  return "Workflow active";
+});
+const helper = computed(() =>
+  latest.value?.verification?.detail
+    ?? latest.value?.detail
+    ?? (props.available
+      ? "Opening the workflow stream starts real motion after backend preflight."
+      : props.unavailableReason),
+);
+const recentEvents = computed(() => events.value.slice(-4).reverse());
+
+function stepState(step: string) {
+  const event = [...events.value].reverse().find((item) => item.step === step);
+  if (!event) return "waiting";
+  if (event.phase === "passed") return "complete";
+  if (event.phase === "failed") return "failed";
+  return ["started", "verifying", "retrying"].includes(event.phase) ? "active" : "waiting";
+}
 </script>
 
 <template>
-  <div class="runner">
-    <button :disabled="running" @click="run">
-      {{ running ? "Running…" : "Run uncap → aspirate" }}
-    </button>
-    <ul>
-      <li v-for="(e, i) in events" :key="i">
-        <span class="phase" :style="{ color: color(e.phase) }">{{ e.phase }}</span>
-        <span v-if="e.step" class="step">{{ e.step }}</span>
-        <span v-if="e.attempt" class="attempt">#{{ e.attempt }}</span>
-        <span v-if="e.verification" class="detail">{{ e.verification.detail }}</span>
-      </li>
-    </ul>
-  </div>
-</template>
+  <article class="zeon-panel protocol-panel">
+    <div class="panel-heading">
+      <div>
+        <span class="kicker">WORKFLOW · PHYSICAL</span>
+        <h2>Uncap <b>→</b> Aspirate</h2>
+      </div>
+      <span
+        class="run-state"
+        :class="{ live: running, failed, complete: completed }"
+      >
+        {{ failed ? "HELP" : completed ? "DONE" : running ? "RUNNING" : "STAGED" }}
+      </span>
+    </div>
 
-<style scoped>
-.runner { background: #14203a; border: 1px solid #24365c; border-radius: 12px; padding: 16px; color: #cad6ec; }
-button { background: #2e6bff; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
-button:disabled { opacity: 0.6; cursor: default; }
-ul { list-style: none; padding: 0; margin: 12px 0 0; font-size: 13px; }
-li { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid #1e2c4a; }
-.phase { font-weight: 700; text-transform: uppercase; min-width: 84px; }
-.step { font-weight: 600; }
-.attempt { color: #6b7a90; }
-.detail { color: #9fb0cc; margin-left: auto; }
-</style>
+    <div class="protocol-summary">
+      <div class="status-orb" :class="{ live: running, failed }" aria-hidden="true">
+        <span />
+      </div>
+      <div>
+        <strong>{{ headline }}</strong>
+        <p>{{ helper }}</p>
+      </div>
+    </div>
+
+    <div class="protocol-track" :aria-label="'Workflow progress ' + progress + '%'">
+      <span :style="{ width: progress + '%' }" />
+    </div>
+
+    <ol class="step-list">
+      <li
+        v-for="step in plan"
+        :key="step.key"
+        :class="stepState(step.key)"
+      >
+        <span>{{ step.number }}</span>
+        <span>
+          <strong>{{ step.label }}</strong>
+          <small>{{ step.verifier }}</small>
+        </span>
+        <i>
+          {{ stepState(step.key) === "complete"
+            ? "PASS"
+            : stepState(step.key) === "failed"
+              ? "FAIL"
+              : stepState(step.key) === "active"
+                ? "LIVE"
+                : "WAIT" }}
+        </i>
+      </li>
+    </ol>
+
+    <div v-if="events.length" class="workflow-events" aria-live="polite">
+      <p v-for="(event, index) in recentEvents" :key="index">
+        <span>{{ event.phase }}</span>
+        <strong>{{ event.step ?? "workflow" }}</strong>
+        <small>{{ event.verification?.detail ?? event.detail ?? event.capability ?? "" }}</small>
+      </p>
+    </div>
+
+    <div class="run-actions">
+      <button
+        class="execute-button"
+        :disabled="running || !available"
+        :title="available ? 'Starts the real backend workflow after preflight.' : unavailableReason"
+        @click="run"
+      >
+        <span>{{ completed || failed ? "Run workflow again" : "Run physical workflow" }}</span>
+        <b>↗</b>
+      </button>
+      <div class="preflight-state" :class="{ pass: preflight?.phase === 'passed', fail: preflight?.phase === 'failed' }">
+        <span>POSE PREFLIGHT</span>
+        <strong>{{ preflight?.phase?.toUpperCase() ?? "ON START" }}</strong>
+      </div>
+    </div>
+
+    <p class="motion-disclaimer">
+      No browser stop is shown: closing this stream cannot cancel hardware motion. Use the
+      device E-stops in Teach and OT-One controls.
+    </p>
+  </article>
+</template>

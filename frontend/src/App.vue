@@ -1,79 +1,144 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
-import InstrumentPanel from "./components/InstrumentPanel.vue";
-import WorkflowRunner from "./components/WorkflowRunner.vue";
-import OpentronsJog from "./components/OpentronsJog.vue";
+import FleetControl from "./components/FleetControl.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
-import CameraPreflight from "./components/CameraPreflight.vue";
 import CameraTab from "./components/cameras/CameraTab.vue";
 import WorldMapTab from "./components/worldmap/WorldMapTab.vue";
 
 type Tab = "fleet" | "teach" | "cameras" | "world";
 
 const { instruments, cameras, connected } = useFleet();
-// Remembered across reloads — during bring-up you live in one tab for hours.
-const tab = ref<Tab>((localStorage.getItem("tab") as Tab) ?? "fleet");
+const storedTab = localStorage.getItem("tab");
+const tab = ref<Tab>(
+  storedTab === "teach" || storedTab === "cameras" || storedTab === "world"
+    ? storedTab
+    : "fleet",
+);
+const connecting = ref(false);
+const connectMessage = ref("");
+const localTime = ref("");
+let clock: number | undefined;
+
+const alertCount = computed(
+  () => instruments.value.filter((device) => device.state !== "connected").length,
+);
+
+const tabTitle = computed(
+  () =>
+    ({
+      fleet: "Wet Lab Command",
+      teach: "Motion Teach",
+      cameras: "Vision Control",
+      world: "World Model",
+    })[tab.value],
+);
 
 function select(next: Tab) {
   tab.value = next;
   localStorage.setItem("tab", next);
 }
 
-// Jog pads for every liquid handler in the fleet. Driven off the fleet list
-// rather than a hard-coded id so it appears for whatever is actually connected.
-const liquidHandlers = computed(() =>
-  instruments.value.filter((d) => d.kind === "liquid_handler"),
-);
+async function connectFleet() {
+  connecting.value = true;
+  connectMessage.value = "";
+  try {
+    const results = await connectAll();
+    const failures = Object.entries(results).filter(([, result]) => result !== "connected");
+    connectMessage.value = failures.length
+      ? failures.map(([id, result]) => id + ": " + result).join(" · ")
+      : "Fleet connection commands completed.";
+  } catch (error) {
+    connectMessage.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    connecting.value = false;
+  }
+}
+
+function updateClock() {
+  localTime.value = new Date().toLocaleTimeString([], { hour12: false });
+}
+
+onMounted(() => {
+  updateClock();
+  clock = window.setInterval(updateClock, 1000);
+});
+
+onUnmounted(() => window.clearInterval(clock));
 </script>
 
 <template>
-  <div class="mx-auto max-w-[1400px] p-6">
-    <header class="flex items-center gap-3">
-      <h1 class="text-xl font-semibold text-white">hackathon-zeon · control</h1>
-      <span
-        class="text-xs uppercase tracking-wider"
-        :class="connected ? 'text-emerald-500' : 'text-deck-400'"
-      >
-        {{ connected ? "live" : "offline" }}
-      </span>
-      <button class="btn btn-primary ml-auto" @click="connectAll">Connect all</button>
-    </header>
+  <div class="zeon-shell">
+    <aside class="zeon-sidebar" aria-label="Primary navigation">
+      <div class="zeon-mark" aria-label="Zeon">Z</div>
 
-    <nav class="mt-5 flex gap-1 border-b border-deck-600">
-      <button
-        v-for="t in (['fleet', 'teach', 'cameras', 'world'] as Tab[])"
-        :key="t"
-        class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition-colors"
-        :class="
-          tab === t
-            ? 'border-blue-500 text-white'
-            : 'border-transparent text-deck-400 hover:text-deck-100'
-        "
-        @click="select(t)"
-      >
-        {{ t }}
-      </button>
-    </nav>
+      <nav class="zeon-nav">
+        <button
+          v-for="(item, index) in (['fleet', 'teach', 'cameras', 'world'] as Tab[])"
+          :key="item"
+          class="zeon-nav-item"
+          :class="{ active: tab === item }"
+          :aria-pressed="tab === item"
+          @click="select(item)"
+        >
+          <span>0{{ index + 1 }}</span>
+          <strong>{{ item }}</strong>
+        </button>
+      </nav>
 
-    <main class="mt-5">
-      <div v-if="tab === 'fleet'" class="grid items-start gap-5 lg:grid-cols-[2fr_1fr]">
-        <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
-        </section>
-        <aside class="grid gap-4">
-          <OpentronsJog v-for="d in liquidHandlers" :key="d.id" :device-id="d.id" />
-          <CameraPreflight />
-          <WorkflowRunner />
-        </aside>
+      <div class="zeon-local">
+        <span class="signal-bars" aria-hidden="true"><i /><i /><i /></span>
+        <span>LOCAL</span>
       </div>
+    </aside>
 
-      <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab,
-           and drops the MJPEG connections so the backend can release the cameras -->
-      <TeachPanel v-else-if="tab === 'teach'" />
-      <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
-      <WorldMapTab v-else-if="tab === 'world'" />
-    </main>
+    <div class="zeon-workspace">
+      <header class="zeon-topbar">
+        <div class="zeon-title">
+          <p>HACKATHON-ZEON · CONTROL</p>
+          <h1>{{ tabTitle }}</h1>
+        </div>
+
+        <div class="zeon-top-actions">
+          <div class="connection-chip" :class="{ live: connected }">
+            <span />
+            {{ connected ? "State stream live" : "Offline session" }}
+          </div>
+          <div class="alert-chip">
+            <span>{{ alertCount }}</span>
+            System alerts
+          </div>
+          <button
+            class="connect-button"
+            :disabled="connecting"
+            title="Actively connects hardware, clears arm faults, enables servos, and enters position mode."
+            @click="connectFleet"
+          >
+            {{ connecting ? "Connecting…" : "Connect all" }}
+          </button>
+          <div class="local-clock">
+            <span>LOCAL</span>
+            <strong>{{ localTime }}</strong>
+          </div>
+        </div>
+      </header>
+
+      <p v-if="connectMessage" class="connection-message">{{ connectMessage }}</p>
+
+      <main class="zeon-main">
+        <FleetControl
+          v-if="tab === 'fleet'"
+          :instruments="instruments"
+          :connected="connected"
+          @open-tab="select"
+        />
+        <!-- Keep inactive surfaces unmounted so browser subscribers, Teach polling,
+             and keyboard handlers stop; backend camera workers may stay warm. -->
+        <TeachPanel v-else-if="tab === 'teach'" />
+        <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
+        <WorldMapTab v-else-if="tab === 'world'" />
+      </main>
+    </div>
   </div>
 </template>

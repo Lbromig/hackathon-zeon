@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { onUnmounted, ref } from "vue";
 import { openSocket, type WorkflowEvent } from "../api/client";
 
 // Runs the uncap->aspirate workflow and collects streamed step/verify/retry events.
@@ -19,8 +19,11 @@ export function useWorkflow() {
 
   function stop() {
     ws?.close();
+    ws = null;
     running.value = false;
   }
+
+  onUnmounted(stop);
 
   return { events, running, run, stop };
 }

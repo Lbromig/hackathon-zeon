@@ -172,27 +172,27 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.jog { background: #111c30; border-radius: 12px; padding: 16px; color: #dbe4f0; }
+.jog { background: var(--zeon-surface); border: 1px solid var(--zeon-line); border-radius: 2px; padding: 16px; color: var(--zeon-text); }
 header { display: flex; align-items: center; gap: 12px; }
 header h2 { margin: 0; font-size: 16px; }
-.stop { margin-left: auto; background: #dc2626; color: #fff; border: 0; border-radius: 8px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
-.warn { font-size: 12px; color: #f0b429; background: #2a2110; border-radius: 8px; padding: 8px 10px; margin: 10px 0; }
+.stop { margin-left: auto; background: rgba(255, 100, 93, 0.1); color: var(--zeon-red); border: 1px solid var(--zeon-red); border-radius: 2px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
+.warn { font-size: 12px; color: var(--zeon-orange); background: rgba(255, 141, 98, 0.08); border: 1px solid rgba(255, 141, 98, 0.24); border-radius: 2px; padding: 8px 10px; margin: 10px 0; }
 .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
-.status { font-size: 12px; color: #6b7a90; }
-.status .on { color: #22c55e; }
-.status .bad { color: #f87171; font-weight: 600; }
+.status { font-size: 12px; color: var(--zeon-muted); }
+.status .on { color: var(--zeon-lime); }
+.status .bad { color: var(--zeon-red); font-weight: 600; }
 .status .depth { margin-left: auto; }
-.steps button { background: #1c2b45; color: #dbe4f0; border: 0; border-radius: 6px; padding: 5px 9px; cursor: pointer; font-size: 12px; }
-.steps button.sel { background: #2e6bff; color: #fff; }
+.steps button { background: var(--zeon-surface-2); color: var(--zeon-text); border: 1px solid var(--zeon-line); border-radius: 2px; padding: 5px 9px; cursor: pointer; font-size: 12px; }
+.steps button.sel { border-color: var(--zeon-lime); background: rgba(213, 255, 63, 0.1); color: var(--zeon-lime); }
 .steps button:disabled { opacity: 0.35; cursor: not-allowed; }
-.steps .home { margin-left: auto; background: #334867; }
+.steps .home { margin-left: auto; background: rgba(102, 128, 255, 0.12); border-color: rgba(102, 128, 255, 0.4); }
 .axis .lbl { width: 22px; font-weight: 700; }
-.axis button { background: #1c2b45; color: #dbe4f0; border: 0; border-radius: 6px; padding: 7px 14px; min-width: 66px; cursor: pointer; }
+.axis button { background: var(--zeon-surface-2); color: var(--zeon-text); border: 1px solid var(--zeon-line); border-radius: 2px; padding: 7px 14px; min-width: 66px; cursor: pointer; }
 .axis button:disabled { opacity: 0.35; cursor: not-allowed; }
-.axis .hint { font-size: 11px; color: #6b7a90; }
-.axis.disabled .lbl { color: #6b7a90; }
-.log { list-style: none; margin: 12px 0 0; padding: 8px; max-height: 150px; overflow-y: auto; background: #0b1220; border-radius: 8px; font-size: 11px; font-family: ui-monospace, monospace; }
-.log li { padding: 2px 0; color: #9fb0c8; }
-.log li.bad { color: #f87171; }
-.log .t { color: #4b5b73; margin-right: 6px; }
+.axis .hint { font-size: 11px; color: var(--zeon-muted); }
+.axis.disabled .lbl { color: var(--zeon-muted); }
+.log { list-style: none; margin: 12px 0 0; padding: 8px; max-height: 150px; overflow-y: auto; background: var(--zeon-ink); border: 1px solid var(--zeon-line); border-radius: 2px; font-size: 11px; font-family: ui-monospace, monospace; }
+.log li { padding: 2px 0; color: #aeb5aa; }
+.log li.bad { color: var(--zeon-red); }
+.log .t { color: #515851; margin-right: 6px; }
 </style>

@@ -14,9 +14,17 @@ export interface WorkflowEvent {
   step?: string;
   phase: string; // started | verifying | passed | retrying | failed | done
   attempt?: number;
+  detail?: string;
+  problems?: string[];
   devices?: string[];
   capability?: string;
-  verification?: { ok: boolean; confidence: number; detail: string };
+  error?: "execution" | "verification" | string;
+  verification?: {
+    ok: boolean;
+    confidence: number;
+    detail: string;
+    data?: Record<string, unknown>;
+  };
 }
 
 export async function listInstruments(): Promise<DeviceSummary[]> {
