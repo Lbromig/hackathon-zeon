@@ -273,7 +273,7 @@ def configure(*, path: str, level: str = "INFO", console: bool = True,
         root.setLevel(getattr(logging, level.upper(), logging.INFO))
         # uvicorn/asyncio access logs are noise in a bench log and would dominate the
         # per-action view. They stay reachable at DEBUG.
-        for noisy in ("uvicorn.access", "asyncio", "multipart"):
+        for noisy in ("uvicorn.access", "asyncio", "multipart", "httpx", "httpcore"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
         _configured = True
         return path

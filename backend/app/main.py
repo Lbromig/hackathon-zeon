@@ -18,7 +18,7 @@ from core.config import settings
 from core.obs import configure as configure_logging
 from core.obs import get_logger
 
-from .api import cameras, instruments, teach
+from .api import cameras, instruments, logs, teach
 from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
@@ -89,6 +89,7 @@ app.include_router(instruments.router)
 app.include_router(instruments.state_router)
 app.include_router(teach.router)
 app.include_router(cameras.router)
+app.include_router(logs.router)
 
 
 @app.get("/api/health")
