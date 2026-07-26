@@ -26,9 +26,10 @@ flowchart TB
       POL[Policy · brain<br/>RuleBased · Claude-gated]:::be
       TB[Toolbox<br/>skills · twin · verify]:::be
     end
-    VER[Verify agents · STUBS<br/>core/verification · return ok=True]:::be
-    subgraph PER[Perception · fiducials REAL · learned stack PLANNED]
+    VER[Verify agents · REAL twin-query + telemetry fusion<br/>core/verification · cap_removed/grasp_secure<br/>tube_aligned/aspiration_ok · on-disk WIP]:::be
+    subgraph PER[Perception · fiducials + fusion REAL · learned stack PLANNED]
       FID[Fiducials · REAL<br/>core/perception/fiducials.py<br/>AprilTag tag36h11 + 6-DoF pose]:::be
+      FUSE[TwinFuser · REAL on-disk WIP<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
       CAL[Calibration pipeline<br/>runs + publishes twin<br/>hand-eye/world-frame/scan · TODO]:::be
       DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
@@ -83,7 +84,9 @@ flowchart TB
 
   %% perception → twin → verify → recover loop
   CAMd -. frames .-> FID
-  FID -->|marker pose → corrective world pose| WM
+  FID -->|detections| FUSE
+  FUSE -->|corrective world xyz| WM
+  WM -. camera world-pose .-> FUSE
   CAL --> FID
   CAMd -. frames .-> DET
   DET --> POSE
@@ -126,11 +129,21 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   RealSense RGB-D driver (`drivers/camera/realsense.py`) exists on disk (uncommitted WIP) covering all
   three fixed viewpoints. The **workflow orchestrator streams** over `/ws/workflow` with a
   `/api/workflow/plan` endpoint, and the **teach layer** (jog / move-to / pose library) is hardened and
-  tested (`backend/tests/test_teach_api.py`).
-- **Stub / no-op:** every `core/verification` agent returns `ok=True, confidence=0.0` — so the
-  verify→retry loop cannot currently fail. The hero workflow's `_execute` (also reused by the agent
+  tested (`backend/tests/test_teach_api.py`). **Verification agents are now real (on-disk WIP):** all four
+  `core/verification/agents.py` agents run genuine twin-query predicates fused with driver telemetry —
+  `cap_removed` (cap reparented off the tube + separation > 20 mm, +torque-drop bonus), `grasp_secure`
+  (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to pipette nozzle < 15 mm),
+  `aspiration_ok` (positive aspirated volume from telemetry or the nozzle entity) — each returning graded
+  `ok`/`confidence`/`detail`, degrading (lower confidence) rather than crashing on a missing signal, and
+  tested in `backend/tests/test_verification.py`. A **perception→twin fusion loop** now feeds them:
+  `TwinFuser` (`core/perception/fusion.py`) composes each detection with the camera's own twin pose into a
+  corrective world position (position-only, with a confidence + jump gate), driven by the background loop
+  `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), tested in
+  `backend/tests/test_fusion.py`.
+- **Stub / no-op:** the hero workflow's `_execute` (also reused by the agent
   toolbox's `Skill.run`) has its driver calls commented out, so both the hardcoded chain and the agent
-  loop "pass" against empty actions and no autonomous motion occurs. Calibration's `hand_eye` /
+  loop "pass" against empty actions and no autonomous motion occurs — so the now-real verifiers gate twin
+  geometry, not a physical result, until `_execute` is wired. Calibration's `hand_eye` /
   `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are placeholder (the
   `PlaceholderScanAdapter`); `MARKER_MAP` now uses **real** printed stock ids (`tag36h11` 180–224) but
   keeps `identity()` marker→entity offsets (0.02 placeholder) — real alignment still needs measured
