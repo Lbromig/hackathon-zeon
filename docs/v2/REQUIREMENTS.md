@@ -464,6 +464,67 @@ machinery shrink to "intrinsics per camera", which R-CAM-9 provides anyway. Net 
 
 ---
 
+## 17.7 Amendment 2 — corrections forced by the camera-identity work
+
+`core/cameras.py` (committed `2086dd8`, recorded from `scripts/identify_cameras.py`) is now the
+**source of truth** for which physical camera is which viewpoint. Two of its measured facts contradict
+requirements written earlier in this document. The measurements win.
+
+### C1 — "Colour by default" is not achievable on three of the four cameras
+
+R-CAM-14/16 assumed each physical unit exposes both a colour and an IR node, so slot resolution could
+"prefer the colour node". Measured reality: **macOS exposes exactly one UVC function per unit**, and it
+is the **IR/depth** function for three of the four:
+
+| slot | model | node macOS exposes | frames |
+|---|---|---|---|
+| `overview_cam` | D435i | **IR/depth** | mono IR + projector dots |
+| `handover_cam` | D435 | **RGB** | true colour — *the only colour feed on the bench* |
+| `gripper_cam` (right arm) | D405 | **IR/depth** | mono IR |
+| `gripper_left_cam` (left arm) | D405 | **IR/depth** | mono IR |
+
+So the IR frames are **not** a misconfigured index, as Amendment 1 §17.5 concluded — that diagnosis was
+wrong. There is no colour node to prefer on a D405 here.
+
+| ID | Pri | Requirement (replaces R-CAM-14/16) |
+|---|---|---|
+| **R-CAM-14a** | M | Colour is **requested** by default and the **achieved stream** (`color` / `ir` / `unknown`) is detected, reported per camera, and shown in the UI. A slot delivering IR when colour was requested is a **warning**, not a failure. |
+| **R-CAM-16a** | M | Where a unit genuinely exposes both nodes, prefer colour. Where it does not, **serve IR and say so** — never claim colour. |
+| **R-CAM-18** | S | Detection must work on IR frames, because on this bench it must. AprilTags **are** detectable in IR (`core/cameras.py` records this, and the tuned detector found tags in IR frames). The projector dot pattern is a known artefact, not dirt. |
+| **R-CAM-19** | C | *Later phase, if colour on the D405s is wanted:* route those slots through `librealsense`, which can select the RGB stream — at the cost of needing root on macOS, which is the documented reason the bench moved to UVC. `scripts/build_pyrealsense2_macos.sh` exists. This is the only route to colour on those units; there is no free option. |
+
+**Consequence for the servo pair:** one colour view (`handover_cam`) and one IR view (the right-arm
+D405). The vision slice must not assume colour on both.
+
+### C2 — Which gripper camera is the right arm: unresolved conflict
+
+| Source | Claim |
+|---|---|
+| `core/cameras.py` (measured, `identify_cameras.py`) | `gripper_cam` = **right** arm · `gripper_left_cam` = **left** arm |
+| Operator instruction 2026-07-26 | treat `gripper_left_cam/20260726T065209_454Z` as "**the right arm gripper**" |
+| `core/config.py:63` comment (pre-existing) | `gripper_cam` = right arm |
+
+Two of three say `gripper_cam` is the right arm. **Proceeding on `core/cameras.py` as authoritative**,
+because it is measured output rather than recollection — but this is flagged, not settled:
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-CAM-20** | M | The right-arm/left-arm assignment must be **verified by observation before the servo loop is trusted**: command a small known motion on the right arm and confirm which feed moves. Until verified, treat the assignment as unconfirmed in the readiness panel. |
+
+This is exactly the class of error R-CAM-6 exists to eliminate, and it is worth noting that it survived
+*into* the identity work: pinning a camera to a stable port does not tell you which arm that port is
+bolted to. The `backend/tests/fixtures/vision/README.md` labels are affected and are marked
+provisional.
+
+### C3 — A device may override the requested resolution
+
+The D435 RGB module **delivers 1920×1080 even when 1280×720 is requested.** This confirms R-CAM-12: the
+**achieved** mode must be read back and reported, never assumed. It also means "1280×720 default" is a
+*request*, and a camera legitimately running at a different mode is not an error — but any
+resolution-bound calibration must key on the achieved mode (R-CAM-9/13).
+
+---
+
 ## 18. Acceptance criteria
 
 The deliverable is accepted when, **with no hardware attached**:
