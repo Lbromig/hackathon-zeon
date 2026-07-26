@@ -394,6 +394,10 @@ class OpentronsDriver(LiquidHandlerDriver):
         if self._reference_lost:
             raise DriverError("reference lost after an emergency stop; home() again")
 
+        # Time the whole path could legitimately take, plus headroom. Used as the
+        # ack budget for every command in it (see the note on the G0 below).
+        path_budget = max(MOTION_TIMEOUT, total * 60.0 / feedrate + 30.0)
+
         self._send(G_STEPPERS_ON)
         try:
             self._send(G_RELATIVE)
@@ -414,10 +418,17 @@ class OpentronsDriver(LiquidHandlerDriver):
                 else:
                     axis, delta = entry
                     words = f"{axis.upper()}{delta:.2f}"
-                self._send(f"{G_MOVE} {words} F{feedrate:.0f}", motion=True)
+                # The ack budget has to cover the whole queued path, not one move.
+                # G0 normally acks in ~1 ms because it acks on QUEUE, but once the
+                # planner buffer fills Smoothieware stops reading serial until
+                # earlier moves drain — so a later G0's ack can arrive many
+                # seconds late. A flat budget aborts a perfectly healthy path and
+                # fires the estop mid-sweep, which is exactly what it did at
+                # F800 over 140 mm legs.
+                self._send(f"{G_MOVE} {words} F{feedrate:.0f}",
+                           motion=True, timeout=path_budget)
             # One drain for the whole path. Its ack is the real "arrived".
-            self._send(G_WAIT_MOVES, motion=True,
-                       timeout=max(MOTION_TIMEOUT, total * 60.0 / feedrate + 10.0))
+            self._send(G_WAIT_MOVES, motion=True, timeout=path_budget)
         finally:
             try:
                 self._send(G_ABSOLUTE)

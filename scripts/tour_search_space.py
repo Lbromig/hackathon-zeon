@@ -45,7 +45,8 @@ def legs(dx: float, dy: float) -> list[tuple[str, float]]:
     return [("X", dx), ("Y", dy), ("X", -dx), ("Y", -dy)]
 
 
-def sweep_legs(dx: float, dy: float) -> list[dict[str, float]]:
+def sweep_legs(dx: float, dy: float, dz: float = 0.0,
+               da: float = 0.0) -> list[dict[str, float]]:
     """Full-travel sweeps: six LONG legs, closed, almost no vertices.
 
     The polygon shapes trade leg length for corner angle — 16 sides means 16
@@ -58,13 +59,19 @@ def sweep_legs(dx: float, dy: float) -> list[dict[str, float]]:
     dx/dy here are FULL travel, not half-widths. Legs: X out/back, Y out/back,
     then a diagonal out/back. Sums to zero on both axes.
     """
+    def leg(**axes: float) -> dict[str, float]:
+        return {a: v for a, v in axes.items() if v}
+
     return [
-        {"X": dx},
-        {"X": -dx},
-        {"Y": dy},
-        {"Y": -dy},
-        {"X": dx, "Y": dy},
-        {"X": -dx, "Y": -dy},
+        # Each pair is out-and-back, so every axis closes on zero. Z and A ride
+        # along with the gantry legs so all four move in one coordinated G0
+        # rather than taking turns.
+        leg(X=dx, Z=dz),
+        leg(X=-dx, Z=-dz),
+        leg(Y=dy, A=da),
+        leg(Y=-dy, A=-da),
+        leg(X=dx, Y=dy, Z=dz, A=da),
+        leg(X=-dx, Y=-dy, Z=-dz, A=-da),
     ]
 
 
@@ -164,6 +171,8 @@ def main() -> int:
     ap.add_argument("--accel", type=float, default=None,
                     help="acceleration in mm/s^2 via M204 (board config is 250). "
                          "Raise cautiously: no closed loop, so too high skips steps.")
+    ap.add_argument("--a", type=float, default=0.0,
+                    help="A-axis (right mount) travel per sweep leg, mm. 0 = off.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -176,7 +185,7 @@ def main() -> int:
     print("  the loop is CLOSED: it returns to the exact starting point.\n")
 
     if args.dry_run:
-        preview = (sweep_legs(args.x, args.y) if args.shape == 'sweep'
+        preview = (sweep_legs(args.x, args.y, args.z, args.a) if args.shape == 'sweep'
                    else legs(args.x, args.y) if args.shape == 'rect'
                    else helix_legs(args.x, args.y, args.z, args.sides) if args.z
                    else smooth_legs(args.x, args.y, args.sides))
@@ -202,7 +211,7 @@ def main() -> int:
         d._send(f"M204 S{args.accel:.0f}")
     print("*** MOTION. WATCH IT. Ctrl-C cuts motion. ***\n")
 
-    travelled = {"X": 0.0, "Y": 0.0, "Z": 0.0}
+    travelled = {"X": 0.0, "Y": 0.0, "Z": 0.0, "A": 0.0}
     slow = 0
     try:
         # One jog_path per lap: all four legs are queued back-to-back and the
@@ -213,7 +222,7 @@ def main() -> int:
         # EVERY lap is queued in ONE call. Splitting per lap drains the planner
         # between laps, which is a full stop the operator sees as a hitch.
         if args.shape == "sweep":
-            one_lap: list = sweep_legs(args.x, args.y)
+            one_lap: list = sweep_legs(args.x, args.y, args.z, args.a)
         elif args.shape == "rect":
             one_lap = legs(args.x, args.y)
         elif args.z:
