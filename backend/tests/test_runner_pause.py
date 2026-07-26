@@ -426,9 +426,16 @@ def test_a_handler_returning_the_wrong_outputs_model_is_a_failure_not_a_wrong_ro
     assert error.type == "TypeError" and "LHMoveOutputs" in error.message
 
 
-def test_a_missing_handler_reports_that_the_step_cannot_run(handlers, runner_factory):
+def test_a_missing_handler_reports_that_the_step_cannot_run(monkeypatch, runner_factory):
     """R-ENG-17. Pre-flight normally catches this; with pre-flight skipped the wrapper must
-    still refuse rather than treat "nothing to call" as "nothing to do"."""
+    still refuse rather than treat "nothing to call" as "nothing to do".
+
+    The absent handler is *removed* here rather than borrowed from an unimplemented slice.
+    This test used to name `camera.search_code`, which was unhandled at the time — so it
+    started failing the moment that slice landed, testing the state of the codebase instead of
+    the wrapper's behaviour. Every action kind now has a handler, so there is no gap to borrow.
+    """
+    monkeypatch.delitem(A._HANDLERS, "camera.search_code")
     runner = runner_factory([{"kind": "camera.search_code", "device": "handover_cam",
                               "marker_id": 225}])
     runner.run_to_completion(timeout=5.0, skip_preflight=True)
@@ -666,12 +673,16 @@ def test_a_reconnecting_client_reconstructs_full_state_from_the_snapshot_alone(
 
 
 def test_every_event_carries_a_monotonic_sequence_number(handlers, runner_factory):
+    """Strictly increasing and unique — but **not** starting at 1, because the sequence is
+    process-wide rather than per run (B6). One socket carries every run, so a per-run counter
+    made the client's documented "drop `seq <= last`" rule discard a whole second run. What a
+    client keys a run on is `run_id`, which is on every event; see `test_event_sequence.py`."""
     handlers("lh.move_relative", lambda a, c: _lh_outputs(a))
     runner = runner_factory([_move(0), _move(1)])
     assert runner.run_to_completion(timeout=5.0) == "complete"
     seqs = [e.seq for e in runner.sink.events()]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
-    assert seqs[0] == 1
+    assert seqs[0] >= 1 and seqs[-1] == runner.sink.last_seq
     assert all(e.run_id == runner.run_id and e.ts for e in runner.sink.events())
 
 

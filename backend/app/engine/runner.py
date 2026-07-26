@@ -55,10 +55,10 @@ from .actions import (ActionBase, ActionResult, CheckpointOutputs, ErrorInfo, Lo
                       LoopOutputs, OUTPUTS_FOR_KIND, OutputsBase, Warning_, handler_for)
 from .blackboard import PER_CAMERA_SLOTS, Blackboard
 from .context import ActionAborted, ActionContext, DeviceAccess
-from .events import (ActionFinished, ActionLog, ActionStarted, EventBase, EventSequence,
-                     InjectRejected, LoopIteration, PlanReplaced, ReadinessChanged,
-                     ReadinessState, RunFinished, RunPaused, RunResumed, RunSnapshot,
-                     RunStarted, RunState, RunStateChanged)
+from .events import (PROCESS_SEQUENCE, ActionFinished, ActionLog, ActionStarted, EventBase,
+                     EventSequence, InjectRejected, LoopIteration, PlanReplaced,
+                     ReadinessChanged, ReadinessState, RunFinished, RunPaused, RunResumed,
+                     RunSnapshot, RunStarted, RunState, RunStateChanged)
 from .plan import (ENGINE_KINDS, InjectRefused, MaterializationCapped, Plan, PreflightReport,
                    UnknownActionError, params_of)
 
@@ -177,6 +177,12 @@ class EventSink:
     re-fetches the snapshot instead — which is why the snapshot exists and why the buffer is
     allowed to be bounded.
 
+    The sequence defaults to the **process-wide** :data:`PROCESS_SEQUENCE`, so a second run's
+    first event does not collide with a first run's numbering and the client's documented
+    "drop `seq <= last`" rule is correct without any per-run bookkeeping (B6). The buffer is
+    still per sink, so `since()` replays this run only. Pass an explicit `sequence` for an
+    isolated counter.
+
     **Subscribers are called on the emitting thread**, which is usually the worker. An asyncio
     consumer must therefore hop the loop itself (`loop.call_soon_threadsafe`); doing that here
     would tie this module to an event loop it deliberately does not know about. Since the API
@@ -187,7 +193,7 @@ class EventSink:
     def __init__(self, *, run_id: str = "", sequence: EventSequence | None = None,
                  keep: int = 2000) -> None:
         self.run_id = run_id
-        self._sequence = sequence or EventSequence()
+        self._sequence = sequence or PROCESS_SEQUENCE
         self._keep = keep
         self._lock = threading.Lock()
         self._events: list[EventBase] = []

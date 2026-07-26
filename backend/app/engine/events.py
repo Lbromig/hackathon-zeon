@@ -45,8 +45,8 @@ class EventSequence:
     bare `+= 1` is a duplicated `seq`, and a duplicated `seq` silently defeats the gap
     detection this whole mechanism exists for.
 
-    Per run, not per process: a client's "last seen" is only meaningful within one run, and a
-    process-global counter would make a fresh run look like it had already missed events.
+    **Per process, not per run** — see :data:`PROCESS_SEQUENCE`. This class stays
+    independently constructible so a test can have an isolated counter starting at 1.
     """
 
     def __init__(self, start: int = 0) -> None:
@@ -58,11 +58,41 @@ class EventSequence:
             return next(self._counter)
 
 
+PROCESS_SEQUENCE = EventSequence()
+"""The one sequence every run in this process draws from, and the reason is the client's rule.
+
+`seq` used to restart at 1 for each run, on the grounds that a client's "last seen" is only
+meaningful within one run. It is not: **one websocket carries every run**, so the documented
+reconnect rule — "drop any event with `seq <= last`" — silently discarded the whole of a second
+run. Measured: 117 events for a 4-iteration handover, so an operator who ran the plan and then
+ran it again saw run B blanked up to roughly the decap while both arms moved, showing a frozen
+plan and a stale run id. The design's own rule caused it.
+
+Making the counter process-wide makes that rule unconditionally correct instead of correct only
+if the client also implements a per-`run_id` reset — a rule a client can get wrong in a way that
+looks like a working page. `run_id` is on every event and on the snapshot, so telling two runs
+apart stays trivial; it is just no longer load-bearing for *ordering*.
+
+The cost is that a fresh run's first `seq` is not 1. Nothing needs it to be: a client always
+starts from `RunSnapshot.seq` (which is read before the rows, deliberately) and never from 0, and
+`EventSink.since` is per-sink so replay is still per run.
+"""
+
+
 class EventBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    seq: int
-    """Monotonic within the run, starting at 1. A client that sees `seq` jump has missed
-    events and must re-fetch the snapshot rather than render a partial plan (D24)."""
+    seq: int = Field(description=(
+        "Strictly increasing per process, across runs, and the sole ordering authority — "
+        "arrival order is not delivery order, because the API thread emits as well as the "
+        "worker. A client keeps ONE last_seq for the socket and drops any event with "
+        "seq <= last_seq: every state-carrying event is absolute, so a re-apply is a no-op "
+        "while a skip is not. A new run continues the same sequence rather than restarting "
+        "at 1. A change of run_id means re-fetch the snapshot to rebuild plan state; it never "
+        "means reset last_seq. A gap means re-fetch the snapshot rather than render a partial "
+        "plan (D24)."))
+    """Monotonic per process (see :data:`PROCESS_SEQUENCE`), not per run. A client that sees
+    `seq` jump has missed events and must re-fetch the snapshot rather than render a partial
+    plan (D24)."""
     ts: str = ""
     run_id: str = ""
 
@@ -239,7 +269,9 @@ class RunSnapshot(BaseModel):
 
     `seq` is the sequence number this snapshot is current as of. A client applies subsequent
     events with a higher `seq` and discards lower ones, which is what makes the
-    snapshot-then-stream handover race-free.
+    snapshot-then-stream handover race-free. It is a **process** sequence (see
+    :data:`PROCESS_SEQUENCE`), so a client seeds `last_seq` from here on every reconnect and on
+    every `run_id` change and never resets it to 0.
     """
     model_config = ConfigDict(extra="forbid")
     seq: int = 0
