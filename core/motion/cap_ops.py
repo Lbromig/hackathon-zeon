@@ -357,11 +357,17 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
     bite_no, rotated = 0, 0.0
 
     lifted = 0.0
+    # Which turns are unwinds is a question about the *jaws*, not about the sign of the
+    # number. With a negative `unscrew_sign` the gripped turn is the negative one, so keying
+    # off `degrees < 0` fired `on_bite` before the release — jaws closed, wrist wound, cap
+    # half off — which is exactly the state the engine's checkpoint must never pause in.
+    holding = True
     for action, degrees in steps:
         if action == "turn":
             turn_tool_axis(arm, degrees, cfg.joint_speed)
         elif action == "open":
             arm.release()
+            holding = False
         elif action == "close":
             # Follow the cap up its thread before taking hold of it again. Done here, with
             # the jaws still open, so the arm never lifts while gripping the cap.
@@ -370,15 +376,16 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
                 if on_step:
                     on_step(f"lift +{cfg.lift_per_regrip_mm:g} mm (jaws open)")
             arm.grip(width=cfg.grip_counts)
+            holding = True
         if cfg.settle_s:
             time.sleep(cfg.settle_s)
         if on_step:
             on_step(f"{action} {degrees:+.0f}°" if action == "turn" else action)
-        # The unwind is the last motion of a bite: at this point the jaws are open and
-        # the wrist is back where the bite started.
-        if action == "turn" and degrees < 0:
+        # The unwind is the last motion of a bite, and the only turn taken with the jaws
+        # open: at this point the wrist is back where the bite started and the cap is loose.
+        if action == "turn" and not holding:
             bite_no += 1
-            rotated += -degrees
+            rotated += abs(degrees)
             if on_bite:
                 on_bite(bite_no, bites, rotated)
 
