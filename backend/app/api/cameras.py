@@ -15,6 +15,8 @@ from fastapi.responses import Response, StreamingResponse
 
 from drivers import CameraDriver, ConnectionState, InstrumentKind
 
+from core.perception.rs_devices import enumerate_devices
+
 from ..schemas import CameraDetections, CameraDevices, CameraSummary, RealSenseDevice
 from ..services.camera_hub import camera_hub, mjpeg_stream
 from ..services.device_manager import device_manager
@@ -65,32 +67,28 @@ def list_cameras() -> list[CameraSummary]:
 def devices() -> CameraDevices:
     """Attached RealSense units, for filling in CAM_GRIPPER / CAM_OVERVIEW / CAM_HANDOVER.
 
-    Enumeration is a live SDK call and fails in ordinary ways (SDK absent, no USB
-    permission, nothing plugged in) — those are reported as `error`, not raised,
-    because "no cameras yet" is the normal state during bring-up.
+    Enumeration runs in a child process. It used to call the SDK directly inside a
+    try/except, which cannot work on macOS: when librealsense cannot claim a
+    device's interfaces it faults rather than raising, and a SIGSEGV is not an
+    exception, so the guard was decorative and the whole backend died when the
+    frontend asked which cameras were attached. See core/perception/rs_devices.
     """
-    try:
-        import pyrealsense2 as rs
-    except Exception as e:
-        return CameraDevices(error=f"pyrealsense2 unavailable: {e}")
-
     pinned = {
         str(d.config.get("serial")): d.device_id
         for d in device_manager.all() if d.config.get("serial")
     }
-    try:
-        found = []
-        for dev in rs.context().query_devices():
-            serial = dev.get_info(rs.camera_info.serial_number)
-            found.append(RealSenseDevice(
-                serial=serial,
-                name=dev.get_info(rs.camera_info.name),
-                firmware=dev.get_info(rs.camera_info.firmware_version),
-                assigned_to=pinned.get(serial),
-            ))
-        return CameraDevices(devices=found)
-    except Exception as e:
-        return CameraDevices(error=str(e))
+    result = enumerate_devices()
+    if not result.ok:
+        return CameraDevices(error=result.error)
+    return CameraDevices(devices=[
+        RealSenseDevice(
+            serial=d.serial,
+            name=d.name,
+            firmware=d.firmware,
+            assigned_to=pinned.get(d.serial),
+        )
+        for d in result.devices
+    ])
 
 
 @router.post("/{device_id}/connect", response_model=dict)
