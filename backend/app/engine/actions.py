@@ -497,6 +497,17 @@ class MoveOutputs(OutputsBase):
     resolved_speed: dict[str, Any] = Field(default_factory=dict)
     """From `core.speeds.Speeds.as_dict()`: tier, linear, angular, clamped. The log records
     what was **commanded**, not what was asked for — the only version worth having after."""
+    path: Literal["joint_replay", "joint_replay+cartesian_offset", "cartesian", ""] = ""
+    """Which motion path was taken, because the three are not equally trustworthy.
+
+    `joint_replay` reproduces a configuration the arm physically reached, so no IK branch was
+    guessed at. `cartesian` solved IK and could in principle have picked a different
+    configuration. `joint_replay+cartesian_offset` replays the taught joints and then moves
+    the requested offset — only those millimetres went through IK.
+
+    Worth a field of its own rather than a note: when a move ends up somewhere unexpected,
+    which path produced it is the first question, and four of this workflow's moves are long
+    enough (298-430 mm) that the answer decides whether to trust the pose at all."""
 
 
 class GripperOutputs(OutputsBase):
@@ -515,6 +526,15 @@ class DecapOutputs(OutputsBase):
     """Must be ~0. Reported rather than asserted silently, so a ratchet that drifted shows up
     in the record instead of in the cabling."""
     preflight_ok: bool = False
+    wrist_rewound_before_decap: bool = False
+    """Whether the wrist had to be unwound before the ratchet could start.
+
+    The bench found J6 already wound far enough that a fresh 360° would have reached 484°, so
+    the handler unwinds first. That is a real change to what the arm did and belongs in the
+    record, not only in a warning — a decap that needed a rewind started from a different
+    wrist configuration than one that did not."""
+    rewind_deg: float = 0.0
+    """How far the wrist was unwound before starting. 0 when no rewind was needed."""
 
 
 class TraverseOutputs(OutputsBase):
