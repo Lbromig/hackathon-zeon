@@ -1,0 +1,14 @@
+{
+  "confirmed_mm": {
+    "X": 330.0,
+    "Y": 95.0,
+    "Z": 12.0,
+    "A": 6.0
+  },
+  "rejected_mm": {
+    "X": 350.0
+  },
+  "notes": [
+    "X: operator confirmed a dead end at ~350 mm from the homed end; 330 kept as usable with margin. X homes to ONE end, so +X is the only direction with travel and full range is 0..~350."
+  ]
+}

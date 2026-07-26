@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hackathon-zeon · proof reel</title>
+<style>
+:root{
+  --bg:#06080d; --panel:#0b1017; --grid:#111a26; --line:#1b2634;
+  --ink:#e9eef6; --dim:#9fb0c6; --mute:#68788e;
+  --blue:#4c8dff; --cyan:#5ad2f0; --amber:#f0a828; --red:#e5484d; --green:#3dd68c;
+  --mono:ui-monospace,'SF Mono',Menlo,monospace;
+  --sans:-apple-system,'SF Pro Display',Inter,system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
+#stage{
+  position:absolute;top:50%;left:50%;width:1920px;height:1080px;
+  transform-origin:center center;background:var(--bg);color:var(--ink);
+  overflow:hidden;
+}
+#stage::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:60;
+  background:radial-gradient(ellipse 85% 75% at 50% 45%,transparent 40%,rgba(0,0,0,.72) 100%);
+}
+.beat{position:absolute;inset:0;opacity:0;transition:opacity .5s ease;pointer-events:none}
+.beat.on{opacity:1}
+
+/* ---------- shared type ---------- */
+.eyebrow{font:600 20px/1 var(--mono);letter-spacing:.34em;text-transform:uppercase;color:var(--mute)}
+.huge{font:800 132px/.92 var(--sans);letter-spacing:-.045em}
+.big{font:800 88px/1 var(--sans);letter-spacing:-.035em}
+.lede{font:300 30px/1.5 var(--sans);color:#9fb0c6;max-width:56ch}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---------- beat 0 : title ---------- */
+#b0{display:flex;flex-direction:column;justify-content:center;padding:0 150px;gap:34px}
+#b0 .rule{width:132px;height:4px;background:var(--blue)}
+#b0 .huge span{color:var(--blue)}
+.credits{position:absolute;bottom:88px;left:150px;right:150px;display:flex;
+  justify-content:space-between;font:500 21px/1 var(--mono);color:var(--mute);letter-spacing:.1em}
+
+/* ---------- beat 1 : the trace ---------- */
+#b1{display:grid;grid-template-columns:1fr 560px;gap:0}
+.plot{position:relative;display:flex;align-items:center;justify-content:center}
+#trace{display:block}
+.plotcap{position:absolute;top:72px;left:112px}
+.plotcap h2{font:800 46px/1 var(--sans);letter-spacing:-.03em;margin-top:12px}
+.readout{border-left:1px solid var(--line);padding:104px 72px 0 60px;
+  display:flex;flex-direction:column;gap:0}
+.row{padding:26px 0;border-bottom:1px solid var(--line)}
+.row .k{font:600 15px/1 var(--mono);letter-spacing:.24em;text-transform:uppercase;color:var(--mute)}
+.row .v{font:600 52px/1 var(--mono);font-variant-numeric:tabular-nums;margin-top:14px;letter-spacing:-.02em}
+.row .u{font-size:26px;color:var(--mute);margin-left:8px}
+.net{display:flex;gap:44px;margin-top:16px}
+.net div{font:600 46px/1 var(--mono);font-variant-numeric:tabular-nums}
+.net small{display:block;font:600 14px/1 var(--mono);letter-spacing:.2em;color:var(--mute);margin-bottom:10px}
+.zstrip{position:absolute;left:112px;right:112px;bottom:78px;height:96px}
+.zlab{position:absolute;left:0;bottom:104px;font:600 14px/1 var(--mono);letter-spacing:.22em;color:var(--mute)}
+
+/* ---------- beat 2 : closure stamp ---------- */
+#b2{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:40px}
+.stamp{display:flex;gap:96px}
+.stamp div{text-align:center}
+.stamp b{display:block;font:700 156px/1 var(--mono);font-variant-numeric:tabular-nums;color:var(--green)}
+.stamp small{display:block;font:600 20px/1 var(--mono);letter-spacing:.3em;color:var(--mute);margin-top:22px}
+
+/* ---------- beat 3 : the reveal ---------- */
+#b3{display:grid;grid-template-columns:1fr 1fr}
+#b3 .half{position:relative;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:30px;padding:0 90px}
+#b3 .half+.half{border-left:1px solid var(--line)}
+#b3 .tag{font:600 17px/1 var(--mono);letter-spacing:.3em;text-transform:uppercase}
+#b3 h3{font:800 62px/1.04 var(--sans);letter-spacing:-.03em;text-align:center}
+#b3 p{font:300 25px/1.5 var(--sans);color:#9fb0c6;text-align:center;max-width:26ch}
+.minitrace{opacity:.95}
+.dead{width:300px;height:300px;border:1px dashed #2a3546;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  font:600 18px/1.6 var(--mono);color:#3d4a5c;text-align:center;letter-spacing:.1em}
+.banner{position:absolute;left:0;right:0;bottom:96px;text-align:center;
+  font:700 30px/1 var(--mono);letter-spacing:.18em;color:var(--amber)}
+
+/* ---------- beat 4 : verifiers ---------- */
+#b4{padding:112px 150px;display:flex;flex-direction:column;gap:48px}
+.vgrid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.vcard{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
+  border-radius:10px;padding:34px 38px}
+.vcard .top{display:flex;align-items:baseline;justify-content:space-between;gap:20px}
+.vcard .nm{font:700 34px/1 var(--mono);letter-spacing:-.01em}
+.vcard .st{font:700 22px/1 var(--mono);color:var(--red);letter-spacing:.14em}
+.vcard .why{font:400 22px/1.5 var(--mono);color:#8fa1b8;margin-top:18px}
+.vfoot{font:300 30px/1.5 var(--sans);color:#9fb0c6;max-width:74ch}
+.vfoot b{color:var(--ink);font-weight:600}
+
+/* ---------- beat 5 : tagline ---------- */
+#b5{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:44px;text-align:center}
+#b5 .quote{font:300 76px/1.28 var(--sans);letter-spacing:-.03em;max-width:20ch}
+#b5 .quote b{font-weight:700}
+#b5 .src{font:600 19px/1 var(--mono);letter-spacing:.24em;color:var(--mute)}
+
+/* ---------- chrome ---------- */
+#hud{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:99;
+  font:500 13px/1 var(--mono);color:#55637a;letter-spacing:.14em;
+  background:rgba(6,8,13,.9);padding:11px 20px;border:1px solid #1b2634;border-radius:999px}
+body.rec #hud{display:none}
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 0 ───────── title ───────── -->
+  <section class="beat on" id="b0">
+    <div class="eyebrow">AI for Science World Models Hack &middot; Track C</div>
+    <div class="rule"></div>
+    <h1 class="huge">The machine draws<br>its own <span>proof</span>.</h1>
+    <p class="lede">Two xArms, an Opentrons OT-One, and a rig with no endstops,
+      no current sensing, and no way to feel a crash.</p>
+    <div class="credits"><span>Lbromig/hackathon-zeon</span><span>DALE &middot; DI &middot; LUKAS</span></div>
+  </section>
+
+  <!-- 1 ───────── the trace ───────── -->
+  <section class="beat" id="b1">
+    <div class="plot">
+      <div class="plotcap">
+        <div class="eyebrow">Measured on the bench &middot; 2026-07-26</div>
+        <h2>Full-travel tour, 3 laps</h2>
+      </div>
+      <canvas id="trace" width="1180" height="820"></canvas>
+      <div class="zlab">Z PROFILE &middot; 12 MM DIP PER LAP &middot; +Z IS DOWN</div>
+      <canvas class="zstrip" id="zstrip" width="1136" height="96"></canvas>
+    </div>
+    <aside class="readout">
+      <div class="row"><div class="k">Leg</div><div class="v"><span id="leg">00</span><span class="u">/ 48</span></div></div>
+      <div class="row"><div class="k">Path travelled</div><div class="v"><span id="dist">0.0</span><span class="u">mm</span></div></div>
+      <div class="row"><div class="k">Elapsed</div><div class="v"><span id="el">0.00</span><span class="u">s</span></div></div>
+      <div class="row"><div class="k">Predicted</div><div class="v" style="color:var(--mute)">69.07<span class="u">s</span></div></div>
+      <div class="row" style="border:0">
+        <div class="k">Net displacement</div>
+        <div class="net">
+          <div><small>X</small><span id="nx">0.00</span></div>
+          <div><small>Y</small><span id="ny">0.00</span></div>
+          <div><small>Z</small><span id="nz">0.00</span></div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- 2 ───────── closure ───────── -->
+  <section class="beat" id="b2">
+    <div class="eyebrow">806 mm &middot; 48 legs &middot; 69.37 s actual against 69.07 s predicted</div>
+    <div class="stamp">
+      <div><b>0.00</b><small>NET X</small></div>
+      <div><b>0.00</b><small>NET Y</small></div>
+      <div><b>0.00</b><small>NET Z</small></div>
+    </div>
+    <p class="lede" style="text-align:center;max-width:34ch">The loop closed on every axis.</p>
+  </section>
+
+  <!-- 3 ───────── the reveal ───────── -->
+  <section class="beat" id="b3">
+    <div class="half">
+      <div class="tag" style="color:var(--blue)">MOTOR RAIL ON</div>
+      <canvas class="minitrace" id="mini" width="300" height="300"></canvas>
+      <h3>Move complete</h3>
+      <p>48 legs acknowledged. M400 drained in 69.37 s. Net zero on all three axes.</p>
+    </div>
+    <div class="half">
+      <div class="tag" style="color:var(--amber)">MOTOR RAIL OFF</div>
+      <div class="dead">NOTHING<br>MOVED</div>
+      <h3 style="color:var(--amber)">Move complete</h3>
+      <p>48 legs acknowledged. M400 drained in 69.37 s. Net zero on all three axes.</p>
+    </div>
+    <div class="banner">THE SOFTWARE CANNOT TELL THESE APART</div>
+  </section>
+
+  <!-- 4 ───────── verifiers ───────── -->
+  <section class="beat" id="b4">
+    <div>
+      <div class="eyebrow">core/verification/agents.py &middot; called with no evidence</div>
+      <h2 class="big" style="margin-top:18px">So we built things that refuse.</h2>
+    </div>
+    <div class="vgrid">
+      <div class="vcard"><div class="top"><span class="nm">cap_removed</span><span class="st">ok = False</span></div>
+        <div class="why">no usable evidence: no wrist torque for 'right';<br>cap marker 224 not tracked on 'overview_cam'</div></div>
+      <div class="vcard"><div class="top"><span class="nm">grasp_secure</span><span class="st">ok = False</span></div>
+        <div class="why">no gripper width reported by 'right'<br>&mdash; cannot confirm a grasp</div></div>
+      <div class="vcard"><div class="top"><span class="nm">tube_aligned</span><span class="st">ok = False</span></div>
+        <div class="why">no live pose from 'right'<br>&mdash; cannot confirm alignment</div></div>
+      <div class="vcard"><div class="top"><span class="nm">aspiration_ok</span><span class="st">ok = False</span></div>
+        <div class="why">no requested volume supplied<br>&mdash; nothing to verify against</div></div>
+    </div>
+    <p class="vfoot">The stubs these replaced returned <b>ok = True at confidence 0.0</b>.
+      An unplugged camera and a passing step were indistinguishable. Now they are not.</p>
+  </section>
+
+  <!-- 5 ───────── tagline ───────── -->
+  <section class="beat" id="b5">
+    <p class="quote">Every duration proves a move <b>ran</b>,<br>never that the path was <b>clear</b>.</p>
+    <div class="src">docs/OT_ONE_HARDWARE.md</div>
+  </section>
+
+</div>
+<div id="hud">SPACE next &middot; &larr;&rarr; beat &middot; R replay &middot; H hide this</div>
+
+<script>
+/* ── fit 1920×1080 to any window ─────────────────────────── */
+const stage = document.getElementById('stage');
+function fit(){
+  const s = Math.min(innerWidth/1920, innerHeight/1080);
+  stage.style.transform = `translate(-50%,-50%) scale(${s})`;
+}
+addEventListener('resize', fit); fit();
+
+/* ── real path geometry (matches scripts/tour_search_space.py) ──
+   --x 100 --y 70 --shape smooth --sides 16 --feed 700 --z 12 --laps 3
+   verified: 805.8 mm, 69.07 s predicted at F700                       */
+const SIDES=16, LAPS=3, A=50, B=35, ZDIP=12, FEED_MMS=700/60;
+const V=[];
+for(let k=0;k<=SIDES*LAPS;k++){
+  const t=k*2*Math.PI/SIDES;
+  V.push({x:A*Math.cos(t), y:B*Math.sin(t), z:(ZDIP/2)*(1-Math.cos(t))});
+}
+const SEG=[]; let TOTAL=0;
+for(let i=0;i<V.length-1;i++){
+  const d=Math.hypot(V[i+1].x-V[i].x, V[i+1].y-V[i].y, V[i+1].z-V[i].z);
+  SEG.push(d); TOTAL+=d;
+}
+const DUR = TOTAL/FEED_MMS;                       // 69.07 s
+
+/* ── main trace ──────────────────────────────────────────── */
+const cv=document.getElementById('trace'), cx=cv.getContext('2d');
+const zs=document.getElementById('zstrip'), zc=zs.getContext('2d');
+const CXx=cv.width/2, CXy=cv.height/2, SC=6.6;
+const px=p=>({X:CXx+p.x*SC, Y:CXy-p.y*SC});
+
+function grid(){
+  cx.clearRect(0,0,cv.width,cv.height);
+  cx.strokeStyle='#111a26'; cx.lineWidth=1;
+  for(let gx=-60;gx<=60;gx+=10){const {X}=px({x:gx,y:0});
+    cx.beginPath();cx.moveTo(X,60);cx.lineTo(X,cv.height-60);cx.stroke();}
+  for(let gy=-45;gy<=45;gy+=10){const {Y}=px({x:0,y:gy});
+    cx.beginPath();cx.moveTo(90,Y);cx.lineTo(cv.width-90,Y);cx.stroke();}
+  cx.strokeStyle='#1b2634';
+  const o=px({x:0,y:0});
+  cx.beginPath();cx.moveTo(o.X-16,o.Y);cx.lineTo(o.X+16,o.Y);
+  cx.moveTo(o.X,o.Y-16);cx.lineTo(o.X,o.Y+16);cx.stroke();
+}
+/* draw path up to arc-length `upto` */
+function drawTo(upto, colour='#4c8dff'){
+  grid();
+  let acc=0;
+  cx.lineCap='round'; cx.lineJoin='round';
+  for(let i=0;i<SEG.length;i++){
+    if(acc>=upto) break;
+    const f=Math.min(1,(upto-acc)/SEG[i]);
+    const a=px(V[i]), b=px(V[i+1]);
+    const ex=a.X+(b.X-a.X)*f, ey=a.Y+(b.Y-a.Y)*f;
+    const age=1-(acc/Math.max(upto,1));           // older = dimmer
+    cx.strokeStyle=colour;
+    cx.globalAlpha=0.30+0.70*(1-age*0.75);
+    cx.lineWidth=1.6+2.9*(V[i].z/ZDIP);           // thicker = deeper Z
+    cx.shadowColor=colour; cx.shadowBlur=16;
+    cx.beginPath();cx.moveTo(a.X,a.Y);cx.lineTo(ex,ey);cx.stroke();
+    acc+=SEG[i];
+    if(f<1){                                       // leading dot
+      cx.globalAlpha=1;cx.shadowBlur=26;cx.fillStyle='#cfe6ff';
+      cx.beginPath();cx.arc(ex,ey,5.5,0,7);cx.fill();
+    }
+  }
+  cx.globalAlpha=1;cx.shadowBlur=0;
+}
+function drawZ(upto){
+  zc.clearRect(0,0,zs.width,zs.height);
+  zc.strokeStyle='#1b2634';zc.lineWidth=1;
+  zc.beginPath();zc.moveTo(0,zs.height-1);zc.lineTo(zs.width,zs.height-1);zc.stroke();
+  let acc=0;
+  zc.beginPath();
+  for(let i=0;i<SEG.length&&acc<upto;i++){
+    const X=(acc/TOTAL)*zs.width, Y=zs.height-4-(V[i].z/ZDIP)*(zs.height-14);
+    i?zc.lineTo(X,Y):zc.moveTo(X,Y); acc+=SEG[i];
+  }
+  zc.strokeStyle='#5ad2f0';zc.lineWidth=2;zc.shadowColor='#5ad2f0';zc.shadowBlur=12;zc.stroke();
+  zc.shadowBlur=0;
+}
+/* small looped trace for the reveal */
+const mi=document.getElementById('mini'), mc=mi.getContext('2d');
+function drawMini(){
+  mc.clearRect(0,0,300,300); mc.lineJoin='round';
+  mc.strokeStyle='#4c8dff';mc.lineWidth=2;mc.shadowColor='#4c8dff';mc.shadowBlur=14;
+  mc.beginPath();
+  for(let k=0;k<=SIDES;k++){const t=k*2*Math.PI/SIDES;
+    const X=150+A*Math.cos(t)*2.5, Y=150-B*Math.sin(t)*2.5;
+    k?mc.lineTo(X,Y):mc.moveTo(X,Y);}
+  mc.stroke();mc.shadowBlur=0;
+}
+
+/* ── beat 1 animation ────────────────────────────────────── */
+const $=id=>document.getElementById(id);
+const SPEED=3.2;                 // 3.2× real time → ~21 s on screen
+let raf=null;
+function runTrace(){
+  cancelAnimationFrame(raf);
+  const t0=performance.now();
+  (function step(now){
+    const el=Math.min(DUR,(now-t0)/1000*SPEED);
+    const upto=(el/DUR)*TOTAL;
+    drawTo(upto); drawZ(upto);
+    let acc=0,leg=0; for(const s of SEG){if(acc+s>upto)break;acc+=s;leg++;}
+    $('leg').textContent=String(leg).padStart(2,'0');
+    $('dist').textContent=upto.toFixed(1);
+    $('el').textContent=el.toFixed(2);
+    if(el>=DUR){ $('nx').textContent='0.00';$('ny').textContent='0.00';$('nz').textContent='0.00';
+      [ 'nx','ny','nz' ].forEach(i=>$(i).style.color='var(--green)'); return; }
+    const p=V[Math.min(leg,V.length-1)];
+    $('nx').textContent=p.x.toFixed(2);$('ny').textContent=p.y.toFixed(2);$('nz').textContent=p.z.toFixed(2);
+    raf=requestAnimationFrame(step);
+  })(t0);
+}
+
+/* ── beat machine ────────────────────────────────────────── */
+const beats=[...document.querySelectorAll('.beat')];
+let n=0;
+function show(i){
+  n=(i+beats.length)%beats.length;
+  beats.forEach((b,k)=>b.classList.toggle('on',k===n));
+  if(n===1){ ['nx','ny','nz'].forEach(id=>$(id).style.color=''); runTrace(); }
+  if(n===3) drawMini();
+}
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();show(n+1)}
+  if(e.code==='ArrowRight')show(n+1);
+  if(e.code==='ArrowLeft')show(n-1);
+  if(e.key.toLowerCase()==='r'&&n===1)runTrace();
+  if(e.key.toLowerCase()==='h')document.body.classList.toggle('rec');
+});
+grid();
+</script>
+</body>
+</html>
