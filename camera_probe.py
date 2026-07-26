@@ -342,8 +342,33 @@ except Exception as exc:
 """
 
 
-def probe_realsense(devices: list[Device]) -> ProbeResult:
+def uvc_holds_the_device(devices: list[Device]) -> bool:
+    """True when the macOS UVC stack currently owns the RealSense.
+
+    Observed reliably on this bench: a RealSense that librealsense has claimed
+    DISAPPEARS from `system_profiler SPCameraDataType`, because UVCAssistant no
+    longer has it. So its presence in that list means the OS holds the exclusive
+    lock and any SDK claim will be refused.
+
+    That matters more than it sounds: librealsense does not fail cleanly in this
+    case, it SIGSEGVs, and on macOS every segfault raises a "Python quit
+    unexpectedly" dialog at the user. Checking first turns a crash and a dialog
+    into a sentence explaining what to do.
+    """
+    return any(d.is_realsense for d in devices)
+
+
+def probe_realsense(devices: list[Device], force: bool = False) -> ProbeResult:
     """Try the vendor SDK path, which is the only source of metric depth."""
+    if not force and uvc_holds_the_device(devices):
+        return ProbeResult(
+            "pyrealsense2",
+            Diagnosis.EXCLUSIVE_ACCESS,
+            "Skipped the SDK claim without attempting it: the camera is still "
+            "listed by the OS camera stack, which means UVCAssistant holds the "
+            "exclusive lock and librealsense would segfault rather than fail "
+            "cleanly. Re-run under sudo, which takes the lock successfully.",
+        )
     try:
         done = subprocess.run(
             [sys.executable, "-c", _RS_ENUMERATE],
@@ -681,6 +706,12 @@ class FrameFeed:
         try:
             import pyrealsense2 as rs
         except ImportError:
+            return False
+        if uvc_holds_the_device(_cached_devices()):
+            self.error = (
+                "UVCAssistant holds the camera, so the SDK cannot claim it and "
+                "would crash rather than fail. Re-run under sudo."
+            )
             return False
         try:
             pipe = rs.pipeline()
