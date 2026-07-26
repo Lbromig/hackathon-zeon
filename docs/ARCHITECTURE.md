@@ -26,12 +26,12 @@ flowchart TB
       POL[Policy · brain<br/>RuleBased · Claude-gated]:::be
       TB[Toolbox<br/>skills · twin · verify]:::be
     end
-    VER[Verify agents · REAL twin-query + telemetry fusion<br/>core/verification · cap_removed/grasp_secure<br/>tube_aligned/aspiration_ok · on-disk WIP]:::be
+    VER[Verify agents · REAL twin-query + telemetry fusion<br/>core/verification · cap_removed/grasp_secure<br/>tube_aligned/aspiration_ok · COMMITTED]:::be
     subgraph PER[Perception · fiducials + fusion REAL · learned stack PLANNED]
       FID[Fiducials · REAL<br/>core/perception/fiducials.py<br/>AprilTag tag36h11 + 6-DoF pose]:::be
-      FUSE[TwinFuser · REAL on-disk WIP<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
-      PROJ[Twin→image projection · REAL WIP<br/>core/perception/projection.py<br/>world entity + K → overlay polygon]:::be
-      SHP[Shape detect · REAL WIP<br/>core/perception/shapes.py<br/>Hough circles → untagged labware]:::be
+      FUSE[TwinFuser · REAL COMMITTED<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
+      PROJ[Twin→image projection · REAL COMMITTED<br/>core/perception/projection.py<br/>world entity + K → overlay polygon]:::be
+      SHP[Shape detect · REAL COMMITTED<br/>core/perception/shapes.py<br/>Hough circles → untagged labware]:::be
       CAL[Calibration pipeline<br/>runs + publishes twin<br/>hand-eye/world-frame/scan · TODO]:::be
       DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
@@ -132,10 +132,10 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   The **camera path is now live end-to-end:** `main.py` mounts `cameras.router`
   (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) backed by a
   worker-threaded `services/camera_hub.py`, and its per-camera detections ride `/ws/state`; a
-  RealSense RGB-D driver (`drivers/camera/realsense.py`) exists on disk (uncommitted WIP) covering all
+  RealSense RGB-D driver (`drivers/camera/realsense.py`) is now **committed** (`368efba`) covering all
   three fixed viewpoints. The **workflow orchestrator streams** over `/ws/workflow` with a
   `/api/workflow/plan` endpoint, and the **teach layer** (jog / move-to / pose library) is hardened and
-  tested (`backend/tests/test_teach_api.py`). **Verification agents are now real (on-disk WIP):** all four
+  tested (`backend/tests/test_teach_api.py`). **Verification agents are now real and committed** (`409f562`): all four
   `core/verification/agents.py` agents run genuine twin-query predicates fused with driver telemetry —
   `cap_removed` (cap reparented off the tube + separation > 20 mm, +torque-drop bonus), `grasp_secure`
   (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to pipette nozzle < 15 mm),
@@ -145,22 +145,26 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   `TwinFuser` (`core/perception/fusion.py`) composes each detection with the camera's own twin pose into a
   corrective world position (position-only, with a confidence + jump gate), driven by the background loop
   `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), tested in
-  `backend/tests/test_fusion.py`. **The hero workflow is now wired (on-disk WIP):** `uncap_aspirate.py::_execute`
+  `backend/tests/test_fusion.py`. **The hero workflow is now wired and committed** (`ae94f94`): `uncap_aspirate.py::_execute`
   runs a data-driven `CHOREOGRAPHY` table via `_run_act` — real capability calls (`move_joints`/`move_to`
   gated by `check_joint_target`/`check_pose_target`, `grip`/`release`, OT `aspirate`) replaying **taught poses**,
   with a loud `preflight` that refuses to run on any untaught pose. `run()` executes → verifies → retries per
   step, so the now-real verdicts finally gate real motion (`backend/tests/test_workflow_execute.py`). Perception
   gained `projection.py` (twin→image overlay polygons, pure numpy) and `shapes.py` (Hough-circle detection of
   untagged round labware, lazy-`cv2`), plus `core/teach_poses.py` (the pose-library reader the choreography uses).
-- **Wired but not physically demonstrable yet / placeholder:** the whole win above is **uncommitted WIP** — the
-  last team commit, HEAD (`3800c2c`), still ships the `ok=True` stubs *and* the empty `_execute`, so a clean
-  checkout is theater until committed. The OT-One driver's `connect()` / `_send()` remain `TODO` (`connect()`
-  stores `object()`, `_send()` returns `None`; a `feat/ot-one-serial-driver` branch exists on `origin` but is
-  not merged here), so the wired `aspirate` no-ops on hardware — no real aspirate has run. Calibration's
-  `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are placeholder (the
-  `PlaceholderScanAdapter`) and fused/projected world coords are camera-frame until calibrated; `MARKER_MAP` now
-  uses **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity offsets (0.02
-  placeholder). The floor choreography also needs its 12 poses hand-taught on the real bench before it will move.
+  **All of the above is now committed** (commits `2b0ed34`..`e641f56`); HEAD is `e641f56` and a clean checkout
+  of `agent-loop-p0` now runs the real thing — the multi-cycle "uncommitted WIP" gap is closed (Q-COMMIT-1
+  ANSWERED).
+- **Wired but not physically demonstrable yet / placeholder:** the OT-One driver's `connect()` / `_send()`
+  remain `TODO` (`connect()` stores `object()`, `_send()` returns `None`; a `feat/ot-one-serial-driver` branch
+  exists on `origin` but is **not merged** here), so the wired `aspirate` no-ops on hardware — no real aspirate
+  has run, and the narrative climax mimes until the serial transport lands (Q-OT-1). The floor choreography's
+  12 poses must still be hand-taught on the real bench (`data/teach_poses.json`, gitignored — absent on disk
+  here), or `preflight` correctly **refuses to run** (Q-POSES-1) — a green test suite is not a moving demo.
+  Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are
+  placeholder (the `PlaceholderScanAdapter`) and fused/projected world coords are camera-frame until calibrated;
+  `MARKER_MAP` now uses **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity
+  offsets (0.02 placeholder).
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only
