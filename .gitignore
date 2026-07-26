@@ -22,8 +22,17 @@ frontend/dist/
 # calibration artifacts (generated)
 calib/
 
+# saved camera frames, one subfolder per camera (core/perception/capture.py). Bench-local,
+# and the image volume grows without bound, so never committed.
+temp/
+
 # poses taught through the UI (per-lab, not source)
 data/
 
 # PM-agent scratch state (machine-generated)
 .pm-agent/
+
+# Locally compiled pyrealsense2 wheel — pinned to one python minor version and one CPU
+# architecture, so it is not portable between machines. Regenerate with
+# scripts/build_pyrealsense2_macos.sh (upstream ships no macOS wheel).
+third_party/wheels/
