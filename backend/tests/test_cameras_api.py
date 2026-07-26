@@ -89,7 +89,12 @@ def test_device_discovery_never_500s(client):
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body["devices"], list)
-    assert body["devices"] or body["error"]       # one or the other, never a crash
+    # Not "devices or error". With nothing plugged in, an empty list and an empty
+    # error is the honest answer, and demanding one of the two be non-empty fails
+    # exactly when the cameras are genuinely absent -- which is how this assertion
+    # came to be passing only because enumeration was crashing and populating the
+    # error field. What matters is that the request returns at all.
+    assert isinstance(body["error"], str)
 
 
 def test_connect_reports_outcome(client):
