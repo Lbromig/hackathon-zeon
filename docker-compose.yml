@@ -17,7 +17,11 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
     ports:
-      - "8000:8000"
+      # Published on 8100, NOT 8000: the host stack (uv run uvicorn ...) owns 8000,
+      # and a container publishing the same port silently shadows it — the browser
+      # reaches the container, which has no USB, and every camera reads as missing.
+      # Inside the compose network the port is still 8000.
+      - "8100:8000"
     env_file:
       # Bench-specific settings (arm IPs, camera sources). Optional — core/config.py
       # falls back to its defaults when the file is absent.
@@ -59,7 +63,7 @@ services:
       context: .
       dockerfile: docker/frontend.Dockerfile
     ports:
-      - "5173:5173"
+      - "5273:5173"   # host Vite owns 5173; see the backend service
     environment:
       # Vite proxies /api and /ws here; inside the compose network the backend is
       # reachable by service name, not localhost.

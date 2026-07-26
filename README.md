@@ -34,7 +34,7 @@ for diagrams, and **[PROJECT_PLAN.md](PROJECT_PLAN.md)** for the 24h plan and ow
 
 ```bash
 cp .env.example .env        # optional — set your arm IPs / camera sources
-docker compose up           # http://localhost:5173
+docker compose up           # http://localhost:5273
 ```
 
 Brings up the backend (`:8000`) and the UI (`:5173`) together. Both bind-mount the
