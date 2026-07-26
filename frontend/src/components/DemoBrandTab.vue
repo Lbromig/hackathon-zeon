@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import type { CameraFrameState } from "../api/cameras";
+
+const props = defineProps<{
+  stateStreamConnected: boolean;
+  cameras: Record<string, CameraFrameState>;
+}>();
 
 const emit = defineEmits<{
   "open-tab": [tab: "fleet" | "cameras"];
@@ -10,12 +16,38 @@ const playing = ref(false);
 const mediaBase = import.meta.env.BASE_URL + "media/";
 const reelUrl = mediaBase + "zeon-demo-reel.mp4";
 const posterUrl = mediaBase + "zeon-demo-poster.jpg";
+const visionConnectedUrl = mediaBase + "zeon-vision-connected.jpg";
+const visionDisconnectedUrl = mediaBase + "zeon-vision-disconnected.jpg";
+type CaptureState = "connected" | "disconnected";
+const captureState = ref<CaptureState>("connected");
+
+const updatingFeedCount = computed(
+  () => Object.values(props.cameras).filter((camera) => camera.fps > 0 && !camera.error).length,
+);
+const currentVisionLabel = computed(() => {
+  if (!props.stateStreamConnected) return "OFFLINE SESSION";
+  if (updatingFeedCount.value === 0) return "STATE STREAM LIVE · VISION IDLE";
+  return `STATE STREAM LIVE · ${updatingFeedCount.value} FEEDS UPDATING`;
+});
+const captureUrl = computed(() =>
+  captureState.value === "connected" ? visionConnectedUrl : visionDisconnectedUrl,
+);
+const captureAlt = computed(() =>
+  captureState.value === "connected"
+    ? "Recorded Zeon vision wall with right and left gripper, overview, and handover views; three feeds report one frame per second and the left gripper reports zero."
+    : "Recorded Zeon vision wall with all four feed surfaces explicitly marked disconnected while their last captured images remain visible.",
+);
+const captureCaption = computed(() =>
+  captureState.value === "connected"
+    ? "Four feed surfaces are present. Three report 1 fps; the left-arm gripper view reports 0 fps."
+    : "All four surfaces explicitly report disconnected while retaining their last captured images.",
+);
 
 const steps = [
   { number: "01", title: "Uncap", detail: "Coordinated dual-arm manipulation" },
   { number: "02", title: "Transport", detail: "Secure the open sample tube" },
   { number: "03", title: "Present", detail: "Align beneath the pipette tip" },
-  { number: "04", title: "Aspirate", detail: "Execute and verify liquid handling" },
+  { number: "04", title: "Aspirate", detail: "Capture the liquid-handler outcome" },
 ];
 
 onMounted(() => {
@@ -52,12 +84,12 @@ onMounted(() => {
         <span>05 · DEMO REEL / 00:52</span>
         <h2>See. Act. <em>Verify.</em></h2>
         <p id="demo-reel-description">
-          A dual-arm wet-lab sequence combining camera fusion, coordinated manipulation,
+          A dual-arm wet-lab sequence combining multi-view vision, coordinated manipulation,
           and liquid handling. Soundtrack only; no dialogue.
         </p>
         <div class="demo-reel-tags" aria-label="Demo attributes">
           <i>DUAL ARM</i>
-          <i>3 CAMERAS</i>
+          <i>4 CAPTURED VIEWS</i>
           <i>OT-ONE</i>
           <i>52 SEC</i>
         </div>
@@ -70,10 +102,61 @@ onMounted(() => {
 
     <div class="demo-strip" aria-label="System summary">
       <span><b>02</b> ROBOT ARMS</span>
-      <span><b>03</b> VISION NODES</span>
+      <span><b>04</b> RECORDED FEEDS</span>
       <span><b>01</b> LIQUID HANDLER</span>
-      <span><b>04</b> VERIFIED STAGES</span>
+      <span><b>04</b> WORKFLOW STAGES</span>
     </div>
+
+    <section class="demo-vision-proof" aria-labelledby="demo-vision-title">
+      <header class="demo-vision-heading">
+        <div>
+          <span class="demo-eyebrow">VISION PROOF · RECORDED BENCH SESSION</span>
+          <h2 id="demo-vision-title">Four viewpoints. <em>Honest state.</em></h2>
+          <p>Right arm · Left arm · Cell overview · Arm → OT handoff</p>
+        </div>
+        <div
+          class="demo-current-state"
+          :class="{ live: stateStreamConnected && updatingFeedCount > 0 }"
+          aria-live="polite"
+        >
+          <i aria-hidden="true" />
+          {{ currentVisionLabel }}
+        </div>
+      </header>
+
+      <div class="demo-vision-stage">
+        <img
+          :src="captureUrl"
+          :alt="captureAlt"
+          width="1600"
+          height="1040"
+          loading="lazy"
+        />
+        <span>RECORDED CAPTURE · JUL 26 · NOT LIVE</span>
+      </div>
+
+      <footer class="demo-vision-footer">
+        <div class="demo-capture-switch" aria-label="Recorded camera state">
+          <button
+            type="button"
+            :class="{ active: captureState === 'connected' }"
+            :aria-pressed="captureState === 'connected'"
+            @click="captureState = 'connected'"
+          >
+            Connected capture
+          </button>
+          <button
+            type="button"
+            :class="{ active: captureState === 'disconnected' }"
+            :aria-pressed="captureState === 'disconnected'"
+            @click="captureState = 'disconnected'"
+          >
+            Disconnected capture
+          </button>
+        </div>
+        <p>{{ captureCaption }}</p>
+      </footer>
+    </section>
 
     <section class="demo-sequence" aria-labelledby="demo-sequence-title">
       <div class="demo-section-heading">
@@ -292,10 +375,148 @@ onMounted(() => {
 }
 
 .demo-sequence,
+.demo-vision-proof,
 .demo-brand-card,
 .demo-cue-card {
   border: 1px solid var(--zeon-line);
   background: rgba(11, 14, 12, 0.88);
+}
+
+.demo-vision-proof {
+  padding: 24px;
+}
+
+.demo-vision-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.demo-vision-heading h2 {
+  margin: 9px 0 0;
+  color: var(--zeon-text);
+  font-size: clamp(28px, 4vw, 54px);
+  line-height: 0.96;
+  letter-spacing: -0.055em;
+}
+
+.demo-vision-heading h2 em {
+  color: var(--zeon-lime);
+  font-style: normal;
+}
+
+.demo-vision-heading p {
+  margin: 12px 0 0;
+  color: var(--zeon-muted);
+  font: 700 8px/1.4 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.demo-current-state {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--zeon-line);
+  color: #7f8780;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  font: 750 8px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.demo-current-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #606761;
+}
+
+.demo-current-state.live {
+  border-color: rgba(213, 255, 63, 0.28);
+  color: var(--zeon-lime);
+}
+
+.demo-current-state.live i {
+  background: var(--zeon-lime);
+  box-shadow: 0 0 12px rgba(213, 255, 63, 0.45);
+}
+
+.demo-vision-stage {
+  position: relative;
+  margin-top: 22px;
+  overflow: hidden;
+  border: 1px solid var(--zeon-line);
+  background: #050706;
+}
+
+.demo-vision-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(0deg, rgba(5, 8, 6, 0.4), transparent 22%);
+}
+
+.demo-vision-stage img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.demo-vision-stage > span {
+  position: absolute;
+  z-index: 1;
+  left: 14px;
+  bottom: 14px;
+  padding: 8px 10px;
+  border: 1px solid rgba(213, 255, 63, 0.32);
+  background: rgba(7, 10, 8, 0.86);
+  color: var(--zeon-lime);
+  font: 750 8px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0.08em;
+}
+
+.demo-vision-footer {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.demo-capture-switch {
+  display: flex;
+  gap: 6px;
+}
+
+.demo-capture-switch button {
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--zeon-line);
+  background: transparent;
+  color: #7f8780;
+  cursor: pointer;
+  font: 720 8px/1 "SFMono-Regular", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.demo-capture-switch button:hover,
+.demo-capture-switch button.active {
+  border-color: rgba(213, 255, 63, 0.36);
+  background: rgba(213, 255, 63, 0.07);
+  color: var(--zeon-lime);
+}
+
+.demo-vision-footer p {
+  max-width: 560px;
+  margin: 0;
+  color: var(--zeon-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
 }
 
 .demo-sequence {
@@ -485,6 +706,16 @@ onMounted(() => {
   .demo-brand-grid {
     grid-template-columns: 1fr;
   }
+
+  .demo-vision-heading,
+  .demo-vision-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .demo-vision-footer p {
+    text-align: left;
+  }
 }
 
 @media (max-width: 680px) {
@@ -535,6 +766,22 @@ onMounted(() => {
 
   .demo-cue-actions {
     flex-direction: column;
+  }
+
+  .demo-vision-proof {
+    padding: 16px;
+  }
+
+  .demo-current-state {
+    white-space: normal;
+  }
+
+  .demo-capture-switch {
+    width: 100%;
+  }
+
+  .demo-capture-switch button {
+    flex: 1;
   }
 }
 

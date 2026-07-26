@@ -150,7 +150,12 @@ onUnmounted(() => window.clearInterval(clock));
         <TeachPanel v-else-if="tab === 'teach'" />
         <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
         <WorldMapTab v-else-if="tab === 'world'" />
-        <DemoBrandTab v-else-if="tab === 'demo'" @open-tab="select" />
+        <DemoBrandTab
+          v-else-if="tab === 'demo'"
+          :state-stream-connected="connected"
+          :cameras="cameras"
+          @open-tab="select"
+        />
       </main>
     </div>
   </div>
