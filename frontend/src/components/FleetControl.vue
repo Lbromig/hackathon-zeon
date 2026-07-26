@@ -39,8 +39,17 @@ const onlineCount = computed(
   () => displayDevices.value.filter((item) => item.state === "connected").length,
 );
 const faultCount = computed(
-  () => displayDevices.value.filter((item) => item.state !== "connected").length,
+  () => displayDevices.value.filter(deviceHasFault).length,
 );
+const offlineCount = computed(
+  () => displayDevices.value.filter((item) => item.state === "disconnected").length,
+);
+const attentionLabel = computed(() => {
+  const parts: string[] = [];
+  if (faultCount.value) parts.push(faultCount.value + " faults");
+  if (offlineCount.value) parts.push(offlineCount.value + " offline");
+  return parts.length ? parts.join(" · ") : "Coverage nominal";
+});
 const motionBlockers = computed(() => {
   const blockers: string[] = [];
   if (!props.connected) blockers.push("backend state stream is offline");
@@ -54,12 +63,14 @@ const motionBlockers = computed(() => {
     const armState = arm.status.arm_state;
     const errorCode = arm.status.error_code;
     if (mode !== 0) blockers.push(id + " arm is not in position mode");
-    if (![0, 1, 2].includes(Number(armState))) blockers.push(id + " arm is not in a motion-ready state");
+    if (Number(armState) !== 2) blockers.push(id + " arm is not idle (state 2 required)");
     if (errorCode !== 0) blockers.push(id + " arm has an active or unknown error");
   }
   const ot = device("ot");
   if (!ot || ot.state !== "connected" || ot.status.connected !== true) {
     blockers.push("OT-One is disconnected");
+  } else if (ot.status.reference_lost === true) {
+    blockers.push("OT-One reference is lost");
   }
   return blockers;
 });
@@ -82,6 +93,12 @@ function device(id: string) {
 
 function tone(state: string) {
   return state === "connected" ? "online" : state === "error" ? "error" : "offline";
+}
+
+function deviceHasFault(item: DeviceSummary) {
+  if (item.state === "error") return true;
+  const errorCode = item.status.error_code;
+  return typeof errorCode === "number" && errorCode !== 0;
 }
 
 function shortKind(kind: string) {
@@ -147,7 +164,22 @@ const metrics = computed<Metric[]>(() => {
   return deviceMetrics.slice(0, 6);
 });
 
-const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 76, 90, 69, 84, 95, 78, 87, 74, 91];
+const jointBars = computed(() => {
+  const joints = selected.value?.status.joints;
+  if (!Array.isArray(joints)) return [];
+  const bars: Array<{ label: string; value: string; height: number }> = [];
+  joints.forEach((value, index) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return;
+    const wrapped = ((numeric + 180) % 360 + 360) % 360 - 180;
+    bars.push({
+      label: "J" + (index + 1),
+      value: numeric.toFixed(1) + "°",
+      height: Math.max(8, Math.min(100, (Math.abs(wrapped) / 180) * 100)),
+    });
+  });
+  return bars;
+});
 </script>
 
 <template>
@@ -161,7 +193,7 @@ const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 7
       <div class="panel-heading">
         <div>
           <span class="kicker">LIVE WORKCELL</span>
-          <h2>Verified handover</h2>
+          <h2>Handover workcell</h2>
         </div>
         <span class="mini-legend"><i /> {{ onlineCount }} / {{ displayDevices.length }} online</span>
       </div>
@@ -216,17 +248,26 @@ const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 7
         </div>
 
         <button
+          class="fault-node fault-gripper"
+          :class="{ quiet: device('gripper_cam')?.state === 'connected' }"
+          :title="'Gripper camera · ' + (device('gripper_cam')?.state ?? 'offline')"
+          aria-label="Select gripper camera"
+          @click="selectedId = 'gripper_cam'"
+        ><span>G</span><small>GRIP CAM</small></button>
+        <button
           class="fault-node fault-overview"
           :class="{ quiet: device('overview_cam')?.state === 'connected' }"
+          :title="'Overview camera · ' + (device('overview_cam')?.state ?? 'offline')"
           aria-label="Select overview camera"
           @click="selectedId = 'overview_cam'"
-        >!</button>
+        ><span>O</span><small>OVERVIEW</small></button>
         <button
           class="fault-node fault-handover"
           :class="{ quiet: device('handover_cam')?.state === 'connected' }"
+          :title="'Handover camera · ' + (device('handover_cam')?.state ?? 'offline')"
           aria-label="Select handover camera"
           @click="selectedId = 'handover_cam'"
-        >!</button>
+        ><span>H</span><small>HANDOVER</small></button>
         <div class="map-axis axis-x">X +</div>
         <div class="map-axis axis-y">Y +</div>
       </div>
@@ -234,7 +275,7 @@ const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 7
       <div class="map-caption">
         <span>PLAN · UNCAP / TRANSPORT / PRESENT / ASPIRATE</span>
         <button @click="emit('open-tab', 'cameras')">
-          <i /> {{ faultCount ? faultCount + " devices need attention" : "Coverage nominal" }}
+          <i /> {{ attentionLabel }}
         </button>
       </div>
     </article>
@@ -288,13 +329,23 @@ const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 7
         </div>
         <div class="trace">
           <div class="trace-label">
-            <span>MOTION TRACE · 4S</span>
-            <b>{{ selected.state === "connected" ? "LIVE" : "NO DATA" }}</b>
+            <span>JOINT MAGNITUDE · CURRENT</span>
+            <b>{{ jointBars.length ? "LATEST SAMPLE" : "NO JOINT DATA" }}</b>
           </div>
-          <div class="trace-bars" :class="{ muted: selected.state !== 'connected' }" aria-hidden="true">
-            <i v-for="(height, index) in traceBars" :key="index" :style="{ height: height + '%' }" />
+          <div
+            v-if="jointBars.length"
+            class="trace-bars"
+            :aria-label="jointBars.map((bar) => bar.label + ' ' + bar.value).join(', ')"
+          >
+            <i
+              v-for="bar in jointBars"
+              :key="bar.label"
+              :style="{ height: bar.height + '%' }"
+              :title="bar.label + ' · ' + bar.value"
+            />
           </div>
-          <div class="trace-scale"><span>-4.0</span><span>-2.0</span><span>NOW</span></div>
+          <div v-else class="trace-empty">Awaiting arm joint telemetry</div>
+          <div class="trace-scale"><span>0°</span><span>90°</span><span>180°</span></div>
         </div>
       </div>
     </article>
@@ -302,7 +353,7 @@ const traceBars = [38, 54, 42, 70, 64, 82, 57, 73, 88, 66, 79, 92, 71, 86, 62, 7
     <article class="zeon-panel mission-panel">
       <div>
         <span class="kicker">SAFETY CONTRACT</span>
-        <h2>Verified before motion</h2>
+        <h2>Configuration checked before motion</h2>
         <p>
           The workflow checks device configuration and all taught poses before moving.
           Verification failures retry the current step, then stop for help.

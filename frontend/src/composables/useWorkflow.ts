@@ -12,7 +12,7 @@ export function useWorkflow() {
     running.value = true;
     ws = openSocket<WorkflowEvent>("/ws/workflow", (e) => {
       events.value.push(e);
-      if (e.phase === "done" || e.phase === "failed") running.value = false;
+      if (["done", "failed", "escalated"].includes(e.phase)) running.value = false;
     });
     ws.onclose = () => (running.value = false);
   }

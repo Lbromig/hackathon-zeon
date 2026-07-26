@@ -12,7 +12,7 @@ export interface DeviceSummary {
 
 export interface WorkflowEvent {
   step?: string;
-  phase: string; // started | verifying | passed | retrying | failed | done
+  phase: string; // started | verifying | passed | retrying | failed | escalated | done
   attempt?: number;
   detail?: string;
   problems?: string[];

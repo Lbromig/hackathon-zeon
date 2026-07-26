@@ -21,8 +21,16 @@ const connectMessage = ref("");
 const localTime = ref("");
 let clock: number | undefined;
 
-const alertCount = computed(
-  () => instruments.value.filter((device) => device.state !== "connected").length,
+const faultCount = computed(
+  () =>
+    instruments.value.filter((device) => {
+      if (device.state === "error") return true;
+      const errorCode = device.status.error_code;
+      return typeof errorCode === "number" && errorCode !== 0;
+    }).length,
+);
+const offlineCount = computed(
+  () => instruments.value.filter((device) => device.state === "disconnected").length,
 );
 
 const tabTitle = computed(
@@ -106,8 +114,8 @@ onUnmounted(() => window.clearInterval(clock));
             {{ connected ? "State stream live" : "Offline session" }}
           </div>
           <div class="alert-chip">
-            <span>{{ alertCount }}</span>
-            System alerts
+            <span>{{ faultCount }}</span>
+            Faults · {{ offlineCount }} offline
           </div>
           <button
             class="connect-button"
