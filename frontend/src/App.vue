@@ -6,16 +6,22 @@ import FleetControl from "./components/FleetControl.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
 import CameraTab from "./components/cameras/CameraTab.vue";
 import WorldMapTab from "./components/worldmap/WorldMapTab.vue";
+import DemoBrandTab from "./components/DemoBrandTab.vue";
 
-type Tab = "fleet" | "teach" | "cameras" | "world";
+const TAB_ITEMS = [
+  { id: "fleet", label: "Fleet", title: "Wet Lab Command" },
+  { id: "teach", label: "Teach", title: "Motion Teach" },
+  { id: "cameras", label: "Vision", title: "Vision Control" },
+  { id: "world", label: "World", title: "World Model" },
+  { id: "demo", label: "Demo", title: "Demo Reel" },
+] as const;
+
+type Tab = (typeof TAB_ITEMS)[number]["id"];
 
 const { instruments, cameras, connected } = useFleet();
 const storedTab = localStorage.getItem("tab");
-const tab = ref<Tab>(
-  storedTab === "teach" || storedTab === "cameras" || storedTab === "world"
-    ? storedTab
-    : "fleet",
-);
+const storedTabIsValid = TAB_ITEMS.some((item) => item.id === storedTab);
+const tab = ref<Tab>(storedTabIsValid ? (storedTab as Tab) : "fleet");
 const connecting = ref(false);
 const connectMessage = ref("");
 const localTime = ref("");
@@ -34,13 +40,7 @@ const offlineCount = computed(
 );
 
 const tabTitle = computed(
-  () =>
-    ({
-      fleet: "Wet Lab Command",
-      teach: "Motion Teach",
-      cameras: "Vision Control",
-      world: "World Model",
-    })[tab.value],
+  () => TAB_ITEMS.find((item) => item.id === tab.value)?.title ?? "Wet Lab Command",
 );
 
 function select(next: Tab) {
@@ -83,15 +83,15 @@ onUnmounted(() => window.clearInterval(clock));
 
       <nav class="zeon-nav">
         <button
-          v-for="(item, index) in (['fleet', 'teach', 'cameras', 'world'] as Tab[])"
-          :key="item"
+          v-for="(item, index) in TAB_ITEMS"
+          :key="item.id"
           class="zeon-nav-item"
-          :class="{ active: tab === item }"
-          :aria-pressed="tab === item"
-          @click="select(item)"
+          :class="{ active: tab === item.id }"
+          :aria-pressed="tab === item.id"
+          @click="select(item.id)"
         >
           <span>0{{ index + 1 }}</span>
-          <strong>{{ item }}</strong>
+          <strong>{{ item.label }}</strong>
         </button>
       </nav>
 
@@ -109,22 +109,24 @@ onUnmounted(() => window.clearInterval(clock));
         </div>
 
         <div class="zeon-top-actions">
-          <div class="connection-chip" :class="{ live: connected }">
-            <span />
-            {{ connected ? "State stream live" : "Offline session" }}
-          </div>
-          <div class="alert-chip">
-            <span>{{ faultCount }}</span>
-            Faults · {{ offlineCount }} offline
-          </div>
-          <button
-            class="connect-button"
-            :disabled="connecting"
-            title="Actively connects hardware, clears arm faults, enables servos, and enters position mode."
-            @click="connectFleet"
-          >
-            {{ connecting ? "Connecting…" : "Connect all" }}
-          </button>
+          <template v-if="tab !== 'demo'">
+            <div class="connection-chip" :class="{ live: connected }">
+              <span />
+              {{ connected ? "State stream live" : "Offline session" }}
+            </div>
+            <div class="alert-chip">
+              <span>{{ faultCount }}</span>
+              Faults · {{ offlineCount }} offline
+            </div>
+            <button
+              class="connect-button"
+              :disabled="connecting"
+              title="Actively connects hardware, clears arm faults, enables servos, and enters position mode."
+              @click="connectFleet"
+            >
+              {{ connecting ? "Connecting…" : "Connect all" }}
+            </button>
+          </template>
           <div class="local-clock">
             <span>LOCAL</span>
             <strong>{{ localTime }}</strong>
@@ -132,7 +134,9 @@ onUnmounted(() => window.clearInterval(clock));
         </div>
       </header>
 
-      <p v-if="connectMessage" class="connection-message">{{ connectMessage }}</p>
+      <p v-if="connectMessage && tab !== 'demo'" class="connection-message">
+        {{ connectMessage }}
+      </p>
 
       <main class="zeon-main">
         <FleetControl
@@ -146,6 +150,7 @@ onUnmounted(() => window.clearInterval(clock));
         <TeachPanel v-else-if="tab === 'teach'" />
         <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
         <WorldMapTab v-else-if="tab === 'world'" />
+        <DemoBrandTab v-else-if="tab === 'demo'" @open-tab="select" />
       </main>
     </div>
   </div>
