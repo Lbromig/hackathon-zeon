@@ -38,13 +38,41 @@ from core.config import settings
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MOCK_FLEET = os.path.join(REPO_ROOT, "fleet.mock.json")
 
-#: What the reference run reaches on the mock bench: 19 authored actions plus three
-#: materialized servo iterations (8 rows each) = 43 rows, 41 of them complete. The loop stalls
-#: because the mock world offers no detectable tip/tube pair, which halts the run with the final
-#: retract never reached. Asserted as a floor rather than an equality so a better sim world
-#: (which would converge the loop and complete all 43) does not read as a regression.
-REFERENCE_ROWS = 43
-REFERENCE_COMPLETE = 41
+#: How many servo iterations the mock bench materializes before the loop gives up: the world
+#: offers no detectable tip/tube pair, an unobserved offset counts as no progress, and
+#: `no_progress_abort` stops it there.
+SERVO_ITERATIONS_ON_THE_MOCK_BENCH = 3
+#: Rows the loop leaves incomplete when it stalls — itself, and the retract behind it that is
+#: therefore never reached.
+UNREACHED_ROWS = 2
+
+
+def _authored() -> list:
+    """The handover plan as authored, before the runner materializes anything."""
+    from backend.app.engine.plans import handover
+
+    return handover.build()
+
+
+def _loop_index() -> int:
+    """Where the servo loop sits in the authored plan — also the count of the actions in
+    front of it, all of which must have run before the loop can stall."""
+    return next(i for i, a in enumerate(_authored()) if a.kind == "control.loop")
+
+
+def _reference_rows() -> int:
+    """Rows the reference run reaches on the mock bench.
+
+    Derived from the plan rather than written down: every authored action keeps its row, and
+    the loop materializes its body once per iteration on top (R-VIS-8). Editing the workflow —
+    adding a step, or removing one, as the decap's trailing release was — must not turn into
+    arithmetic upkeep here.
+    """
+    from backend.app.engine.actions import Loop
+
+    plan = _authored()
+    loop = next(a for a in plan if isinstance(a, Loop))
+    return len(plan) + SERVO_ITERATIONS_ON_THE_MOCK_BENCH * len(loop.body)
 
 
 def _reject_constant(name: str):  # pragma: no cover - only called on a malformed frame
@@ -208,7 +236,9 @@ def test_loading_the_handover_plan_returns_the_whole_plan_ready_to_render(client
     snap = client.post("/api/engine/plan", json={"name": "handover"}).json()
     assert snap["name"] == "handover"
     assert snap["state"] == "idle"
-    assert len(snap["actions"]) == 19
+    # One row per authored action, counted off the plan: the tab renders what `build()` says,
+    # and a step added to or removed from the workflow is not a change to this contract.
+    assert len(snap["actions"]) == len(_authored())
     assert snap["readiness"] == "ready"
     assert snap["cursor"] == 0
     assert snap["run_id"]
@@ -485,7 +515,8 @@ def test_injection_lands_at_the_cursor_and_is_refused_in_the_past(client, taught
     # The run was already paused, so the endpoint must not have paused or resumed it.
     assert accepted["paused_for_inject"] is False and accepted["resumed"] is False
     assert accepted["state"] == "paused"
-    assert len(accepted["snapshot"]["actions"]) == 20
+    assert len(accepted["snapshot"]["actions"]) == len(snap["actions"]) + 1, \
+        "exactly one row more than the plan had before the injection"
     # A completed action's result survives the renumber, keyed by aid (D4).
     assert accepted["snapshot"]["actions"][0]["result"]["status"] == "complete"
 
@@ -589,11 +620,15 @@ def test_a_plan_swap_during_a_live_run_is_refused(client, taught_handover):
 def test_the_full_simulated_handover_runs_through_the_api(client, taught_handover):
     """The reference run, end to end through the API: load, pre-flight, start, watch, finish.
 
-    41 of 43 actions complete on the mock bench. The two that do not are the servo loop (which
+    All but two rows complete on the mock bench. The two that do not are the servo loop (which
     stalls: the mock world has no detectable tip/tube pair, and an unobserved offset counts as
     no progress rather than as converged) and the retract behind it, which is never reached.
     That is the honest outcome for this bench, and it exercises every layer: the plan, the
     wrapper, loop materialization, the failure classification, and the wire.
+
+    The counts are derived from `handover.build()` and asserted as floors, so neither a better
+    sim world (which would converge the loop and complete everything) nor an edit to the
+    workflow reads as a regression here.
     """
     from backend.app.engine.runner import device_claims
 
@@ -610,11 +645,12 @@ def test_the_full_simulated_handover_runs_through_the_api(client, taught_handove
                      timeout=180.0, what="the handover run to finish")
     rows = final["actions"]
     completed = sum(1 for row in rows if row["state"] == "complete")
-    assert len(rows) >= REFERENCE_ROWS, [r["kind"] for r in rows]
-    assert completed >= REFERENCE_COMPLETE, {r["index"]: r["state"] for r in rows
-                                             if r["state"] != "complete"}
+    reference_rows = _reference_rows()
+    assert len(rows) >= reference_rows, [r["kind"] for r in rows]
+    assert completed >= reference_rows - UNREACHED_ROWS, \
+        {r["index"]: r["state"] for r in rows if r["state"] != "complete"}
     # Every authored action before the servo loop ran, in order.
-    assert all(row["state"] == "complete" for row in rows[:17])
+    assert all(row["state"] == "complete" for row in rows[:_loop_index()])
     # The loop materialized real indexed rows carrying their iteration, so iteration 3's frames
     # and solve are inspectable rather than collapsed into one opaque row (R-VIS-8).
     expanded = [row for row in rows if row["origin"] == "expand"]
