@@ -10,9 +10,12 @@
 //  1. **`seq` is the ordering authority**, not arrival order — the API thread emits too. A
 //     lower-or-equal `seq` is dropped (every state-carrying event is absolute, so a re-apply
 //     is a no-op); a *gap* is repaired with a fresh snapshot, because a skip is not.
-//  2. **`seq` restarts at 1 per run** (review B6). So `run_id` is checked first: a different
-//     run means the counter restarted, and the store re-snapshots instead of dropping the
-//     whole of run B as "already seen".
+//  2. **`seq` is ONE monotonic sequence per process, not per run** — `events.PROCESS_SEQUENCE`,
+//     the fix for review B6. So there is exactly **one `last_seq` per socket**: it is seeded
+//     from `RunSnapshot.seq` and **never reset to 0**, least of all by a `run_id` change. A
+//     new run's first `seq` is not 1, and nothing about a run's position can be read off it.
+//     A `run_id` change still forces a re-snapshot — the rows, states and results all belong
+//     to the other run — but it re-seeds `last_seq` upward from that snapshot, never down.
 //  3. **Results are keyed by `aid`, never by index** (D4). An injection renumbers every index
 //     after it; a completed action's outputs must survive that.
 //  4. **`RunStateChanged` is the state authority.** `run_paused` is a pointer at a row and is
@@ -54,8 +57,12 @@ export interface ChainRow {
   depth: number;
   state: ActionState;
   result: ActionResult | null;
-  /** A `planned` row in a finished run was never reached — not "pending" (non-blocking 15). */
+  /** A `planned` row in a run that will not continue was never reached — not "pending"
+   *  (non-blocking 15). A *failed* run does not qualify: it is resumable. */
   notReached: boolean;
+  /** The cursor is on this row: "the run is here". Not "next" — after a failure inside the
+   *  servo loop the cursor sits **on the failed row**, and `resume()` re-enters the loop
+   *  there, so the cursor can point at a `failed` row as legitimately as a `planned` one. */
   isCursor: boolean;
 }
 
@@ -152,7 +159,10 @@ function clearRunScopedState(): void {
   s.pausePointer = null;
   s.finished = null;
   s.rejections = [];
-  s.lastSeq = 0;
+  // NOT `lastSeq = 0`. The sequence is process-wide (rule 2): run B's first event carries a
+  // `seq` far above run A's last, so zeroing here would only re-open the door to replaying
+  // stale buffered frames — and, if the snapshot fetch that follows fails, leave the socket
+  // with no floor at all.
 }
 
 function applySnapshot(snap: RunSnapshot): void {
@@ -175,7 +185,11 @@ function applySnapshot(snap: RunSnapshot): void {
   }
   // Read `seq` from the snapshot, not from the rows: `Runner.snapshot` samples it *before*
   // the rows on purpose, so re-applying a straddling event is a no-op rather than a skip.
-  s.lastSeq = snap.seq ?? 0;
+  //
+  // `Math.max`, never a bare assignment: the sequence is process-wide and monotonic, so a
+  // snapshot can only ever move the floor up. A backend that omits `seq` (or answers 0 on an
+  // idle run) must not silently reset the floor and re-admit everything already applied.
+  s.lastSeq = Math.max(s.lastSeq, snap.seq ?? 0);
   s.api = "ok";
   s.apiError = "";
 }
@@ -211,8 +225,9 @@ function ingest(event: EngineEvent): void {
     pending.push(event);
     return;
   }
-  // Rule 2 first: `seq` restarts at 1 per run, so a run change must be detected before any
-  // comparison against `lastSeq` (review B6). An empty `run_id` carries no information.
+  // A `run_id` change means every row, state and result we hold belongs to the other run, so
+  // it is re-fetched — but `lastSeq` is *not* rewound (rule 2): the sequence is process-wide,
+  // and the events of the new run are the ones above the floor, not below it.
   if (event.run_id && s.runId && event.run_id !== s.runId) {
     pending.push(event);
     void resync("run_id changed");
@@ -220,7 +235,7 @@ function ingest(event: EngineEvent): void {
   }
   if (!s.runId && event.run_id) s.runId = event.run_id;
 
-  if (s.lastSeq > 0 && event.seq <= s.lastSeq) {
+  if (event.seq <= s.lastSeq) {
     s.dropped++;                       // duplicate or out of order — re-applying is a no-op
     return;
   }
@@ -433,7 +448,7 @@ export const engineCommands = {
   pause: () => command("pause", () => pauseRun()),
   resume: () => command("resume", () => resumeRun()),
   abort: () => command("abort", () => abortRun()),
-  inject: (afterAid: number, action: Record<string, unknown>) =>
+  inject: (afterAid: number | null, action: Record<string, unknown>) =>
     command("inject", () => injectAction(afterAid, action)),
 };
 
@@ -443,8 +458,9 @@ export function clearCommandError(): void {
 
 // --- derived -----------------------------------------------------------------
 
-const isFinished = (state: RunState) =>
-  state === "complete" || state === "failed" || state === "aborted";
+/** A run that will not continue by itself. `failed` is *not* here: the cursor stays on the
+ *  failed row and `resume()` continues from it — including back into the servo loop. */
+const isOver = (state: RunState) => state === "complete" || state === "aborted";
 
 /**
  * The plan chain, with the `18·4.7` labels and the nesting.
@@ -456,7 +472,10 @@ const chain = computed<ChainRow[]>(() => {
   const rows = s.rows.slice().sort((a, b) => a.index - b.index);
   const indexOfAid = new Map<number, number>(rows.map((r) => [r.aid, r.index]));
   const seenInIteration = new Map<string, number>();
-  const finishedRun = isFinished(s.runState);
+  const over = isOver(s.runState);
+  // The cursor is meaningful right up to the end, including on a `failed` run — that is where
+  // Resume and the fix-injection both point. Only a finished-for-good run has no "here".
+  const showCursor = !over && s.rows.length > 0;
 
   return rows.map((row) => {
     const state = s.states[row.aid] ?? row.state ?? "planned";
@@ -476,8 +495,8 @@ const chain = computed<ChainRow[]>(() => {
       depth,
       state,
       result: s.results[row.aid] ?? null,
-      notReached: finishedRun && state === "planned",
-      isCursor: row.index === s.cursor && !finishedRun,
+      notReached: over && state === "planned",
+      isCursor: showCursor && row.index === s.cursor,
     };
   });
 });
@@ -546,14 +565,39 @@ const failedRow = computed<ChainRow | null>(
 );
 
 /**
- * Why Resume is dangerous after a mid-loop failure (review B4): the cursor lands *past* the
- * whole materialized region, so resuming skips the rest of the iteration and executes the
- * action after the loop — on this workflow, retracting the pipette while the tube is still
- * misaligned. The backend should 409 it; the button says so either way.
+ * Whether Resume will re-enter the servo loop.
+ *
+ * This is the *opposite* of review B4's reading, and deliberately so: the runner now leaves the
+ * cursor **on the row that failed** inside the loop (`runner.py` `halted_in` →
+ * `plan.cursor = index_of(halted_in)`) and `_run_loop` is re-enterable, so resuming continues
+ * that iteration rather than skipping to the action after the loop. Resume is therefore
+ * *enabled* here, and labelled with what it will do — the recovery path, not the hazard.
  */
-const resumeAbandonsLoop = computed(
+const resumeReentersLoop = computed(
   () => !!failedRow.value && failedRow.value.row.parent_aid != null,
 );
+
+/** The row the run is on — where Resume continues and where an injection lands next to. */
+const cursorRow = computed<ChainRow | null>(
+  () => chain.value.find((item) => item.isCursor) ?? null,
+);
+
+/**
+ * The `after_aid` an inject panel should open on.
+ *
+ * The failed row first: injecting a fix immediately after it is accepted (the cursor is on it,
+ * so the position is `cursor + 1`, never "in the past"), and it is the single most useful
+ * injection in the feature. Otherwise the row before the cursor, so the new action becomes the
+ * next one to run.
+ */
+const injectDefaultAid = computed<number | null>(() => {
+  if (failedRow.value) return failedRow.value.aid;
+  const rows = chain.value;
+  const at = rows.findIndex((item) => item.isCursor);
+  if (at > 0) return rows[at - 1].aid;
+  if (at === 0) return null;                          // before the first row: `after_aid` null
+  return rows.length ? rows[rows.length - 1].aid : null;
+});
 
 const elapsedMs = computed(() => {
   if (!s.startedAt) return 0;
@@ -597,7 +641,9 @@ export function useEngine() {
     reality,
     allWarnings,
     failedRow,
-    resumeAbandonsLoop,
+    cursorRow,
+    injectDefaultAid,
+    resumeReentersLoop,
     elapsedMs,
     commands: engineCommands,
     refresh,

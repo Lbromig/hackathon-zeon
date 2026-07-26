@@ -17,7 +17,8 @@ import type { PlanName } from "../../api/engine";
 const emit = defineEmits<{ (e: "inject"): void }>();
 const props = defineProps<{ injectOpen?: boolean }>();
 
-const { state, commands, allWarnings, failedRow, resumeAbandonsLoop, refresh } = useEngine();
+const { state, commands, allWarnings, failedRow, cursorRow, resumeReentersLoop, refresh } =
+  useEngine();
 
 const confirmDegraded = ref(false);
 const confirmAbort = ref(false);
@@ -115,13 +116,13 @@ const busy = (name: string) => state.busy === name;
       <button
         class="btn"
         :disabled="apiAbsent || (state.runState !== 'paused' && state.runState !== 'failed') || !!state.busy"
-        :title="resumeAbandonsLoop
-          ? 'the failed step is inside the servo loop — the loop cannot be re-entered, so resuming would skip the rest of it and run the step after the loop'
-          : 'continue from the cursor'"
+        :title="resumeReentersLoop
+          ? 'the failed step is inside the servo loop, and the cursor is on it — resuming re-enters the loop and continues that iteration from the failed row'
+          : 'continue from the row the cursor is on'"
         @click="commands.resume"
       >
         <span aria-hidden="true">⏵</span>
-        {{ resumeAbandonsLoop ? "Resume (abandons the servo loop)" : "Resume" }}
+        {{ resumeReentersLoop ? "Resume (re-enters the servo loop)" : "Resume" }}
       </button>
 
       <button
@@ -192,10 +193,18 @@ const busy = (name: string) => state.busy === name;
       <span aria-hidden="true">✗</span>
       step {{ failedRow.display }} ({{ failedRow.row.kind }}) failed:
       {{ failedRow.result?.error?.message ?? "no message" }}
-      <span v-if="resumeAbandonsLoop">
-        — it is inside the servo loop, which cannot be re-entered. Inject before the loop, or
-        abort and re-run.
+      <span v-if="resumeReentersLoop" class="text-amber-200">
+        — it is inside the servo loop and the run is still on it. Resume re-enters the loop and
+        continues from this row; injecting a fix immediately after it is accepted.
       </span>
+    </p>
+
+    <!-- The cursor is "where the run is", not "what is next": after a mid-loop failure it sits
+         on the failed row itself, and saying "next" there would be a lie about a red row. -->
+    <p v-if="cursorRow" class="mt-2 text-xs text-deck-300">
+      the run is at <span class="num">#{{ cursorRow.display }}</span>
+      {{ cursorRow.row.label || cursorRow.row.kind }}
+      <span class="text-deck-400">({{ cursorRow.state }})</span>
     </p>
 
     <p v-if="state.pausePointer" class="mt-2 text-xs text-deck-300">

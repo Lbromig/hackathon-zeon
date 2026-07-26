@@ -529,8 +529,11 @@ export const getPreflight = async (): Promise<PreflightReport> =>
 /**
  * Insert an action after `after_aid`. Refusals come back as 409 with the reason, which the
  * UI renders verbatim — several cases are refused deliberately (D22/R-ENG-13).
+ *
+ * `null` is "at the very front of the plan", which `Plan.refusal_for_insert` accepts as
+ * `after_aid in (None, 0)` and then refuses on the cursor rule once a run has moved past it.
  */
-export const injectAction = (afterAid: number, action: Record<string, unknown>) =>
+export const injectAction = (afterAid: number | null, action: Record<string, unknown>) =>
   post<RunSnapshot | { ok?: boolean }>("/api/engine/inject", { after_aid: afterAid, action });
 
 /**
