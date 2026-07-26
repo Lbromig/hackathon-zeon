@@ -409,21 +409,29 @@ export function preflightOf(body: unknown): PreflightReport | null {
   const bag = body as Record<string, unknown>;
   const inner = bag.detail && typeof bag.detail === "object" ? bag.detail as Record<string, unknown> : bag;
   const raw = (inner.problems ?? inner.preflight ?? inner.report) as unknown;
+  // The refusal envelope nests the whole report (`detail.preflight`), which carries its own
+  // `readiness` / `ok` — read them from there rather than re-deriving what the engine already
+  // decided; `degraded` and `failed` are not interchangeable.
+  const nested: Record<string, unknown> =
+    raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : inner;
   const problems: PreflightProblem[] = Array.isArray(raw)
     ? raw.filter((p): p is PreflightProblem => !!p && typeof p === "object")
-    : Array.isArray((raw as Record<string, unknown> | undefined)?.problems)
-      ? ((raw as Record<string, unknown>).problems as PreflightProblem[])
+    : Array.isArray(nested.problems)
+      ? (nested.problems as PreflightProblem[])
       : [];
-  if (!problems.length && !inner.readiness && !inner.reason) return null;
+  if (!problems.length && !nested.readiness && !inner.reason && !nested.reason) return null;
   const blocking = problems.filter((p) => p.blocking !== false);
   return {
     ...EMPTY_PREFLIGHT,
     problems,
-    ok: typeof inner.ok === "boolean" ? inner.ok : blocking.length === 0,
-    readiness: (inner.readiness as ReadinessState)
+    ok: typeof nested.ok === "boolean" ? nested.ok : blocking.length === 0,
+    readiness: (nested.readiness as ReadinessState)
       ?? (blocking.length ? "failed" : problems.length ? "degraded" : "ready"),
-    reason: typeof inner.reason === "string" ? inner.reason
-      : blocking.map((p) => p.message).join("; "),
+    // The 409's own `reason` is the sentence written for the operator; the report's is the
+    // summary. Prefer the former, fall back to the latter, then to the problems themselves.
+    reason: typeof inner.reason === "string" && inner.reason ? inner.reason
+      : typeof nested.reason === "string" && nested.reason ? nested.reason
+        : blocking.map((p) => p.message).join("; "),
   };
 }
 
@@ -432,23 +440,34 @@ export function preflightOf(body: unknown): PreflightReport | null {
 /**
  * A failed engine call, with the reason the backend gave, **verbatim**.
  *
- * `absent` distinguishes "the engine API is not mounted yet" (404 on every route, or the
- * fetch itself failed) from "the engine refused this request" (409 with a reason). The tab
- * must degrade visibly on the first and render the reason on the second — never a blank
- * screen or a console-only error.
+ * Three cases, and they must not be conflated:
+ *
+ *  * **`absent`** — the engine is not reachable at all: the fetch itself failed (status 0), or
+ *    the route is not implemented (501). The tab degrades visibly.
+ *  * **`notFound`** — a 404 *with a reason*. On the mounted API this is "no plan is loaded —
+ *    POST /api/engine/plan first", which is an answer, not an outage: only `GET /snapshot` is
+ *    guaranteed to answer without a plan, so the other routes 404 until one is loaded. Rendering
+ *    that as "engine API unavailable" would be a false alarm on a perfectly healthy backend.
+ *  * a 409 with a reason — the engine refused this request. Render the reason verbatim.
+ *
+ * The one place a 404 *does* mean absent is the snapshot route, which answers an empty snapshot
+ * rather than 404 whenever the module is mounted — so the store treats it that way there, and
+ * only there.
  */
 export class EngineError extends Error {
   readonly status: number;
   readonly detail: string;
   readonly body: unknown;
   readonly absent: boolean;
+  readonly notFound: boolean;
   constructor(status: number, detail: string, body: unknown = null) {
     super(detail || `engine request failed (${status})`);
     this.name = "EngineError";
     this.status = status;
     this.detail = detail;
     this.body = body;
-    this.absent = status === 404 || status === 0 || status === 501;
+    this.absent = status === 0 || status === 501;
+    this.notFound = status === 404;
   }
   get preflight(): PreflightReport | null {
     return preflightOf(this.body);

@@ -139,12 +139,15 @@ let lastResyncAt = 0;
 let pending: EngineEvent[] = [];
 let started = false;
 
+/** Only ever called for the *snapshot* route — see the `notFound` note below. */
 function noteApiError(e: unknown, what: string): void {
   if (e instanceof EngineError) {
     s.apiError = `${what}: ${e.detail}`;
-    // 404 on the snapshot route means `api/engine.py` is not mounted. That is a state the
-    // whole tab renders, not a console message.
-    if (e.absent) s.api = "absent";
+    // The mounted snapshot route answers an **empty snapshot**, never 404, precisely so a client
+    // has a `seq` to seed from before any plan is loaded. So a 404 *here* does mean
+    // `api/engine.py` is not mounted — a state the whole tab renders. On every other route a 404
+    // is "no plan is loaded yet", which is an answer and must not raise the alarm.
+    if (e.absent || e.notFound) s.api = "absent";
     return;
   }
   s.apiError = `${what}: ${e instanceof Error ? e.message : String(e)}`;
@@ -408,11 +411,22 @@ export async function refresh(): Promise<void> {
     noteApiError(e, "snapshot");
     return;
   }
+  await refreshPreflight();
+}
+
+/** Pre-flight, for the readiness panel. Advisory: it must never blank or alarm the tab. */
+async function refreshPreflight(): Promise<void> {
   try {
     s.preflight = await getPreflight();
   } catch (e) {
-    // Pre-flight is advisory for the panel; a missing route must not blank the tab.
-    if (e instanceof EngineError && !e.absent) s.apiError = `preflight: ${e.detail}`;
+    if (e instanceof EngineError) {
+      // 404 = no plan loaded yet, which the chain already says in plain words; 0/501 = the API
+      // is absent, which the snapshot path has already reported.
+      if (e.absent || e.notFound) return;
+      s.apiError = `preflight: ${e.detail}`;
+      return;
+    }
+    s.apiError = `preflight: ${e instanceof Error ? e.message : String(e)}`;
   }
 }
 
@@ -427,6 +441,8 @@ async function command(name: string, run: () => Promise<unknown>): Promise<boole
   } catch (e) {
     if (e instanceof EngineError) {
       s.commandError = e.detail;                      // verbatim: it is the operator's answer
+      // Deliberately not `notFound`: a control route 404s with "no plan is loaded — POST
+      // /api/engine/plan first", which is a reason to render, not an outage to declare.
       if (e.absent) s.api = "absent";
       const report = e.preflight;
       if (report) s.preflight = report;
@@ -439,6 +455,9 @@ async function command(name: string, run: () => Promise<unknown>): Promise<boole
     // The refused-start path changes nothing server-side, but pause/inject do — re-seed so
     // the tab never diverges from the runner because a command half-succeeded.
     void resync("after command");
+    // Loading a plan is the only thing that makes pre-flight answerable at all (every route but
+    // the snapshot 404s until then), and starting is what an operator reads the panel for.
+    if (name === "load" || name === "start") void refreshPreflight();
   }
 }
 
