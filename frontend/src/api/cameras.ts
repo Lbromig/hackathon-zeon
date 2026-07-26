@@ -18,9 +18,8 @@ export interface Detection {
   kind: string; // apriltag | tube | cap | well ...
   polygon: [number, number][]; // normalized [0,1] image coords
   center: [number, number];
-  source: "apriltag" | "cv" | "projection" | string;
+  source: "apriltag" | "cv" | string;
   marker_id: number | null;
-  entity_id: string | null;
   confidence: number;
   distance_m: number | null; // from the tag pose; needs intrinsics
   depth_m: number | null; // measured by the depth sensor; RGB-D only

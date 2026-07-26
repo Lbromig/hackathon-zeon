@@ -114,7 +114,7 @@ def test_detections_are_empty_but_ok_when_idle(client):
 
 def tags(body) -> list[dict]:
     """Only the fiducial detections — the same frame also carries classical-CV
-    shapes and twin projections, which have no marker id by design."""
+    shapes, which have no marker id by design."""
     return [d for d in body["detections"] if d["source"] == "apriltag"]
 
 
@@ -125,18 +125,6 @@ def test_detects_the_rendered_tags(client):
     assert body["streaming"] is True
     assert (body["w"], body["h"]) == (640, 360)
     assert {d["marker_id"] for d in tags(body)} == {180, 183, 224}
-
-
-def test_a_fiducial_no_longer_claims_a_twin_entity(client):
-    """A tag id is a pose source and a label, not a name for a scene-graph entity.
-
-    The twin is gone; `core/perception/markers.py` keeps only the tag *size* registry.
-    A detection that still asserted an `entity_id` would be re-introducing the coupling
-    by the back door, so this pins the field to None on the fiducial path.
-    """
-    running_worker(client)
-    for d in tags(client.get("/api/cameras/external/detections").json()):
-        assert d["entity_id"] is None
 
 
 def test_polygons_are_normalized(client):

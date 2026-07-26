@@ -1,17 +1,10 @@
-from .adapters import ArmDriverMover
-from .pick_place import (
-    PickPlaceConfig,
-    Step,
-    StepKind,
-    UprightViolation,
-    Waypoint,
-    assert_upright,
-    execute,
-    plan,
-    rotation_angle,
-)
+"""Motion helpers that are not the driver's job.
 
-__all__ = [
-    "PickPlaceConfig", "Waypoint", "Step", "StepKind", "UprightViolation",
-    "plan", "execute", "assert_upright", "rotation_angle", "ArmDriverMover",
-]
+Deliberately thin: `cap_ops` is the only member. The pick-and-place planner and the
+`ArmDriverMover` adapter that used to live here were metres/radians world-frame code
+serving the deleted digital twin, with no caller in the target scope.
+"""
+from . import cap_ops
+from . import path_teach
+
+__all__ = ["cap_ops", "path_teach"]

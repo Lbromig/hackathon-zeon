@@ -20,8 +20,6 @@ from .api import cameras, instruments, teach
 from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
-from .services.kinematics import kinematics
-from .services.twin_fusion import twin_fusion
 
 
 @asynccontextmanager
@@ -30,11 +28,7 @@ async def lifespan(app: FastAPI):
     # One frame per camera slot, written to temp/captures/<slot>/. Backgrounded: a UVC open
     # can block uninterruptibly on macOS, and the API must come up regardless.
     startup_snapshot.run()
-    kinematics.start()           # arm FK -> twin (no-op until a twin exists + arms connect)
-    twin_fusion.start()          # corrective camera->twin fusion (no-op until a twin exists)
     yield
-    twin_fusion.stop()
-    kinematics.stop()
     # Stop the frame workers before the drivers they hold go away, or a worker
     # keeps grabbing from a released VideoCapture during shutdown.
     camera_hub.stop_all()

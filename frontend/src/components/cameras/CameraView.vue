@@ -70,8 +70,7 @@ const points = (d: Detection) =>
   d.polygon.map(([x, y]) => `${x * width.value},${y * height.value}`).join(" ");
 
 const colour = (d: Detection) => {
-  if (!d.entity_id) return "#f59e0b"; // detected, but not mapped to a twin entity
-  return d.source === "projection" ? "#38bdf8" : "#22c55e";
+  return d.source === "cv" ? "#f59e0b" : "#22c55e";
 };
 
 /** Depth beats the tag pose: a 20 mm tag subtends few pixels, so PnP range is noisy. */
@@ -82,15 +81,14 @@ const range = (d: Detection): string | null => {
 };
 
 const label = (d: Detection) => {
-  const bits = [d.entity_id ?? `id ${d.marker_id}`];
-  if (d.entity_id && d.marker_id !== null) bits.push(`#${d.marker_id}`);
+  const bits = [d.marker_id !== null ? `id ${d.marker_id}` : d.kind];
   const r = range(d);
   if (r) bits.push(r);
   return bits.join("  ·  ");
 };
 
 function pick(d: Detection) {
-  selected.value = d.entity_id ?? String(d.marker_id);
+  selected.value = String(d.marker_id ?? d.kind);
   emit("select", d);
 }
 

@@ -16,10 +16,18 @@ So uniqueID identifies a physical port, and the USB serial identifies the unit p
 into it. Both survive renumbering, and neither needs root (unlike librealsense, which is
 the other way to bind by serial and needs root on macOS to claim the UVC interface).
 
-ffmpeg's avfoundation input accepts a uniqueID directly as `-i`, which is what makes
-capture-by-identity possible here. Device *names* also work as `-i`, but are not unique:
-two D405s report the identical name "Intel(R) RealSense(TM) Depth Camera 405  Depth",
-so a name binds to whichever the enumeration happens to hit first.
+Capture therefore goes through `scripts/avfsnap.swift` (built on demand), which calls
+`AVCaptureDevice(uniqueID:)` and fails loudly when there is no such device.
+
+Do NOT be tempted to capture with ffmpeg here. Measured on this bench:
+
+  * `ffmpeg -f avfoundation -i "<exact device name>"` does bind correctly, and an
+    unknown name is refused — but the two D405s share one name, so it cannot separate them.
+  * `ffmpeg -f avfoundation -i "<uniqueID>"` does NOT match the uniqueID. It silently
+    opens the default device instead, so you get a plausible frame from the wrong camera
+    with a zero exit status. A bogus uniqueID also "succeeds". That failure mode is why
+    every frame here is fingerprinted (colour vs IR, pairwise difference) rather than
+    trusted.
 
 Apple's own cameras (built-in, Desk View, Continuity iPhone) are listed but NEVER opened:
 they are always present, so a misconfigured slot backed by one looks healthy while
@@ -31,7 +39,6 @@ pointing a verification agent at the operator instead of the bench.
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import re
 import subprocess
@@ -42,8 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # A lab camera is a RealSense. Everything else on this Mac is an Apple camera pointed at a
 # person or a desktop; see the module docstring.
 LAB_MARKER = "realsense"
-DEFAULT_W, DEFAULT_H, DEFAULT_FPS = 1280, 720, 30
-SETTLE_FRAMES = 15          # frame 1 is routinely black or saturated before AE settles
+DEFAULT_W, DEFAULT_H = 1280, 720
 
 
 def avf_cameras() -> list[dict]:
@@ -124,28 +130,33 @@ def ffmpeg_order() -> dict[str, int]:
     return order
 
 
-def snapshot(unique_id: str, dest: str, width: int, height: int, fps: int) -> str | None:
-    """Grab one settled frame from the device with this uniqueID. Returns the path."""
-    stem = os.path.splitext(dest)[0]
-    # uyvy422: the only pixel format these units advertise to AVFoundation. Without it
-    # ffmpeg asks for yuv420p, the device refuses, and it silently falls back to the
-    # device default -- which on a D405 is 256x144.
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "avfoundation",
-           "-pixel_format", "uyvy422", "-video_size", f"{width}x{height}",
-           "-framerate", str(fps), "-i", unique_id,
-           "-frames:v", str(SETTLE_FRAMES), f"{stem}_%02d.png"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
-    except subprocess.TimeoutExpired:
+def avfsnap_binary() -> str | None:
+    """Path to the avfsnap helper, compiling it from scripts/avfsnap.swift on first use."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(here, "avfsnap.swift")
+    out = os.path.join(os.path.dirname(here), "temp", "bin", "avfsnap")
+    if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(src):
+        return out
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    proc = subprocess.run(["swiftc", "-O", src, "-o", out],
+                          capture_output=True, text=True, timeout=300, check=False)
+    if proc.returncode != 0:
+        print(f"could not build avfsnap:\n{proc.stderr.strip()[:400]}", file=sys.stderr)
         return None
-    frames = sorted(glob.glob(f"{stem}_[0-9][0-9].png"))
-    if not frames:
-        err = (proc.stderr or "").strip().splitlines()
+    return out
+
+
+def snapshot(unique_id: str, dest: str, width: int, height: int) -> str | None:
+    """Grab one settled frame from the device with this uniqueID. Returns the path."""
+    binary = avfsnap_binary()
+    if binary is None:
+        return None
+    proc = subprocess.run([binary, "grab", unique_id, dest, str(width), str(height)],
+                          capture_output=True, text=True, timeout=120, check=False)
+    if proc.returncode != 0 or not os.path.exists(dest):
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
         print(f"      capture failed: {err[-1] if err else 'no frame'}")
         return None
-    os.replace(frames[-1], dest)                # last frame = most settled
-    for extra in frames[:-1]:
-        os.remove(extra)
     return dest
 
 
@@ -176,7 +187,6 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="output dir (default <capture_dir>/_inventory)")
     ap.add_argument("--width", type=int, default=DEFAULT_W)
     ap.add_argument("--height", type=int, default=DEFAULT_H)
-    ap.add_argument("--fps", type=int, default=DEFAULT_FPS)
     args = ap.parse_args()
 
     cams = avf_cameras()
@@ -214,7 +224,7 @@ def main() -> int:
         if args.snapshot:
             model = re.sub(r"[^A-Za-z0-9]+", "_", cam["name"]).strip("_")
             dest = os.path.join(out_dir, f"{serial}_{model}.png")
-            got = snapshot(cam["unique_id"], dest, args.width, args.height, args.fps)
+            got = snapshot(cam["unique_id"], dest, args.width, args.height)
             if got:
                 print(f"    frame        {os.path.relpath(got)}  {describe(got)}")
             else:

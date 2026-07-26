@@ -51,11 +51,8 @@ class Detection:
     kind: str                       # apriltag | tube | cap | well ...
     polygon: list[list[float]]
     center: list[float]
-    source: str = "apriltag"        # apriltag | cv | projection
+    source: str = "apriltag"        # apriltag | cv
     marker_id: int | None = None
-    # Only the twin-projection source still fills this in; a fiducial no longer names an
-    # entity (the marker registry is a tag-size registry now — core/perception/markers.py).
-    entity_id: str | None = None
     confidence: float = 1.0
     distance_m: float | None = None
     depth_m: float | None = None
@@ -65,7 +62,7 @@ class Detection:
         return {
             "kind": self.kind, "polygon": self.polygon, "center": self.center,
             "source": self.source, "marker_id": self.marker_id,
-            "entity_id": self.entity_id, "confidence": self.confidence,
+            "confidence": self.confidence,
             "distance_m": self.distance_m, "depth_m": self.depth_m,
             "camera_xyz": self.camera_xyz,
         }
@@ -332,7 +329,6 @@ class CameraWorker(threading.Thread):
                 depth_m=depth_m,
                 camera_xyz=self._camera_point(u, v, depth_m, d),
             ))
-        out.extend(self._project_twin(w, h))
         out.extend(self._detect_shapes(frame, depth, w, h))
         return out
 
@@ -346,29 +342,6 @@ class CameraWorker(threading.Thread):
             print(f"[camera_hub] {self.driver.device_id} shape detect failed: {e}")
             return []
         return [Detection(**s.as_detection_kwargs()) for s in shapes]
-
-    def _project_twin(self, w: int, h: int) -> list[Detection]:
-        """Overlay outlines for calibrated twin entities (source='projection').
-
-        Needs the camera's intrinsics and its pose in the twin; degrades to nothing
-        (fiducials still show) when either is missing, e.g. before calibration or on a
-        camera that reports no intrinsics.
-        """
-        if self._K is None:
-            return []
-        try:
-            from core.perception.projection import project_twin
-
-            from . import twin
-            wm = twin.get_world()
-            if wm is None or self.driver.device_id not in wm.entities:
-                return []
-            polys = project_twin(wm, self.driver.device_id, self._K, w, h)
-        except Exception as e:  # projection must never kill the video/detection
-            print(f"[camera_hub] {self.driver.device_id} projection failed: {e}")
-            return []
-        return [Detection(kind=p["kind"], polygon=p["polygon"], center=p["center"],
-                          source="projection", entity_id=p["entity_id"]) for p in polys]
 
     def _camera_point(self, u: float, v: float, depth_m: float | None,
                       det: Any) -> list[float] | None:

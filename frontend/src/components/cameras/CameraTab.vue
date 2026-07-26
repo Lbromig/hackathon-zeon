@@ -187,7 +187,6 @@ onMounted(refresh);
     <section v-if="lastPick" class="card">
       <h2 class="card-title">Selected detection</h2>
       <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-5">
-        <div><dt class="text-xs text-deck-400">entity</dt><dd class="num">{{ lastPick.entity_id ?? "—" }}</dd></div>
         <div><dt class="text-xs text-deck-400">marker</dt><dd class="num">{{ lastPick.marker_id ?? "—" }}</dd></div>
         <div>
           <dt class="text-xs text-deck-400">depth (measured)</dt>
