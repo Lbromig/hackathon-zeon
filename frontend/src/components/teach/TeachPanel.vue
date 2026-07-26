@@ -14,6 +14,7 @@ import JogPad from "./JogPad.vue";
 import JointJog from "./JointJog.vue";
 import MoveTo from "./MoveTo.vue";
 import PoseLibrary from "./PoseLibrary.vue";
+import TeachChecklist from "./TeachChecklist.vue";
 
 const t = useTeach();
 const {
@@ -167,6 +168,17 @@ onUnmounted(() => {
           </button>
           <button class="btn" :disabled="!connected || sending" @click="t.setEnabled(true)">Enable</button>
           <button class="btn" :disabled="!connected || sending" @click="t.setEnabled(false)">Disable</button>
+          <button
+            class="btn"
+            :class="{ 'btn-primary': state?.free_drive }"
+            :disabled="!connected"
+            :title="state?.free_drive
+              ? 'return to position control'
+              : 'make the arm back-drivable so you can position it by hand'"
+            @click="t.setFreeDrive(!state?.free_drive)"
+          >
+            {{ state?.free_drive ? "Hand-guiding ✋" : "Hand-guide" }}
+          </button>
           <button class="btn" :disabled="!canMove" @click="t.goHome()">Home</button>
           <button class="btn" :class="{ 'btn-primary': faulted }" :disabled="!connected" @click="t.clearErrors()">
             Clear errors
@@ -177,6 +189,14 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <p
+        v-if="state?.free_drive"
+        class="mt-3 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm text-sky-200"
+      >
+        <strong>Hand-guiding is on</strong> — the arm is back-drivable. Support it: it holds
+        against gravity using the configured payload, so it sinks if that value is too low.
+        Commanded moves do not behave normally until you switch this off.
+      </p>
       <p v-if="faulted" class="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
         Arm reports error {{ state?.error_code }} — motion is blocked until you clear it.
       </p>
@@ -241,6 +261,7 @@ onUnmounted(() => {
     </section>
 
     <div class="grid gap-4 lg:grid-cols-2">
+      <TeachChecklist />
       <JogPad />
       <JointJog />
       <MoveTo />

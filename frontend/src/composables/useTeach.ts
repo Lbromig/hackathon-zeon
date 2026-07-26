@@ -7,7 +7,14 @@
 
 import { computed, reactive, ref } from "vue";
 import * as api from "../api/teach";
-import type { ActionResult, ArmState, ArmSummary, TaughtPose } from "../api/teach";
+import type {
+  ActionResult,
+  ArmState,
+  ArmSummary,
+  PreflightResult,
+  RequiredPose,
+  TaughtPose,
+} from "../api/teach";
 
 const POLL_MS = 500; // 2 Hz — matches the backend's gripper-width cache
 
@@ -49,6 +56,10 @@ const arms = ref<ArmSummary[]>([]);
 const selectedId = ref<string>(localStorage.getItem("teach.arm") ?? "");
 const state = ref<ArmState | null>(null);
 const poses = ref<TaughtPose[]>([]);
+// Workflow readiness. Fleet-wide, not per-arm: the checklist covers both arms, so
+// switching the selected arm must not clear it.
+const required = ref<RequiredPose[]>([]);
+const preflight = ref<PreflightResult | null>(null);
 const log = ref<LogEntry[]>([]);
 const sending = ref(false);
 const loadError = ref("");
@@ -136,6 +147,17 @@ async function refreshPoses() {
   }
 }
 
+/** Refresh the workflow checklist + readiness banner. Cheap: no hardware I/O. */
+async function refreshReadiness() {
+  try {
+    const result = await api.getPreflight();
+    preflight.value = result;
+    required.value = result.required;
+  } catch {
+    /* readiness is advisory in the UI; the workflow re-checks it before moving */
+  }
+}
+
 async function tick() {
   if (polling || !selectedId.value || document.hidden) return;
   polling = true;
@@ -203,6 +225,7 @@ async function savePose(name: string, note = "") {
   try {
     poses.value = await api.savePose(selectedId.value, name, note);
     pushLog(`save pose "${name}"`, true, "", startedAt);
+    void refreshReadiness(); // a saved pose may have just completed the checklist
     return true;
   } catch (e) {
     pushLog(`save pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
@@ -215,6 +238,7 @@ async function deletePose(name: string) {
   try {
     poses.value = await api.deletePose(selectedId.value, name);
     pushLog(`delete pose "${name}"`, true, "", startedAt);
+    void refreshReadiness();
   } catch (e) {
     pushLog(`delete pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
   }
@@ -222,6 +246,12 @@ async function deletePose(name: string) {
 
 const gotoPose = (name: string) =>
   send(`goto "${name}"`, () => api.gotoPose(selectedId.value, name, settings.speed));
+
+/** Hand-guiding on/off. Turning it off is also how we get back to position control,
+ *  so it must stay reachable even when `canMove` is false. */
+const setFreeDrive = (on: boolean) =>
+  send(on ? "hand-guide ON" : "hand-guide off", () => api.setFreeDrive(selectedId.value, on),
+       { force: true });
 
 export function useTeach() {
   return {
@@ -231,6 +261,8 @@ export function useTeach() {
     selectedId,
     state,
     poses,
+    required,
+    preflight,
     log,
     sending,
     loadError,
@@ -243,6 +275,7 @@ export function useTeach() {
     stopPolling,
     refreshArms,
     refreshPoses,
+    refreshReadiness,
     select,
     persistSettings,
     // commands
@@ -261,5 +294,6 @@ export function useTeach() {
     savePose,
     deletePose,
     gotoPose,
+    setFreeDrive,
   };
 }

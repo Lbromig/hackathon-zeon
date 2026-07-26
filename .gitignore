@@ -1,26 +1,40 @@
-
-# PM-agent scratch state (machine-generated)
-# calibration artifacts (generated)
-# frontend
-# local editor / agent settings
-# pitch decks and other binary exports (keep vendored PDFs like the xArm manual)
-# poses taught through the UI (per-lab, not source)
-*.egg-info/
-*.local
-*.pptx
+__pycache__/
 *.py[cod]
 *.pyc
-*.tsbuildinfo
-.DS_Store
-.claude/settings.local.json
-.env
-.ipynb_checkpoints/
-.pm-agent/
 .venv/
-__pycache__/
-calib/
-data/
-frontend/dist/
-node_modules/
-snapshots/
 venv/
+.env
+.DS_Store
+*.egg-info/
+.ipynb_checkpoints/
+
+# local editor / agent settings
+.claude/settings.local.json
+
+# PM-agent scratch state (machine-generated)
+.pm-agent/
+
+# pitch decks and other binary exports (keep vendored PDFs like the xArm manual)
+*.pptx
+
+# frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+*.local
+
+# calibration artifacts (generated)
+calib/
+
+# saved camera frames, one subfolder per camera (core/perception/capture.py). Bench-local,
+# and the image volume grows without bound, so never committed.
+temp/
+snapshots/
+
+# poses taught through the UI (per-lab, not source)
+data/
+
+# Locally compiled pyrealsense2 wheel — pinned to one python minor version and one CPU
+# architecture, so it is not portable between machines. Regenerate with
+# scripts/build_pyrealsense2_macos.sh (upstream ships no macOS wheel).
+third_party/wheels/

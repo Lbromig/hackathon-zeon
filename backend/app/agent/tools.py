@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from core.verification.agents import AGENTS, Evidence, VerificationAgent
+from core.verification.agents import AGENTS, VerificationAgent
 
 from ..services import twin
 from ..services.device_manager import DeviceManager
@@ -95,10 +95,6 @@ class Toolbox:
         self._world_provider = world_provider or twin.get_world
         self.skills = skills if skills is not None else SKILLS
         self._verifiers = verifiers if verifiers is not None else AGENTS
-        # Pre-motion snapshots, keyed by skill name. The policy calls call_skill and
-        # verify as two separate tools, so without stashing this the before-state is
-        # gone by the time we verify — and the verifiers measure *change*.
-        self._pre: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
 
     # --- read tools -------------------------------------------------------- #
     def get_world_model(self) -> dict[str, Any]:
@@ -118,9 +114,6 @@ class Toolbox:
         if name not in self.skills:
             raise KeyError(f"unknown skill: {name!r} (have {list(self.skills)})")
         skill = self.skills[name]
-        # Captured before the motion so verify() can measure the change it caused.
-        self._pre[name] = (uncap_aspirate._telemetry(skill.step, self._dm),
-                           uncap_aspirate._frames(self._dm))
         skill.run(self._dm, params or {})
         return {
             "skill": name,
@@ -136,15 +129,7 @@ class Toolbox:
             raise KeyError(f"unknown skill: {step!r}")
         skill = self.skills[step]
         agent = self._verifiers[skill.verifier]
-        before, before_frames = self._pre.get(step, ({}, {}))
-        evidence = Evidence(
-            frames=uncap_aspirate._frames(self._dm),
-            telemetry=uncap_aspirate._telemetry(skill.step, self._dm),
-            before=before,
-            before_frames=before_frames,
-            expected=dict(skill.step.params),
-        )
-        result = agent.verify(evidence)
+        result = agent.verify(uncap_aspirate._collect_evidence(skill.step, self._dm))
         return {
             "step": step,
             "verifier": skill.verifier,

@@ -48,7 +48,7 @@ Everything else — calibration, detection, pose, the twin — exists to serve P
 
 | ID | Requirement | Verified by |
 |----|-------------|-------------|
-| FR-CAL-1 | Each camera's intrinsics shall be calibrated (ChArUco/checkerboard) or loaded from `calib/intrinsics/`. | Reprojection error < 0.5 px on a held-out board. |
+| FR-CAL-1 | Camera intrinsics shall be available for each camera. All three are RealSense, so **factory intrinsics** (`CameraDriver.intrinsics()`) are used directly; a ChArUco pass is only an optional refinement. | Factory intrinsics load on connect; reprojection error < 1 px on a check board. |
 | FR-CAL-2 | The on-arm camera → TCP transform (hand-eye, eye-in-hand) shall be recovered with `cv2.calibrateHandEye` from 15–20 diverse poses. | Round-trip AX=XB residual reported; static marker localizes to < 3 mm across arm poses. |
 | FR-CAL-3 | Both fixed cameras (`overview_cam`, `handover_cam`) shall be extrinsically calibrated into the world frame from fixed tags (`solvePnP`). | A world-anchored marker projects to < 3 px error in each fixed cam. |
 | FR-CAL-4 | The fixed rig and the arm camera shall resolve to **one** shared world frame; metric scale is set by the 3D-printed ruler / known board. | Same physical point localized by both cameras agrees to < 5 mm. |
@@ -181,7 +181,7 @@ tube/cap. `Entity.mesh` now carries the registry key and is included in the twin
 
 ## 10. Open questions
 
-- Depth source on the fixed rig — RealSense per camera, or depth only on the arm cam? (Affects FoundationPose, which prefers RGB-D.)
+- ~~Depth source on the fixed rig~~ — **resolved:** all three cameras are Intel RealSense (RGB-D), so aligned metric depth + factory intrinsics are available on every viewpoint. FoundationPose RGB-D (NFR-PERF-1), depth-backed AprilTag/PnP, and per-camera point clouds are all unlocked.
 - ~~Are vendor CAD meshes for the exact tube/cap available~~ — **resolved:** 15 mL + 50 mL tube/cap STLs supplied (§9).
 - Tube-rack geometry: `WELL_PITCH` is provisionally set to 30 mm to clear the Ø28 mm 50 mL tube, but the real rack/nest CAD is still needed to fix well pitch and slot pose.
 - Recovery authority: may the recovery controller command **both** arms + OT, or arms only, for the demo?

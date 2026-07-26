@@ -7,6 +7,8 @@ never passes.
 """
 from __future__ import annotations
 
+import pytest
+
 import drivers.mock  # noqa: F401  -- registers mock_arm / mock_camera / mock_liquid_handler
 
 from backend.app.agent.engine import Engine
@@ -14,6 +16,10 @@ from backend.app.agent.policy import Decision, Observation, RuleBasedPolicy
 from backend.app.agent.tools import SKILL_ORDER, Toolbox, build_tools
 from backend.app.services.device_manager import DeviceManager
 from core.verification.agents import Evidence, VerificationResult
+
+# Skills execute the real choreography in uncap_aspirate._execute, which moves the
+# arms to *taught* poses — so every test here needs a bench where they exist.
+pytestmark = pytest.mark.usefixtures("taught_poses")
 
 
 # --------------------------------------------------------------------------- #

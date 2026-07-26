@@ -35,6 +35,7 @@ class MockArmDriver(ArmDriver):
         self._pose = Pose(200.0, 0.0, 200.0, 180.0, 0.0, 0.0)
         self._joints = [0.0] * self.axis_count
         self._gripper = 850.0
+        self._mode = 0          # 0 = position control, 2 = hand-guiding (xArm numbering)
 
     @property
     def info(self) -> DeviceInfo:
@@ -43,7 +44,15 @@ class MockArmDriver(ArmDriver):
 
     def status(self) -> dict[str, Any]:
         return {"state": self._state, "connected": self._state == ConnectionState.CONNECTED,
-                "error_code": 0, "warn_code": 0}
+                "error_code": 0, "warn_code": 0, "mode": self._mode}
+
+    def set_free_drive(self, on: bool = True) -> None:
+        """Pretend to hand-guide, so the teach UI's toggle works without hardware.
+
+        Real arms become back-drivable; the mock just remembers the mode so the UI
+        can round-trip the state.
+        """
+        self._mode = 2 if on else 0
 
     def connect(self) -> None:
         self._state = ConnectionState.CONNECTED
@@ -141,7 +150,13 @@ class MockTagCameraDriver(CameraDriver):
     overlay) is exercised for real; only the photons are fake. Tags drift slowly
     so a stalled MJPEG stream is obvious at a glance.
 
-    Config: {"markers": [180, 224], "width": 960, "height": 540, "motion": true}.
+    Set ``"depth": true`` to also stand in for an RGB-D unit (RealSense): the mock
+    then reports plausible pinhole intrinsics and a flat depth plane at
+    ``depth_m``, which exercises the depth-sampling and back-projection path that
+    only real hardware would otherwise reach.
+
+    Config: {"markers": [180, 224], "width": 960, "height": 540, "motion": true,
+             "depth": false, "depth_m": 0.5}.
     """
 
     DEFAULT_MARKERS = (180, 183, 224)
@@ -149,6 +164,7 @@ class MockTagCameraDriver(CameraDriver):
     def __init__(self, device_id: str, config: dict[str, Any] | None = None) -> None:
         super().__init__(device_id, config)
         self._frame_no = 0
+        self.has_depth = bool(self.config.get("depth", False))
 
     @property
     def info(self) -> DeviceInfo:
@@ -215,6 +231,38 @@ class MockTagCameraDriver(CameraDriver):
         if not ok:
             raise DriverError("jpeg encode failed")
         return buf.tobytes()
+
+    # --- optional RGB-D half (config "depth": true) --------------------------
+    def capture_depth(self) -> Any:
+        """A flat plane at `depth_m`. Enough to exercise sampling + back-projection."""
+        import numpy as np
+
+        if not self.has_depth:
+            raise NotImplementedError(f"{self.device_id}: no depth stream")
+        w = int(self.config.get("width", 960))
+        h = int(self.config.get("height", 540))
+        return np.full((h, w), float(self.config.get("depth_m", 0.5)), np.float32)
+
+    def capture_rgbd(self) -> tuple[Any, Any]:
+        return self.capture(), self.capture_depth()
+
+    def intrinsics(self) -> dict[str, Any] | None:
+        """Plausible pinhole intrinsics — a ~60° horizontal FoV, centred principal point."""
+        if not self.has_depth:
+            return None
+        w = int(self.config.get("width", 960))
+        h = int(self.config.get("height", 540))
+        f = w / 1.1547                       # 2*tan(30°)
+        return {"fx": f, "fy": f, "cx": w / 2.0, "cy": h / 2.0,
+                "width": w, "height": h, "coeffs": [0.0] * 5}
+
+    def camera_matrix(self) -> Any:
+        import numpy as np
+
+        i = self.intrinsics()
+        if not i:
+            raise DriverError("no intrinsics on a colour-only mock camera")
+        return np.array([[i["fx"], 0, i["cx"]], [0, i["fy"], i["cy"]], [0, 0, 1]], float)
 
 
 class MockLiquidHandlerDriver(LiquidHandlerDriver):

@@ -77,6 +77,20 @@ class ArmLimits:
         return limits
 
 
+def _moves_toward_range(now: float, target: float, lo: float, hi: float) -> bool:
+    """True if `target` strictly reduces an existing soft-limit violation.
+
+    Only reached when `target` is itself out of range, so this asks the narrower
+    question: are we already out on this side, and does the move shrink the excursion?
+    Equal angles do not count — a move that changes nothing is not a recovery.
+    """
+    if now > hi:
+        return hi < target < now
+    if now < lo:
+        return now < target < lo
+    return False
+
+
 class ArmDriver(InstrumentDriver):
     kind = InstrumentKind.ARM
 
@@ -158,19 +172,36 @@ class ArmDriver(InstrumentDriver):
         """
         return None
 
-    def check_joint_target(self, angles: list[float]) -> str | None:
+    def check_joint_target(self, angles: list[float],
+                           current: list[float] | None = None) -> str | None:
         """Pre-flight a joint target. Returns a reason string, or None if it's fine.
 
         Base implementation checks the configured soft limits; drivers can
         additionally ask the controller.
+
+        ``current`` enables *recovery*: if a joint is already parked outside its soft
+        limit — because the limit was tightened, or the arm was moved by hand or by
+        another program — a target that moves it back toward the valid range is
+        allowed, while one that pushes it further out is not. Without this a soft
+        limit can trap the arm: every target keeps the offending joint out of range,
+        so every move is refused and there is no way back except editing config. A
+        limit with no escape is worse than no limit.
         """
         joint_limits = self.limits.joints
         if not joint_limits:
             return None
         for i, angle in enumerate(angles[: len(joint_limits)]):
             lo, hi = joint_limits[i]
-            if not lo <= angle <= hi:
-                return f"J{i + 1}={angle:.2f}° outside soft limit [{lo:g}, {hi:g}]"
+            if lo <= angle <= hi:
+                continue
+            now = current[i] if current is not None and i < len(current) else None
+            if now is not None and _moves_toward_range(now, angle, lo, hi):
+                continue
+            out_of = f"J{i + 1}={angle:.2f}° outside soft limit [{lo:g}, {hi:g}]"
+            if now is not None and not lo <= now <= hi:
+                return (f"{out_of} — J{i + 1} is parked outside at {now:.2f}°; "
+                        f"only moves back toward the range are allowed")
+            return out_of
         return None
 
     # --- gripper -----------------------------------------------------------

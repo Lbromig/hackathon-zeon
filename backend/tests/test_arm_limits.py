@@ -22,10 +22,15 @@ def _driver(device_id: str) -> XArmDriver:
     return d
 
 
-def test_left_arm_j5_override_is_enforced():
-    """The measured J5 clearance must actually narrow the limit, not just sit in config."""
-    joints = _driver("left").limits.joints
-    assert joints[4] == (-78.4, 113.9)
+def test_both_arms_get_the_flange_camera_j5_override():
+    """The measured J5 clearance must actually narrow the limit, not just sit in config.
+
+    Both arms, not one: each carries a RealSense on the flange, and the bound was
+    re-measured with the camera mounted after it folded the wrist into the camera
+    (collision error 31). That tightened the earlier camera-less 113.9 to 95.0.
+    """
+    for arm in ("left", "right"):
+        assert _driver(arm).limits.joints[4] == (-78.4, 95.0), arm
 
 
 def test_override_leaves_other_joints_alone():
@@ -34,20 +39,23 @@ def test_override_leaves_other_joints_alone():
         assert joints[i] == MODEL_TABLE[i], f"J{i + 1} was modified"
 
 
-@pytest.mark.parametrize("angle", [113.91, 120.0, -78.41, -90.0])
+@pytest.mark.parametrize("angle", [95.01, 120.0, -78.41, -90.0])
 def test_targets_outside_the_override_are_rejected(angle):
     reason = _driver("left").check_joint_target([0, 0, 0, 0, angle, 0])
     assert reason is not None and "soft limit" in reason
 
 
-@pytest.mark.parametrize("angle", [113.9, 100.0, 0.0, -78.4])
+@pytest.mark.parametrize("angle", [95.0, 90.0, 0.0, -78.4])
 def test_targets_inside_the_override_are_accepted(angle):
     assert _driver("left").check_joint_target([0, 0, 0, 0, angle, 0]) is None
 
 
-def test_right_arm_keeps_the_model_range():
-    """J5 was swept on the left arm only; its tooling differs, so nothing carries over."""
-    assert _driver("right").limits.joints[4] == MODEL_TABLE[4]
+def test_the_override_still_tightens_against_the_model_table():
+    """The configured bound must be strictly inside the mechanical range."""
+    lo, hi = _driver("right").limits.joints[4]
+    model_lo, model_hi = MODEL_TABLE[4]
+    assert model_lo <= lo and hi <= model_hi
+    assert (lo, hi) != (model_lo, model_hi), "override is not narrowing anything"
 
 
 def test_overrides_can_only_tighten_never_widen():
