@@ -365,6 +365,55 @@ def test_a_pause_inside_a_loop_lands_between_iterations_rows(handlers, runner_fa
     assert runner.plan.result(loop_aid).outputs.outcome == "converged"
 
 
+def test_injecting_into_an_iteration_that_already_ran_is_refused_as_the_past(handlers,
+                                                                            runner_factory):
+    """B3. While the run is paused between two rows of an iteration, `running_aid` is the
+    **loop** — whose index is before its whole materialized region — so the running-action rule
+    alone accepts every row of every finished iteration. Reproduced: paused in iteration 3, an
+    injection after iteration 1's first row was accepted, labelled `iteration=1`, and executed
+    *before* iteration 3's pending row, with the cursor jumping backwards.
+
+    The positive half of §1.5's truth table is asserted here too, because the fix must not close
+    the case it exists for: an injection into the **current** iteration is still accepted and
+    still runs before that iteration's remaining rows.
+    """
+    world = World(offset=40.0, gain=2.0)
+    world.install(handlers)
+    box: list = []
+
+    def pausing_move(action, ctx):
+        if action.iteration == 3:
+            box[0].pause()
+        world.offset = max(0.0, world.offset - world.gain)
+        return A.LHMoveOutputs(applied_mm={"z": -world.gain})
+
+    handlers("lh.move_relative", pausing_move)
+    runner = runner_factory([_loop(threshold_mm=1.0, max_iterations=8)])
+    box.append(runner)
+    loop_aid = runner.plan.aids()[0]
+    runner.start()
+    assert wait_until(lambda: runner.state == "paused", timeout=10.0)
+    assert runner.running_aid == loop_aid, "the loop, not the row — this is why B3 was possible"
+    members = runner.plan.members_of(loop_aid)
+    assert [m.iteration for m in members] == [1, 1, 2, 2, 3, 3]
+
+    with pytest.raises(plan_module.InjectRefused) as exc:
+        runner.inject({"kind": "arm.gripper", "device": "right", "state": "open"},
+                      after_aid=members[0].aid)
+    assert "past" in exc.value.reason
+    assert len(runner.plan) == 7, "nothing was inserted into iteration 1"
+    assert [e.reason for e in runner.sink.events()
+            if e.type == "inject_rejected"] == [exc.value.reason]
+
+    # The current iteration still accepts one, and it runs before that iteration's solve.
+    at_cursor = runner.plan.at(runner.cursor)
+    assert at_cursor.iteration == 3
+    injected = runner.inject({"kind": "control.checkpoint", "message": "look"},
+                             after_aid=at_cursor.aid)[0]
+    assert injected.parent_aid == loop_aid and injected.iteration == 3
+    assert runner.plan.next_unrun_in_region(loop_aid).aid == injected.aid
+
+
 def test_an_abort_inside_a_loop_is_aborted_and_not_a_failed_loop(handlers, runner_factory):
     entered = threading.Event()
     release = threading.Event()

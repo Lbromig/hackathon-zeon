@@ -532,6 +532,16 @@ class Plan:
           running action by identity, so a row inserted in front of it would never be
           reached: accepting it would be a silent skip. Refused with that reason.
         * **The past is refused**, never relocated to the present.
+
+        Both of the last two rules apply, and the running one does not stand in for the cursor
+        one. While a run is paused inside a servo loop, `running_aid` is the **loop** — whose
+        index is before its entire materialized region — so the running rule alone accepts every
+        row of every finished iteration. Reproduced: paused in iteration 3, an injection after
+        iteration 1's first row was accepted, labelled `iteration=1`, and run *before* iteration
+        3's pending row, with the cursor jumping backwards. The operator's request was "make
+        this the next step"; the engine's answer was "insert it into a pass that finished forty
+        seconds ago". With a tube in the jaws those are not the same request, so the cursor check
+        runs too and the completed iteration is refused as the past.
         """
         with self._lock:
             if after_aid not in (None, 0):
@@ -549,10 +559,12 @@ class Plan:
                             f"executing now; inserting at index {position} would put the new "
                             f"action behind it, where the run would never reach it. Inject "
                             f"after aid {running.aid} to make it the next step.")
-                return None
             if cursor is not None and position < cursor:
                 nxt = self._actions[cursor] if cursor < len(self._actions) else None
-                where = f" The next action is #{cursor}" + (
+                # "The run is at", not "the next action is": after a failure inside a loop the
+                # cursor sits *on* the row that failed rather than after it, and describing that
+                # row as the next one to run would be a second wrong statement in a refusal.
+                where = f" The run is at #{cursor}" + (
                     f" (aid {nxt.aid})." if nxt else ".")
                 return (f"index {position} is in the past — that part of the plan has "
                         f"already run, and an injection is never relocated to somewhere it "
