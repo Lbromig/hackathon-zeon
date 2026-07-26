@@ -406,7 +406,7 @@ def test_position_separates_commanded_from_actual_and_reports_the_offset(monkeyp
             return "ok C: X:0.000 Y:0.000 Z:2.000 x:0.000 y:0.000 z:0.006"
         return LoopbackTransport.converse(fake, line, wait)
 
-    fake_converse, fake.converse = fake.converse, skewed
+    fake.converse = skewed
     d._refresh(force=True)
     pos = d.position()
     assert pos["commanded"]["Z"] == 2.0

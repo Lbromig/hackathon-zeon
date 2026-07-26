@@ -51,7 +51,7 @@ from typing import Any
 from ..base import ConnectionState, DeviceInfo, DriverError, InstrumentKind
 from ..capabilities.liquid_handler import (DeckLocation, LiquidHandlerDriver, MoveLimits,
                                            RelativeMoveReport)
-from .transport import BAUD, GANTRY_AXES, LoopbackTransport, NullTransport, SerialTransport
+from .transport import BAUD, GANTRY_AXES, SerialTransport
 from .transport import open_transport as build_transport
 
 log = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ log = logging.getLogger(__name__)
 #: Kept as an alias so callers and tests that reached for the old private name still work. The
 #: class itself now lives in `transport.py`, with the loopback and null transports beside it.
 _SerialTransport = SerialTransport
+
 # How far each axis moves during initialize(). Small: this is a "does it move" check, not a
 # calibration, and the machine is unhomed so nothing knows where the deck is.
 INIT_STEP_MM = {"X": 3.0, "Y": 3.0, "Z": 2.0}
