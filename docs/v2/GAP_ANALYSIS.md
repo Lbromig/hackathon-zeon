@@ -199,9 +199,10 @@ What is missing for the brief:
   four viewpoints (`temp/training/20260726T073940Z/` has 75 frames × 4 cameras at 1 fps, with a
   manifest), currently unused by any driver.
 
-  **Correction (measured 2026-07-26, after the design review):** these frames are *not* all usable
-  colour imagery, and the difference is load-bearing for §2.2's computational actions —
-  see [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) B1.
+  **Correction (measured 2026-07-26, after the design review):** these `temp/recordings/` and
+  `temp/training/` frames are *not* all usable colour imagery. But see the **superseding audit in
+  §3.1 below** — the recorded *sessions* are the wrong place to judge feasibility, and the
+  `temp/captures/` startup snapshots tell a materially more favourable story.
 
   | session / slot | n | resolution | stream | AprilTags found |
   |---|---|---|---|---|
@@ -230,11 +231,74 @@ What is missing for the brief:
   `MARKER_MAP` ([core/calibration/markers.py:30](../../core/calibration/markers.py#L30), which maps
   180–186 and 224). The marker map does not describe the physical bench.
 
-  Consequences: (a) the recorded sessions are usable as replay fixtures for *stream plumbing*, but
-  **not** as ground truth for tip/tube detection; (b) no camera is currently proven to see the
-  handover; (c) `overview_cam` is IR in every session and cannot be a fixture for any
-  colour-dependent step. This is a bench/aiming/config problem, not a code problem — but it gates
-  the vision requirements. See open question **Q1**.
+  Consequences for the recorded sessions specifically: they are usable as replay fixtures for
+  *stream plumbing*, but not as ground truth for tip/tube detection.
+
+### 3.1 Superseding imagery audit — the `temp/captures/` startup snapshots
+
+The judgement above was made on `temp/recordings/` and `temp/training/`, which are the wrong
+evidence: they are two ad-hoc recording sessions, whereas `startup_snapshot` writes one frame per
+slot **on every boot** and therefore covers the whole afternoon, including the window in which the
+rig was actually set up for the handover. Re-measured across all 51 capture files:
+
+**Finding 1 — both required viewpoints do see the handover, in colour, with a marker on the tube
+assembly.** In the 07:11–07:19 window:
+
+| slot | resolution | stream | tag36h11 ids detected |
+|---|---|---|---|
+| `handover_cam` | 1280×720 | colour | **225** (on the tube/gripper assembly, at frame centre), 189, 219, 180, 181, 183, 218 (deck) |
+| `gripper_left_cam` | 1280×720 | colour | 218 (table surface) |
+| `overview_cam` | 1280×720 | colour | 202, 203, 185, 184, 227, 191 |
+
+`temp/captures/handover_cam/20260726T071143_135Z_color.png` shows the pipette tip descending onto a
+tube held in the orange jaws, dead centre, with **tag 225 detected on the assembly**. This is exactly
+the view the servo loop needs, and the detector already finds it with the tuned parameters — no new
+code, no upscaling, no CLAHE.
+
+**Finding 2 — the fleet ids do not identify the physical cameras.** The camera the operator identifies
+as the **right arm's** gripper camera is the slot named **`gripper_left_cam`**. Its 07:18 frame
+(`20260726T071850_224Z_color.png`) is an eye-in-hand view of the pipette descending into the
+tube — the correct right-arm handover viewpoint. Meanwhile the slot named `gripper_cam` detects zero
+tags in all 11 of its captures and its frames look across the room. This is the instability
+`startup_snapshot.py:3-8` warns about, now observed: **slot names are not a usable identity for
+per-camera calibration.** ([ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) B1 reaches the same
+conclusion from different evidence.)
+
+**Finding 3 — the earlier "0 tags from the gripper camera" result was resolution, not aim.** The
+640×480 frame the operator identified (`gripper_left_cam/20260726T065209_454Z_color.png`) visibly has
+a marker on the tube, and the detector finds nothing. On a 2× upscale of the same frame it detects
+**tag 218**. So the tube marker subtends too few pixels at 640×480 and is detectable at 1280×720.
+**The servo cameras must run at ≥1280×720** — which is already a config setting
+(`CAM_WIDTH_<ID>` / `CAM_HEIGHT_<ID>`, [core/config.py:225-234](../../core/config.py#L225-L234)),
+not new work.
+
+**Finding 4 — a tag wrapped on a cylindrical tube does not detect; a tag on a flat surface does.**
+In the 1280×720 gripper frame the tube's own marker (~(672, 540), ~60 px, clearly legible to the eye)
+is **not** detected, while the flat table marker at (1001, 649) is. The tag is warped by the tube's
+curvature, so the square-quad fit fails. The handover camera's successful detection (225) is on the
+flatter top of the assembly. **Consequence: put fiducials on flat surfaces — the gripper jaw or a flat
+tab — never wrapped around the tube.**
+
+**Finding 5 — the classical fallback looks viable from the gripper view.** In that same frame the
+pipette tip is a bright, well-silhouetted vertical shaft against a dark background, and the tube
+opening is a bright ellipse directly beneath it. This is a favourable image for tip-bottom and
+tube-rim detection — far more so than the IR/speckle frames the first audit sampled.
+
+**Finding 6 — `handover_cam` and `overview_cam` flip from colour to IR after ~07:23** and stay IR
+through 07:42, including in `latest_color.png`. Colour is demonstrably achievable on both (proven
+07:11–07:19), so this is a stream-selection/driver issue, not a physical limitation.
+
+**Finding 7 — the marker map is stale, not wrong-in-kind.** Tags physically present and detected
+across the captures: **180, 181, 183, 184, 185, 188, 189, 191, 202, 203, 218, 219, 225, 227.**
+`MARKER_MAP` ([core/calibration/markers.py:30](../../core/calibration/markers.py#L30)) lists 180–186
+and 224 — so the bench is *more* densely marked than configured. The map needs extending, and it is
+being deleted anyway (§6); what survives is a tag-size registry.
+
+**Net effect on the vision requirements:** materially de-risked. Both required viewpoints see the
+handover in colour with a detectable fiducial on the tube assembly; the blockers are a **resolution
+setting**, a **colour-vs-IR stream selection**, **flat-mounted fiducials**, and a **stable camera
+identity** — all four of which are configuration and bench work, not perception research. See
+[REQUIREMENTS.md](REQUIREMENTS.md) §15 P-1…P-3 and §16 Q1/Q2 as answered.
 - **No synthetic convergence generator** — the brief needs fake images where the tip↔tube
   offset visibly shrinks per iteration until the threshold is met. Nothing generates this.
 - **No `intrinsics` and no depth** in any recorded session (every manifest has

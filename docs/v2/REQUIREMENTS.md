@@ -116,7 +116,7 @@ flange), `overview_cam` (fixed), `handover_cam` (fixed, sees the OT deck).
 | **R-LH-3** | M | Every commanded move is **clamped to a configured envelope** and refuses rather than clamps silently when a request would leave it. |
 | **R-LH-4** | M | The driver must report **how it knows its position** (measured vs dead-reckoned) so downstream consumers cannot mistake an assumption for a reading. |
 | **R-LH-5** | M | The liquid-handler driver's **wire protocol must be testable without the instrument**: a loopback transport that asserts the exact commands emitted. Rationale: today `OpentronsDriver.connect()` assigns a dummy object and `_send()` returns `None`, so **every liquid-handling call is a no-op that reports success** ([drivers/opentrons/driver.py:33-55](../../drivers/opentrons/driver.py#L33-L55)) — the most dangerous failure shape in the repo. |
-| **R-LH-6** | S | Pipetting operations (`aspirate`, `dispense`, `pick_up_tip`, `drop_tip`) are **not required** by this scope and should be dropped from the capability interface unless Q7 says otherwise. |
+| ~~R-LH-6~~ | — | ~~Pipetting operations should be dropped from the capability interface.~~ **WITHDRAWN (Q7).** The pipetting interface stays untouched: `aspirate`, `dispense`, `pick_up_tip` and `drop_tip` remain on the capability ABC. Phase 5 only *adds* relative XYZ, initialize and retract-Z. |
 
 ## 8. Engine actions — cameras
 
@@ -163,7 +163,7 @@ flange), `overview_cam` (fixed), `handover_cam` (fixed, sees the OT deck).
 | **R-SIM-5** | M | For the servo loop, simulation must generate imagery in which the **tip↔tube difference shrinks per iteration until the threshold is reached** — and it must shrink *because the commanded liquid-handler moves are actually applied*, not because a counter is ticking. A loop that converges on a script proves nothing; a loop that converges because the moves close it will also fail when the sign is wrong, which is the bug worth catching. |
 | **R-SIM-6** | M | Every action's result states **whether it was simulated**, and that determination must be correct for pure-computation actions too (they touch no device, so "no device was mocked" must not be read as "this was real"). |
 | **R-SIM-7** | M | The whole test suite runs in simulation and **cannot reach hardware**. |
-| **R-SIM-8** | S | Default: simulation **off**, so a bench machine is never surprised by a simulated arm. If no device connects at all, the frontend shows one actionable banner naming `just sim` rather than a wall of red device cards. |
+| **R-SIM-8** | M | Default: simulation **on** (Q8), so a fresh clone runs the full workflow with no configuration and no hardware. Driving real instruments is an **explicit opt-in**. The frontend must state unambiguously, at all times, whether it is looking at simulated or real devices — a simulated run that reads as real is the failure mode this default trades for convenience. |
 
 ## 11. Logging
 
@@ -233,25 +233,48 @@ authoring beyond this one workflow, recap-and-return, and metric 3D reconstructi
 
 These gate §9 and are **not** fixable in code. They are listed so the schedule reflects them.
 
+**Revised 2026-07-26** after the superseding imagery audit ([GAP_ANALYSIS §3.1](GAP_ANALYSIS.md)).
+Both required viewpoints **do** see the handover in colour with a detectable fiducial on the tube
+assembly, so P-1/P-2 turn out to be configuration and mounting tasks rather than perception research.
+This materially de-risks §9.
+
 | ID | Prerequisite | Evidence |
 |---|---|---|
-| **P-1** | At least two cameras must be **aimed at the handover** and confirmed to see it. `gripper_cam` currently points across the room; the tube rack occupies the bottom ~20 % of its frame. | `temp/captures/gripper_cam/latest_color.png`; 0/53 tags detected |
-| **P-2** | The servo cameras must deliver **colour** frames, not RealSense IR with the dot projector active. `overview_cam` is IR in all three recorded sessions; `handover_cam` is IR in its most recent one. | measured; every sampled frame has B==G==R |
-| **P-3** | A camera slot must map **stably** to one physical camera at one resolution, or carry a fingerprint that lets software detect the change (R-VIS-10). | the same id shows 640×480 and 1280×720 viewpoints 3 h apart |
-| **P-4** | The **15 workflow waypoints must be taught**, under the correct device. Today 8 differently-named poses exist and **no home pose for either arm**. | `data/teach_poses.json` |
-| **P-5** | Physical markers must match the configured marker map, or the map must be corrected. The only tags detected anywhere are **188 and 218**; the map lists 180–186 and 224. | measured vs `core/calibration/markers.py:30` |
+| **P-1** | The two servo cameras must run at **≥1280×720**. At 640×480 the tube marker subtends too few pixels and detection fails; the same frame upscaled 2× detects it. Config only (`CAM_WIDTH_<ID>`/`CAM_HEIGHT_<ID>`, [core/config.py:225-234](../../core/config.py#L225-L234)). | `gripper_left_cam/…065209Z`: 0 tags raw, tag 218 at 2× |
+| **P-2** | The servo cameras must deliver **colour**, not RealSense IR with the dot projector on. Both `handover_cam` and `overview_cam` deliver colour before ~07:23 and IR after — stream selection, not a limitation. | 07:11–07:19 colour, 4–6 tags each; 07:23–07:42 IR, none |
+| **P-2b** | **Fiducials must be mounted on flat surfaces** — the gripper jaw or a flat tab — **never wrapped around the tube.** Curvature warps the tag and the square-quad fit fails even at ~60 px and clearly legible. | 1280×720 gripper frame: flat table tag 218 detected, curved tube tag not |
+| **P-3** | A camera slot must map **stably** to one physical camera at one resolution, or carry a fingerprint that lets software detect a change (R-VIS-10). **Confirmed necessary:** the physical *right*-arm gripper camera is the slot named `gripper_left_cam`, while `gripper_cam` looks across the room. | operator-confirmed slot/device mismatch; cause documented at `startup_snapshot.py:3-8` |
+| **P-4** | The **15 workflow waypoints must be taught**, under the correct device, plus a **home per arm**. Today 8 differently-named poses exist and no home for either arm. | `data/teach_poses.json` |
+| **P-5** | Extend the tag-size/id registry to the markers actually on the bench: **180, 181, 183, 184, 185, 188, 189, 191, 202, 203, 218, 219, 225, 227**. The bench is *more* densely marked than configured (map lists 180–186, 224). | measured across `temp/captures/` |
 | **P-6** | A **working liquid-handler transport**. The driver is a stub that reports success while doing nothing; the real serial work is on an unmerged branch. | `drivers/opentrons/driver.py:33-55` |
-| **P-7** | Camera **intrinsics**, if any requirement is to depend on metric image geometry. No recorded session has them (`intrinsics: null` in every manifest) and there are zero depth frames on disk. | all three manifests |
+| **P-7** | Camera **intrinsics**, if any requirement is to depend on metric image geometry. No recorded session has them (`intrinsics: null` in every manifest) and there are zero depth frames on disk. Not required by the chosen approach (§16 A1). | all three manifests |
 
 ---
 
-## 16. Open questions
+## 16. Open questions — **ANSWERED 2026-07-26**
 
-**Please answer these.** Q1, Q2 and Q4 change the shape of the work; the rest change details.
-Where I have a recommendation I have given it, and where an answer is not needed to *start* I have
-said what I will assume so that Phase 1 is not blocked.
+All nine are resolved. The answers below are **binding**; the original questions are retained after
+the table as the rationale that produced them.
+
+| Q | Answer | Consequence |
+|---|---|---|
+| **Q1** vision approach | **The cameras do see the handover** — the operator identified the correct frames and the audit confirms it ([GAP_ANALYSIS §3.1](GAP_ANALYSIS.md)). Build the pipeline now against real fixtures **and** the synthetic world; the bench work reduces to P-1/P-2/P-2b/P-3, which are config and mounting. | §9 proceeds in Phase 7 as planned, at materially lower risk. Use `temp/captures/handover_cam/20260726T071143_135Z_color.png` and `temp/captures/gripper_left_cam/20260726T071850_224Z_color.png` as the **reference fixtures** — they are the ground truth the detectors are written against. |
+| **Q2** fiducials | **Both allowed** — tag on the rack/tube assembly **and** on the pipette carriage. | Largest single de-risking. Tip detection becomes a tag read (primary) with the classical detector as fallback; tube detection likewise. Subject to **P-2b**: flat mounting only. |
+| **Q3** waypoint names | **Drop the device prefix**; store under the acting device (`TRANSITION_MID_TABLE`, `LIQUID_HANDLER_DECK`, …). | Resolve before any pose is taught (Phase 4). |
+| **Q4** meaning of deviation | **Terminate on the remaining offset.** Report per-axis uncertainty and inter-view disagreement separately, advisory only. | Confirms D16/D15 in the plan. Delete the per-view "deviation" field, which is structurally always zero. |
+| **Q5** "re-engage" | Not separately specified → use the stated assumption: `clear_errors()` → `enable(True)` → verify with a zero-distance move. | R-ARM-7 implemented as three distinct recovery actions. |
+| **Q6** dense path teaching | **Delete it.** | ~415 LOC + a Vue component + 6 endpoints removed in Phase 1. Do the one traverse sanity check first. |
+| **Q7** pipetting | **Keep it — do not touch the liquid-handler pipetting interface.** | **R-LH-6 is withdrawn.** `aspirate` / `dispense` / `pick_up_tip` / `drop_tip` stay on the capability ABC. Phase 5 *adds* relative XYZ, initialize and retract-Z; it does not remove anything. |
+| **Q8** simulation default | **Keep simulation as the default.** | `just backend` comes up simulated; driving real hardware is an explicit opt-in. A fresh clone runs the full workflow with no configuration. Phase 1 item 1.4 changes accordingly — the "real by default" option was **not** taken. |
+| **Q9** LLM inject chat | **Manual form first, chat immediately after.** | Phase 8: 8.1 ships the schema-driven form; 8.2 adds the chat. The inject feature is never blocked on an API key. |
+
+Two answers change the plan as written and are reflected in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): **Q7** (pipetting stays) and **Q8** (simulation
+stays the default).
 
 ---
+
+### Original questions and rationale
 
 **Q1 — Vision, given the cameras don't currently see the handover.** [highest impact]
 The servo loop (R-VIS-1…11) is the most valuable and least supported requirement: the two named

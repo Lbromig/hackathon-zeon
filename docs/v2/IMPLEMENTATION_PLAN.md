@@ -70,19 +70,30 @@ whole persistence layer. All adopted.
 - **Delete dense path teaching** after one sanity check (Q6). (Q-PATH-1)
 - **Delete the redundant current-action card** — it is the plan chain's row at the cursor. (S13)
 
-### 0.4 Open questions that gate work
+### 0.4 Answers to the open questions — **all resolved 2026-07-26**
 
-| Q | Gates | If unanswered when reached |
+Full text in [REQUIREMENTS.md §16](REQUIREMENTS.md). Binding decisions:
+
+| Q | Answer | Effect on this plan |
 |---|---|---|
-| **Q1** vision approach | Phase 7 | Build against simulation only (option a); treat the bench recording session as a parallel task |
-| **Q2** fiducial on carriage / rack | Phase 7 detector design | Rack tag yes, carriage tag no → classical tip detection is primary and needs real budget |
-| **Q3** waypoint names | **Phase 4** — before anyone teaches a pose | Drop the device prefix; store under the acting device |
-| **Q4** meaning of "deviation" | Phase 7 | Terminate on remaining offset; disagreement is advisory (D16) |
-| **Q5** "re-engage" | Phase 2 | `clear_errors()` → `enable(True)` → verify with a zero-distance move |
-| **Q6** keep path teaching | Phase 1 deletion pass | Delete, after the traverse sanity check |
-| **Q7** pipetting needed | Phase 5 | Drop pipetting from the capability interface |
-| **Q8** simulation default | Phase 1 | Real by default; `just sim` explicit |
-| **Q9** LLM chat now or later | Phase 8 | Manual form in Phase 8; chat as a follow-on |
+| **Q1** vision approach | The cameras **do** see the handover; the bench work is config + mounting, not perception research | Phase 7 proceeds against **real reference fixtures** as well as the synthetic world. Risk table updated |
+| **Q2** fiducials | **Both** rack/tube **and** pipette carriage tags allowed | D27 below. Largest single de-risking of Phase 7 |
+| **Q3** waypoint names | Drop the device prefix; store under the acting device | Phase 4 item 4.6, before any pose is taught |
+| **Q4** deviation | Terminate on the **remaining offset**; uncertainty and inter-view disagreement are reported separately, advisory | Confirms D15/D16 as written |
+| **Q5** "re-engage" | `clear_errors()` → `enable(True)` → verify with a zero-distance move | Phase 2 item 2.7 as written |
+| **Q6** path teaching | **Delete** | Phase 1 item 1.5 as written |
+| **Q7** pipetting | **Keep it — do not touch the pipetting interface** | **Changes Phase 5.** See D28 |
+| **Q8** simulation default | **Simulation stays the default** | **Changes Phase 1.** See D29 |
+| **Q9** LLM chat | Manual form first, chat immediately after | Phase 8 items 8.1 then 8.2 as written |
+
+### 0.5 Additional locked decisions from those answers
+
+| # | Decision | Consequence |
+|---|---|---|
+| D27 | **Fiducial-first vision.** A flat tag on the pipette carriage and a flat tag on the tube/gripper assembly are the **primary** signal for tip-bottom and tube-top; the classical detectors become a **fallback**, not the main path. | Phase 7's highest-risk item drops from "tune five constants of a classical detector" to "read two tag poses, with a fallback". Both detectors still ship, because a tag can be occluded by the jaws mid-approach. **Hard constraint: flat mounting only** — a tag wrapped on the cylindrical tube is not detected even at ~60 px and clearly legible (measured). |
+| D28 | **The liquid-handler pipetting interface is not touched.** `aspirate`, `dispense`, `pick_up_tip`, `drop_tip` stay on the capability ABC exactly as they are. Phase 5 is purely **additive**: relative XYZ, initialize, retract-Z, envelope limits, transport split. | Reverses review cut S4's liquid-handler element and withdraws R-LH-6. Slightly larger ABC than the minimum this workflow needs — accepted deliberately, because the interface is stable and removing it would be a breaking change for no gain. |
+| D29 | **Simulation is the default.** `just backend` comes up simulated; real hardware is an explicit opt-in. | Reverses the review's answer to its own Q-SIM-1. A fresh clone runs the whole workflow with zero configuration, which is the primary demo path. **The price:** a simulated run must never be mistakable for a real one, so the frontend must show device-reality state persistently and unmissably, and `ActionResult` must carry it per action (D25). Treat that indicator as a correctness requirement, not chrome. |
+| D30 | **The two operator-identified frames are the vision reference fixtures**, committed as test data: `temp/captures/handover_cam/20260726T071143_135Z_color.png` (tag 225 detected on the assembly, pipette descending, deck tags visible) and `temp/captures/gripper_left_cam/20260726T071850_224Z_color.png` (eye-in-hand, tip silhouetted, tube rim as a bright ellipse). | Phase 7's detectors are written against these, so "works on real imagery" is a pytest assertion from day one rather than a bench discovery. Note `temp/` is gitignored — copy them into a tracked fixtures directory. |
 
 ---
 
@@ -121,7 +132,7 @@ P1 foundations ──► P2 engine core ──┬──► P3 camera subprocesse
 | 1.1 | Logging module: stdlib `logging`, JSONL formatter, one file, context bound **on the handler** (D23). Convert all 30 `print()` sites. | R-LOG-2/3/6 |
 | 1.2 | Log read API: `GET /api/logs` with a cursor and filters. No websocket (S10). | R-LOG-4 |
 | 1.3 | Speed tiers: central `fast`/`medium`/`slow` → per-device linear/angular speeds, clamped by the existing soft limits. | R-ENG-14 |
-| 1.4 | Simulation configuration: per-device-class selection, resolved once at boot; `just sim`, `just backend`, `just frontend`, `just reap`. Default real (Q8). Test suite forced to simulation. | R-SIM-1/3/7/8, R-START-1/2/3 |
+| 1.4 | Simulation configuration: per-device-class selection, resolved once at boot; `just backend`, `just frontend`, `just real`, `just reap`. **Simulation is the default** (Q8/D29), real hardware an explicit opt-in. Ship the persistent frontend reality indicator alongside it — a simulated run must never read as real. | R-SIM-1/3/7/8, R-START-1/2/3 |
 | 1.5 | **Deletion pass** — twin/world model, calibration pipeline, verification agents, world-map viz, projection, fusion, P0 agent loop, sequences, pick-and-place planner, path teaching (Q6), CAD meshes, 4 diagnostic scripts, and their tests and frontend components. Salvage the two edges the review identified: the transform helper and the marker-spec registry, which `fiducials.py` imports. | R-NFR-6, §14 |
 | 1.6 | Extend `core/teach_poses.py` in place — home waypoint per device, no new module (S1). | R-ARM-9, R-INIT-4 |
 | 1.7 | Docs consolidation: 22 files → this `docs/v2/` set plus a rewritten README. | R-NFR-7 |
@@ -215,7 +226,7 @@ taking fresh snapshots.
 
 | # | Work | Requirements |
 |---|---|---|
-| 5.1 | Rewrite the capability interface: relative XYZ move, initialize, retract Z, envelope limits. Drop pipetting (Q7). | R-LH-1/2/6 |
+| 5.1 | **Extend** the capability interface — additively — with relative XYZ move, initialize, retract Z and envelope limits. **Do not touch the pipetting methods** (Q7/D28): `aspirate`, `dispense`, `pick_up_tip`, `drop_tip` stay exactly as they are. | R-LH-1/2/3 |
 | 5.2 | Transport protocol + loopback transport asserting exact emitted lines + a null transport (D6). | R-LH-5 |
 | 5.3 | Implement relative moves as **read → clamp → absolute command** where a position readback exists, keeping relative *semantics* at the interface. The servo loop needs relative semantics, never relative commands. | R-LH-1/3 |
 | 5.4 | Report position provenance (measured vs dead-reckoned) and warn on drift. | R-LH-4 |
@@ -260,14 +271,17 @@ taking fresh snapshots.
 
 **Goal:** the computational actions, honest about their uncertainty.
 
-**Gated on Q1, Q2 and Q4.** Everything here is buildable in simulation; validating it needs
-prerequisites P-1…P-3, P-5, P-7 (§15).
+**Q1/Q2/Q4 are answered**, and the answers substantially de-risk this phase: both required viewpoints
+are confirmed to see the handover in colour, fiducials are allowed on **both** the carriage and the
+tube assembly (D27), and two real frames are the reference fixtures (D30). Remaining bench
+prerequisites are P-1, P-2, P-2b, P-3, P-5 — all configuration or mounting. P-7 (intrinsics) is **not**
+required by this approach.
 
 | # | Work | Requirements |
 |---|---|---|
-| 7.1 | Synthetic servo camera driver rendering the shared simulated world (D3) — build this **first**, so the pipeline has a ground-truth fixture from day one. | R-SIM-5 |
-| 7.2 | Tip-bottom detection: marker-anchored where Q2 allows, classical otherwise. Reports a quality score and **reports absence honestly**. | R-VIS-1 |
-| 7.3 | Tube-top detection, same contract; rack-marker anchor per Q2. | R-VIS-2 |
+| 7.1 | Two fixtures, built first: the synthetic servo camera rendering the shared simulated world (D3), **and** the two committed real frames (D30). Every detector below is written against both from day one. | R-SIM-5 |
+| 7.2 | Tip-bottom detection: **carriage-tag-anchored primary** (D27), classical silhouette fallback. Reports a quality score, which path produced it, and **reports absence honestly**. | R-VIS-1 |
+| 7.3 | Tube-top detection: **assembly-tag-anchored primary** (tag 225 is already detected on the real handover frame), tube-rim ellipse fallback. Same contract. | R-VIS-2 |
 | 7.4 | Per-camera image jacobian: measurement procedure (a small set of jogs), storage keyed on **camera fingerprint + resolution**, load-time **refusal** on mismatch (D18). Runnable end-to-end in simulation. | R-VIS-10 |
 | 7.5 | The offset solve: stacked weighted least squares; **SVD conditioning gate** on the restricted submatrix (D17); per-axis uncertainty from the solve covariance; `residual_offset_mm` + `sigma_mm` + advisory `view_disagreement_mm` (D16). Servo cameras from config, not hardcoded (D19). | R-VIS-3/4 |
 | 7.6 | Overlay rendering + artifact storage, linked to the producing action. (`annotate()` already exists and has never had a caller — give it one.) | R-VIS-5 |
@@ -282,9 +296,14 @@ prerequisites P-1…P-3, P-5, P-7 (§15).
 - A missing detection degrades the reported uncertainty rather than producing a confident wrong answer.
 - Overlay images appear as artifacts on the right action in the frontend.
 
-**This phase carries the project's real risk.** Its detectors cannot be tuned against imagery that
-does not yet exist (§15 P-1/P-2). Build against the synthetic fixture, keep the detector interface
-narrow, and expect to re-tune once a real recording session exists.
+- Both detectors report which path produced the result (tag or classical), and a test asserts the
+  classical fallback engages when the tag is occluded — the jaws will occlude it mid-approach.
+
+**This phase still carries the project's most technical risk, but it is no longer a research risk.**
+The fiducial-first decision (D27) plus two real reference frames (D30) mean the primary path is a tag
+read that is *already demonstrated to work on real imagery from both viewpoints*. What remains is
+ordinary engineering: the conditioning gate, the uncertainty reporting, the loop's termination
+behaviour, and a classical fallback good enough for the occluded case.
 
 ---
 
@@ -305,25 +324,40 @@ narrow, and expect to re-tune once a real recording session exists.
 Not schedulable until §15's prerequisites are met. Tracked here so they are not mistaken for software
 work.
 
-1. **P-1/P-2** — one recording session with two cameras aimed at the handover in **colour**. This is
-   the single highest-value hardware task: it determines what the Phase 7 detectors have to be.
-2. **P-3** — pin each camera slot to a stable identity and resolution.
-3. **P-5** — reconcile the physical markers with the configured map (only 188 and 218 are ever
-   detected; the map lists 180–186 and 224).
-4. **P-4** — teach the 15 waypoints plus a home per arm, under the correct device (Q3).
-5. **P-6** — a real liquid-handler transport.
-6. **P-7** — camera intrinsics, if anything is to depend on metric image geometry.
-7. Measure the image jacobians on the real cameras; re-tune the detectors against real frames.
-8. First bench run, at reduced speed tiers, with a hand on the e-stop.
+1. **P-1** — set the two servo cameras to **≥1280×720**. Config only; the tube tag is undetectable at
+   640×480 and detectable at 1280×720.
+2. **P-2** — force **colour** streams on the servo cameras (they currently flip to RealSense IR with
+   the dot projector on after ~07:23). Stream selection, not a physical limitation.
+3. **P-2b** — mount the two fiducials (pipette carriage, tube/gripper assembly) on **flat** surfaces.
+   A tag wrapped on the cylindrical tube is not detected even when clearly legible.
+4. **P-3** — pin each camera slot to a stable identity and resolution, and **fix the slot naming**:
+   the physical right-arm camera is currently the slot called `gripper_left_cam`.
+5. **P-5** — extend the tag registry to the ids actually on the bench (180, 181, 183, 184, 185, 188,
+   189, 191, 202, 203, 218, 219, 225, 227).
+6. **P-4** — teach the 15 waypoints plus a home per arm, under the correct device (Q3).
+7. **P-6** — a real liquid-handler transport.
+8. Measure the image jacobians on the real cameras; confirm the tag-anchored detectors on live frames
+   and re-tune the classical fallback.
+9. First bench run, at reduced speed tiers, with a hand on the e-stop.
+
+**P-7 (intrinsics) is not required** by the chosen approach and is deliberately not listed as a
+blocker.
 
 ---
 
 ## 2. Risks
 
+Revised after the Q1–Q9 answers and the superseding imagery audit. The top two risks in the first
+draft of this plan are **retired**: the cameras do see the handover, and the detectors have real
+fixtures.
+
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| **The servo loop cannot be validated because no camera sees the handover** | high — measured | high | Phase 7 builds against the synthetic fixture; the bench recording session (P-1) is started in parallel from day one, not at Phase 9 |
-| **Detectors tuned on synthetic imagery fail on real frames** | high | medium | Keep the detector interface narrow and swappable; budget explicit re-tuning time after P-1; prefer the marker-anchored path wherever Q2 allows |
+| ~~The servo loop cannot be validated because no camera sees the handover~~ | **retired** | — | Both viewpoints confirmed in colour with a detected tag on the tube assembly ([GAP_ANALYSIS §3.1](GAP_ANALYSIS.md)) |
+| ~~Detectors tuned on synthetic imagery fail on real frames~~ | **retired** | — | Two real frames are committed fixtures (D30); detectors are written against them from day one |
+| **The fiducial is occluded by the gripper jaws mid-approach**, dropping the loop onto its least-tested path at the worst moment | medium | medium | Both detectors ship; a test asserts fallback engagement on an occluded tag; report which path produced each result so the log shows when the fallback carried a run |
+| **A simulated run is mistaken for a real one**, now that simulation is the default (D29) | medium | high | Persistent, unmissable frontend reality indicator shipped *with* the default in Phase 1.4, not after; per-action `simulated` flag (D25); treat the indicator as a correctness requirement |
+| **A camera slot silently rebinds to a different device or resolution** — observed, not hypothetical | high | high | Fingerprint + resolution binding with **refusal** on mismatch (D18); the slot named `gripper_left_cam` is physically the right arm's camera, so never trust a slot name |
 | **The deletion pass breaks something untested** | medium | medium | One subsystem per commit, suite green after each, backup tag already pushed |
 | **The liquid handler never gets a real transport** | medium — 6 review cycles of no movement per `PROJECT_PLAN.md` | high | Loopback transport makes everything except the wire testable; the servo loop is demonstrable in simulation without it |
 | **Waypoints never get taught** | medium — same history | high | Phase 4 exits on simulated fixture waypoints, so software is not blocked; P-4 is called out as a hardware task with an owner |
