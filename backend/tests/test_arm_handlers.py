@@ -117,6 +117,30 @@ def test_every_arm_kind_has_a_handler():
         assert actions.handler_for(kind) is not None, kind
 
 
+def test_importing_the_handler_package_is_what_registers_them():
+    """R-ENG-17 turns an unregistered kind into "this step cannot run", so *when* the modules
+    are imported is load-bearing: the runner's pre-flight has to see the whole registry."""
+    from backend.app.engine import handlers
+
+    assert "arm" in handlers.LOADED_MODULES and "lifecycle" in handlers.LOADED_MODULES
+    for kind in actions.ACTION_KINDS:
+        if kind.startswith(("arm.", "lifecycle.")):
+            assert kind in actions.registered_kinds(), kind
+
+
+def test_the_handler_package_does_not_claim_another_slices_kinds():
+    """S3/S4/S5 own camera, liquid-handler and vision handlers. Claiming one here would be a
+    duplicate-registration error the moment their module landed."""
+    from backend.app.engine import handlers
+
+    assert set(handlers.PENDING_MODULES) == {"camera", "liquid_handler", "vision"}
+    for kind in ("camera.snapshot", "camera.search_code", "lh.move_relative",
+                 "vision.identify", "vision.solve_offset"):
+        assert kind not in ("arm", "lifecycle")
+        fn = actions.handler_for(kind)
+        assert fn is None or not fn.__module__.endswith(("handlers.arm", "handlers.lifecycle"))
+
+
 def test_each_handler_returns_the_outputs_model_its_kind_is_mapped_to(isolated_teach_poses):
     teach(isolated_teach_poses, {"right": {"HOME": entry(), "TUBE": entry()}})
     devices = Devices(right=make_arm("right"))
@@ -328,6 +352,23 @@ def test_a_relative_move_can_read_its_deltas_from_a_blackboard_slot():
     assert arm.get_pose().x == pytest.approx(201.5), "the slot wins over the literal field"
 
 
+@pytest.mark.parametrize("value", [
+    {"x": 1.5, "y": -0.5, "z": 2.0},                             # a bare point
+    {"dx": 1.5, "dy": -0.5, "dz": 2.0},                          # a bare delta
+    {"residual_offset_mm": {"x": 1.5, "y": -0.5, "z": 2.0}},     # a dumped OffsetOutputs
+])
+def test_the_three_slot_shapes_a_producer_can_write_are_all_read(value):
+    """One dict lookup and a field read in Python — no dotted-path resolver (review S2). The
+    shapes are enumerated here so a new producer writing a fourth one fails a test rather
+    than silently commanding a zero move."""
+    board = blackboard.Blackboard()
+    board.set("offset", value)
+    arm = make_arm("right")
+    out = run(actions.ArmRelative(device="right", from_slot="offset"),
+              Devices(right=arm), board=board)
+    assert out.offsets_mm == {"dx": 1.5, "dy": -0.5, "dz": 2.0}
+
+
 def test_an_unobservable_axis_in_a_slot_warns_and_commands_no_motion_on_it():
     """`None` and `0.0` mean opposite things to a servo loop, so the difference has to be
     reachable rather than absorbed (R-LOG-6)."""
@@ -409,6 +450,19 @@ def test_an_out_of_range_width_is_refused_and_not_clamped():
         assert "refusing rather than clamping" in str(e.value)
         assert "0..850" in str(e.value)
         assert arm.gripper_width() == pytest.approx(before), "the jaws must not have moved"
+
+
+def test_opening_to_a_width_is_the_same_command_as_closing_to_it():
+    """A parallel gripper has one "go to this opening" call; whether it reads as opening or
+    closing depends only on where the jaws are. `state` stays meaningful for the plan and the
+    log, and the width is what is commanded."""
+    arm = make_arm("right")
+    arm.grip(width=100.0)
+    out = run(actions.ArmGripper(device="right", state="open", width=600.0),
+              Devices(right=arm))
+    assert arm.gripper_width() == pytest.approx(600.0)
+    assert out.state == "open"
+    assert out.width_before == pytest.approx(100.0)
 
 
 def test_a_width_on_a_gripper_that_has_none_is_refused():
