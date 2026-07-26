@@ -489,6 +489,20 @@ def test_a_width_on_a_gripper_that_has_none_is_refused():
 #: Signed degrees of cap rotation for a `deg`-sized turn in the loosening direction.
 UNSCREW = cap_ops.UNSCREW_SIGN
 
+#: Whether the ratchet finishes holding the cap (`cap_ops.END_GRIPPED`). Bench contract, not
+#: an invariant: the workflow's next move lifts the cap clear of the tube, and a lift with open
+#: jaws carries nothing. Read from the module for the same reason `UNSCREW` is.
+END_GRIPPED = cap_ops.END_GRIPPED
+#: The tail the contract adds to a decap plan.
+FINAL_GRIP: list[cap_ops.Step] = [("close", 0.0)] if END_GRIPPED else []
+#: The mock parallel gripper's fully-open width, in counts.
+OPEN_COUNTS = 850.0
+
+
+def _resting_width(grip_counts: float) -> float:
+    """What the jaws read after a decap that gripped to `grip_counts`."""
+    return grip_counts if END_GRIPPED else OPEN_COUNTS
+
 
 def test_decap_takes_four_ninety_degree_bites_and_turns_the_cap_once():
     arm = make_arm("left")
@@ -503,7 +517,9 @@ def test_decap_takes_four_ninety_degree_bites_and_turns_the_cap_once():
     assert out.net_wrist_travel_deg == pytest.approx(0.0)
     assert out.preflight_ok is True
     assert arm.get_joints() == pytest.approx(joints_before), "net-zero wrist travel"
-    assert arm.gripper_width() == pytest.approx(850.0), "the cap must be left released"
+    assert arm.gripper_width() == pytest.approx(_resting_width(420.0)), (
+        "the decap must leave the cap in the configured state — held, so the arm's next move "
+        "can carry it away, or released if the contract is turned off")
 
 
 def test_the_decap_plan_is_assertable_without_an_arm():
@@ -513,8 +529,11 @@ def test_the_decap_plan_is_assertable_without_an_arm():
     assert cap_ops.count_bites(steps) == 4
     assert cap_ops.gripped_rotation(steps) == pytest.approx(UNSCREW * 360.0)
     assert cap_ops.net_wrist_travel(steps) == pytest.approx(0.0)
-    assert steps[-2:] == [("open", 0.0), ("turn", -UNSCREW * 90.0)], \
-        "ends released and unwound, the unwind opposing the loosening turn"
+    # The wrist comes home last, jaws open — anything after that is the contract's closing
+    # grip, which may only follow the unwind and never replace it.
+    assert steps[len(steps) - len(FINAL_GRIP) - 2:] == \
+        [("open", 0.0), ("turn", -UNSCREW * 90.0)] + FINAL_GRIP, \
+        "unwound with the jaws open, the unwind opposing the loosening turn"
 
 
 def test_decap_rotates_the_tool_axis_in_joint_space_and_never_as_a_cartesian_yaw():
