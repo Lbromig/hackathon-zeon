@@ -61,9 +61,12 @@ that tag was found in.
 Camera-frame metres are not yet world coordinates: commanding the arm additionally
 needs `T_world_cam` (`docs/CAMERA_UI_PLAN.md` C3–C4).
 
-Cameras are configured entirely from `.env` — `CAM_GRIPPER` / `CAM_OVERVIEW` /
-`CAM_HANDOVER` pin a serial to each fleet id, and `CAM_WIDTH` / `CAM_HEIGHT` /
-`CAM_FPS` (optionally suffixed `_<FLEET_ID>`) set the stream format.
+Which physical unit backs each viewpoint is **hardcoded in `core/cameras.py`**, pinned per
+unit by AVFoundation uniqueID (an OpenCV device index is not an identity on macOS — it
+renumbers, so a slot silently comes to mean a different camera). `.env` keeps only the
+stream format — `CAM_WIDTH` / `CAM_HEIGHT` / `CAM_FPS`, optionally suffixed `_<FLEET_ID>` —
+and the `CAM_<SLOT>_TYPE` driver escape hatch. A `CAM_<SLOT>` index is ignored with a
+warning.
 
 For hardware-free work, `fleet.mock.json` provides `mock_tag_camera` devices that
 render genuine tag36h11 markers:

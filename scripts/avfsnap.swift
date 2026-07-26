@@ -196,11 +196,17 @@ func grab(uniqueID: String, to path: String, width: Int?, height: Int?) -> Int32
     return 0
 }
 
+// Held at file scope for the process's lifetime. A session that goes out of scope is
+// deallocated and silently stops delivering: measured, binding it to `_` in stream()
+// yielded exactly 13 frames and then nothing, which reads as a broken camera.
+var liveSession: AVCaptureSession?
+
 func stream(uniqueID: String, width: Int?, height: Int?, quality: Double) -> Int32 {
     let streamer = FrameStreamer(quality: quality)
-    guard let (_, device) = openSession(uniqueID: uniqueID, width: width, height: height,
-                                        delegate: streamer, queueLabel: "avfsnap.stream")
+    guard let (session, device) = openSession(uniqueID: uniqueID, width: width, height: height,
+                                              delegate: streamer, queueLabel: "avfsnap.stream")
     else { return 6 }
+    liveSession = session
     // Progress goes to stderr: stdout is the JPEG stream and must carry nothing else.
     err("streaming \(device.localizedName) [\(uniqueID)]")
     // Frames are delivered on the session's own queue; park the main thread forever. The

@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .base import InstrumentDriver
 from .camera import (
+    AVFoundationCameraDriver,
     OpenCVCameraDriver,
     RealSenseCameraDriver,
     RemoteCameraDriver,
@@ -21,7 +22,10 @@ from .xarm import XArmDriver
 _REGISTRY: dict[str, Callable[[str, dict[str, Any]], InstrumentDriver]] = {
     "xarm": XArmDriver,
     "opentrons": OpentronsDriver,
-    "camera": OpenCVCameraDriver,       # plain UVC webcam / mock
+    "camera": OpenCVCameraDriver,       # plain UVC webcam / mock, addressed by INDEX
+    # The bench default on macOS: UVC addressed by AVFoundation uniqueID, so a viewpoint
+    # cannot silently become a different camera. See core/cameras.py.
+    "avf": AVFoundationCameraDriver,
     "realsense": RealSenseCameraDriver,  # Intel RealSense RGB-D
     "still": StillImageCameraDriver,    # a saved frame replayed as a camera (hardware away)
     "remote": RemoteCameraDriver,       # another backend's camera, over its MJPEG endpoint

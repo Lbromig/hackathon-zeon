@@ -36,10 +36,11 @@ src/
 
 ## Cameras tab
 
-Three RealSense viewpoints — gripper (eye-in-hand), overview, handover — configured
-from `.env` (`CAM_GRIPPER` / `CAM_OVERVIEW` / `CAM_HANDOVER` + `CAM_WIDTH` /
-`CAM_HEIGHT` / `CAM_FPS`). *Scan for devices* lists attached units so each serial can
-be pinned to a fleet id; enumeration order is not stable across replugs.
+Four RealSense viewpoints — one eye-in-hand per arm (`gripper_cam` is the right arm's,
+`gripper_left_cam` the left's), plus overview and handover. Which unit is which is
+hardcoded in `core/cameras.py`, pinned by AVFoundation uniqueID, because enumeration
+order is not stable — see the repo README. `.env` sets only the stream format
+(`CAM_WIDTH` / `CAM_HEIGHT` / `CAM_FPS`).
 
 The video is an `<img>` pointed at `/api/cameras/{id}/stream` (MJPEG — no player,
 no WebRTC). Detections ride `/ws/state` as normalized `[0,1]` polygons and are drawn

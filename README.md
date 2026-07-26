@@ -55,11 +55,11 @@ uv run uvicorn backend.app.main:app --reload   # shell 1 — from the repo root
 cd frontend && npm run dev                     # shell 2
 ```
 
-Open **http://localhost:5173**. There is no single "start everything" command and no
-container (see below) — the two processes are independent, and either can be restarted
-without the other. Start the backend first: Vite proxies `/api` and `/ws` to it
-(`BACKEND_URL`, default `http://127.0.0.1:8000`), so until it answers the UI shows every
-device as disconnected.
+Open **http://localhost:5173**. That backend comes up **simulated** — see the next section
+to drive the real bench. There is no single "start everything" command and no container
+(see below) — the two processes are independent, and either can be restarted without the
+other. Start the backend first: Vite proxies `/api` and `/ws` to it (`BACKEND_URL`, default
+`http://127.0.0.1:8000`), so until it answers the UI shows every device as disconnected.
 
 Run the backend **from the repo root**, not from `backend/` — `core/`, `drivers/` and
 `backend/` share one import root.
@@ -69,20 +69,91 @@ The same commands are wrapped in the [justfile](justfile) ([just](https://github
 | Recipe | Does |
 |---|---|
 | `just sync` | `uv sync` |
-| `just dev` | the backend |
+| `just backend` (or `just dev`) | the backend, **simulated** (`HZ_SIM=all`) |
+| `just real` | the backend on **real hardware** (`HZ_SIM=none`) |
+| `just real-cameras` | real cameras, simulated motion (`HZ_SIM=arms,lh`) |
+| `just sim-only left,ot` | simulate just those, drive the rest |
 | `just frontend` | `npm install` + the frontend dev server |
-| `just test` | `uv run pytest backend/tests -q` — no hardware required |
-| `just init-arm ip=192.168.3.13` | initialize one arm (see below) |
+| `just test` | the test suite, simulated |
+| `just cameras` | identify the four cameras + snapshot each |
+| `just logs [n]` | pretty-print the tail of `data/logs/zeon.jsonl` |
+| `just reap` | kill orphaned camera child processes (see below) |
+| `just init-arm ip=192.168.3.13` | initialize one arm |
 
-Each arm needs one initialization pass per power cycle — enable servos, clear latched
-faults, home — before the API can move it:
+The sim recipes set `HZ_SIM` explicitly rather than relying on the default, so they still
+mean what they say on a machine whose `.env` sets `HZ_SIM` to something else.
 
-```bash
-uv run python scripts/init_xarm.py --ip 192.168.3.13
-```
+If a camera comes up "busy" after a crash, `just reap` clears it. Opening a UVC device on
+macOS can block in an uninterruptible kernel wait that `kill -9` cannot reap, so a capture
+child can outlive the backend and keep the device claimed.
 
 Building the frontend for a non-dev serve is `npm run build` (type-checks, emits
 `frontend/dist/`) then `npm run preview`; nothing in the stack requires it.
+
+### Running against real hardware
+
+**Simulation is the default.** With `HZ_SIM` unset every device is replaced by a mock, so a
+fresh clone runs the whole workflow with no bench attached. To drive the real cell, set
+`HZ_SIM=none`:
+
+```bash
+HZ_SIM=none uv run uvicorn backend.app.main:app --reload
+```
+
+Check the mode from the backend's own boot log rather than by eye — it says one or the other
+every start:
+
+```
+INFO     SIMULATED devices (HZ_SIM=all): gripper_cam, gripper_left_cam, handover_cam, left, ot, overview_cam, right
+WARNING  REAL hardware: no device is simulated (HZ_SIM=none)
+```
+
+The real-hardware line is a **warning** on purpose: the expensive mistake is thinking a run
+was simulated when it was about to move an arm.
+
+`HZ_SIM` also takes a comma list, so motion and vision can be mixed independently — real
+cameras with simulated arms is the safe combination for vision work at an occupied bench:
+
+| `HZ_SIM=` | Simulated | Real |
+|---|---|---|
+| unset, or `all` | everything | — |
+| `none` | — | everything |
+| `arms,lh` | both arms, Opentrons | all four cameras |
+| `cameras` | all four cameras | both arms, Opentrons |
+| `left,overview_cam` | just those two | the rest |
+
+Tokens are device *classes* (`arms`, `lh`, `cameras`), fleet ids (`left`, `right`, `ot`,
+`overview_cam`, `handover_cam`, `gripper_cam`, `gripper_left_cam`) or bare fleet types
+(`xarm`). An unrecognised token is **ignored with a warning, not fatal** — so read the log:
+a typo leaves that device real.
+
+Simulation is applied last, after the env overrides, a whole `HZ_FLEET_FILE` and
+`HZ_CAMERA_HOST`, so a device can never be simulated *and* still hold a real address. One
+deliberate exception: if `HZ_CAMERA_HOST` is set and `HZ_SIM` is unset, the camera slots
+stay real, because borrowing another bench's cameras is already a statement that frames come
+from somewhere real. An explicit `HZ_SIM` is still obeyed verbatim.
+
+Two switches apply only to simulated runs (`core/config.py`, `SimConfig`):
+`HZ_SIM_SESSION` picks which recorded session under `temp/training/` is replayed (empty =
+newest), and `HZ_SIM_SERVO` (default on) gives servo cameras the converging synthetic view.
+
+**Before the first real run:**
+
+- **Arms** — set `XARM_LEFT_IP` / `XARM_RIGHT_IP` in `.env`, and give each arm one
+  initialization pass per power cycle (enable servos, clear latched faults, home) before the
+  API can move it:
+
+  ```bash
+  uv run python scripts/init_xarm.py --ip 192.168.3.13
+  ```
+
+- **Cameras** — attach all four; which unit is which viewpoint is pinned in code
+  ([core/cameras.py](core/cameras.py)), not in `.env`. Verify with
+  `.venv/bin/python scripts/identify_cameras.py --snapshot`.
+- **Opentrons** — set `OT_SERIAL_PORT`.
+
+A real run degrades rather than refusing: drivers that fail to init are skipped, so a
+missing arm or camera leaves that one device disconnected and the rest live.
 
 ### What happens at backend start
 
@@ -213,24 +284,50 @@ D4xx **infrared** node, and the projector's dot pattern is superimposed on every
 which breaks the quad edges a tag detector needs. That one needs the emitter off (SDK, so
 root) or the RGB node instead.
 
-### Running the three-camera rig
+### Running the four-camera rig
 
-`core/config.py` defines three `realsense` fleet slots (`gripper_cam`, `overview_cam`,
-`handover_cam`); `camera_hub` runs one worker per camera and a missing unit is skipped at
-boot, so one, two, or three cameras all work with no code change. Two things need care.
+Four viewpoints — one eye-in-hand camera per arm (`gripper_cam` is the **right** arm's,
+`gripper_left_cam` the left's) plus fixed `overview_cam` and `handover_cam`. `camera_hub`
+runs one worker per camera and a missing unit is skipped at boot, so any subset works with
+no code change.
 
-**Pin every camera by serial.** Blank serials bind by enumeration order, which is stable
-only with a single camera — with two or more, the rig silently swaps viewpoints between
-runs and attributes every observed pose to the wrong camera.
+**Which unit is which viewpoint is hardcoded in [core/cameras.py](core/cameras.py)**, not
+configured in `.env`. Each slot is pinned to an AVFoundation **uniqueID** — the only
+root-free identity available on macOS — plus the unit's USB serial, so the driver can warn
+when a camera has been moved to a different port. Re-identify the rig, with a frame from
+each camera, after any change:
 
 ```bash
-sudo .venv/bin/python scripts/validate_camera.py --list   # serials + .env block to paste
+.venv/bin/python scripts/identify_cameras.py --snapshot
 ```
 
-Use **the serial the SDK reports**. ioreg / `system_profiler` print a *different* serial for
-the same unit (one D435 here is `125123020017` on USB but `138422075248` to the SDK), and
-`cfg.enable_device()` matches the SDK value — so a USB-descriptor serial binds nothing and
-gives no error.
+**An index is not an identity, which is why none of this lives in `.env`.** macOS renumbers
+video devices on any replug — and, measured 2026-07-26 on this bench, between two
+enumerations seconds apart with nothing touched: the built-in MacBook camera moved from
+index 2 to index 0. A `CAM_<SLOT>=<index>` was therefore always one enumeration away from
+aiming a viewpoint at a different camera, or at the operator, while the slot still reported
+healthy. A leftover `CAM_<SLOT>` value is now ignored with a warning.
+
+Two further traps, both measured here, both of which return a *plausible frame from the
+wrong camera* rather than an error:
+
+- **Device names are not unique.** The two D405 arm cameras report the byte-identical name
+  `Intel(R) RealSense(TM) Depth Camera 405  Depth`, so binding by name hits whichever
+  enumerates first.
+- **`ffmpeg -f avfoundation -i <uniqueID>` does not match the uniqueID.** It silently opens
+  the *default* device and exits 0 — a bogus uniqueID "succeeds" too. Only AVFoundation's
+  own `AVCaptureDevice(uniqueID:)` honours it, which is what
+  [scripts/avfsnap.swift](scripts/avfsnap.swift) calls and what the `avf` driver
+  ([drivers/camera/avf.py](drivers/camera/avf.py)) streams from. An exact device *name*
+  does bind correctly, and an unknown name is refused.
+
+Because a wrong-camera bug looks like a working camera, `identify_cameras.py` fingerprints
+every frame and fails if two units return the same view.
+
+If you instead use the RGB-D `realsense` driver (root, for depth), pin it by **the serial the
+SDK reports**. ioreg / `system_profiler` print a *different* serial for the same unit (one
+D435 here is `125123020017` on USB but `138422075248` to the SDK), and `cfg.enable_device()`
+matches the SDK value — so a USB-descriptor serial binds nothing and gives no error.
 
 **Verify them together, not one at a time.** Cameras that each pass alone can still fail
 collectively once the USB budget or the controller's endpoints run out.
