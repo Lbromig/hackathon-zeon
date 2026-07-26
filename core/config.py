@@ -55,7 +55,13 @@ DEFAULT_FLEET: list[dict[str, Any]] = [
      "port": "/dev/ttyACM0"},
     # Three-camera rig: all Intel RealSense (RGB-D), all resolve to the shared world frame.
     # `serial` pins each physical unit; leave empty to bind by enumeration order.
-    {"type": "realsense", "id": "gripper_cam",  "name": "Gripper (on-arm) cam", "serial": ""},
+    # Four viewpoints: one eye-in-hand camera per arm, plus two fixed ones.
+    # `gripper_cam` is the RIGHT arm's — the id predates the second unit and is wired into
+    # the world model (it rides `right_tcp`), kinematics, calibration and the UI, so it
+    # keeps its name rather than being renamed to gripper_right_cam. The left arm's camera
+    # is the newer `gripper_left_cam`. Rename both together if the asymmetry ever bites.
+    {"type": "realsense", "id": "gripper_cam",  "name": "Gripper cam (right arm)", "serial": ""},
+    {"type": "realsense", "id": "gripper_left_cam", "name": "Gripper cam (left arm)", "serial": ""},
     {"type": "realsense", "id": "overview_cam", "name": "Overview cam (both devices)", "serial": ""},
     {"type": "realsense", "id": "handover_cam", "name": "Handover cam (arm->OT)", "serial": ""},
 ]
@@ -68,7 +74,8 @@ XARM_IP_ENV: dict[str, str] = {"left": "XARM_LEFT_IP", "right": "XARM_RIGHT_IP"}
 # Which env var overrides each RealSense camera's serial (keyed by fleet id). Plain
 # "camera" (UVC/mock) entries instead read a numeric/RTSP `source` from the same var.
 CAM_ENV: dict[str, str] = {
-    "gripper_cam": "CAM_GRIPPER", "overview_cam": "CAM_OVERVIEW", "handover_cam": "CAM_HANDOVER",
+    "gripper_cam": "CAM_GRIPPER", "gripper_left_cam": "CAM_GRIPPER_LEFT",
+    "overview_cam": "CAM_OVERVIEW", "handover_cam": "CAM_HANDOVER",
 }
 # Stream format, applied to every camera. Per-camera overrides append the fleet id,
 # e.g. CAM_WIDTH_GRIPPER_CAM=848 — the on-arm camera often wants a smaller frame

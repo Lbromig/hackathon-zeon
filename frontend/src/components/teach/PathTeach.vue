@@ -12,12 +12,16 @@ import { useTeach } from "../../composables/useTeach";
 
 const {
   paths, recording, state, canMove, connected,
-  refreshPaths, startRecording, stopRecording, deletePath, replayPath,
+  refreshPaths, startRecording, stopRecording, deletePath, replayPath, simplifyPath,
 } = useTeach();
 
 const name = ref("");
 const note = ref("");
 const confirmDelete = ref("");
+// Two independent ways to smooth a replay: fewer stops (thin), and not stopping at
+// the ones that remain (blend).
+const blend = ref(5);
+const tolerance = ref(15);
 let ticker: number | undefined;
 
 const isRecording = computed(() => recording.value?.recording ?? false);
@@ -107,8 +111,8 @@ function askDelete(pathName: string) {
         <button
           class="btn btn-sm"
           :disabled="!canMove || isRecording"
-          title="drive the arm along this route"
-          @click="replayPath(p.name)"
+          :title="`drive the arm along this route${blend ? `, blending corners at ${blend}°` : ''}`"
+          @click="replayPath(p.name, false, blend)"
         >
           Replay
         </button>
@@ -116,9 +120,17 @@ function askDelete(pathName: string) {
           class="btn btn-sm btn-ghost"
           :disabled="!canMove || isRecording"
           title="drive it backwards — the return leg"
-          @click="replayPath(p.name, true)"
+          @click="replayPath(p.name, true, blend)"
         >
           ↩ Reverse
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="isRecording"
+          :title="`re-simplify at ${tolerance}° — removes waypoints, overwrites the path`"
+          @click="simplifyPath(p.name, tolerance)"
+        >
+          ⤵ Thin
         </button>
         <button
           class="btn btn-sm"
@@ -133,6 +145,23 @@ function askDelete(pathName: string) {
       No paths yet. Name a route, press Record, and physically walk the arm along it —
       for example from the tube approach round to the OT handover approach.
     </p>
+
+    <div v-if="paths.length" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-deck-700 pt-3 text-xs">
+      <label class="flex items-center gap-1.5 text-deck-300" title="0 = stop at every waypoint">
+        Blend
+        <input v-model.number="blend" type="number" class="field w-16 num" min="0" max="45" step="1" />
+        <span class="text-deck-500">°</span>
+      </label>
+      <label class="flex items-center gap-1.5 text-deck-300" title="higher removes more waypoints">
+        Thin at
+        <input v-model.number="tolerance" type="number" class="field w-16 num" min="1" max="60" step="1" />
+        <span class="text-deck-500">°</span>
+      </label>
+      <span class="text-deck-500">
+        Blending arcs through corners instead of stopping — the arm passes
+        <em>within</em> the radius, not through the point. Clamped to the shortest segment.
+      </span>
+    </div>
 
     <p v-if="state?.free_drive && !isRecording" class="mt-3 text-xs text-sky-300">
       Hand-guiding is still on — switch it off before replaying a path.

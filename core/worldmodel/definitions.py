@@ -38,11 +38,15 @@ def build_skeleton(*, arm_ids=("left", "right"), n_deck_slots=11) -> WorldModel:
         wm.add(Entity(f"{aid}_base", EntityKind.ARM_BASE, f"{aid} xArm base", "world"))
         wm.add(Entity(f"{aid}_tcp", EntityKind.TCP, f"{aid} TCP", f"{aid}_base", static=False))
         wm.add(Entity(f"{aid}_tool", EntityKind.TOOL, f"{aid} gripper", f"{aid}_tcp", static=False))
-    # three-camera rig, all resolved into the shared world frame:
-    #  - gripper_cam rides the right arm (hand-eye) -> close-up manipulation / grasp
+    # four-camera rig, all resolved into the shared world frame:
+    #  - gripper_cam rides the RIGHT arm (hand-eye) -> close-up manipulation / grasp
+    #  - gripper_left_cam rides the LEFT arm, same role on the other side
     #  - overview_cam is world-fixed, sees both cells -> global twin + main UI feed
     #  - handover_cam is world-fixed on the arm->OT handover zone -> present / aspirate check
-    wm.add(Entity("gripper_cam", EntityKind.CAMERA, "Gripper (on-arm) camera", "right_tcp", static=False))
+    # The two eye-in-hand cameras parent to their own TCP, so each moves with its arm and
+    # its detections back-project through that arm's pose rather than a shared one.
+    wm.add(Entity("gripper_cam", EntityKind.CAMERA, "Gripper camera (right arm)", "right_tcp", static=False))
+    wm.add(Entity("gripper_left_cam", EntityKind.CAMERA, "Gripper camera (left arm)", "left_tcp", static=False))
     wm.add(Entity("overview_cam", EntityKind.CAMERA, "Overview camera", "world"))
     wm.add(Entity("handover_cam", EntityKind.CAMERA, "Handover camera", "world"))
 

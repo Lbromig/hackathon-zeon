@@ -558,6 +558,37 @@ def stop_path_recording(device_id: str, name: str, note: str = "") -> ArmActionR
     return _command(device_id, action)
 
 
+@router.post("/{device_id}/paths/{name}/simplify", response_model=TaughtPathModel)
+def simplify_path(device_id: str, name: str, tolerance: float = 8.0,
+                  deadband: float = 0.0) -> TaughtPathModel:
+    """Thin an already-recorded path — fewer waypoints means fewer stops.
+
+    Re-runs the simplifier at a coarser tolerance over the saved waypoints, so a route
+    can be smoothed without walking the arm again. Destructive by design: it overwrites
+    the stored path, because keeping every intermediate version is how a pose library
+    becomes unusable. Re-record if you thin it too far.
+    """
+    arm = _arm(device_id)
+    try:
+        path = teach_paths.get(device_id, name)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
+    before = len(path.waypoints)
+    thinned = path_teach.simplify(path.waypoints, deadband_deg=deadband,
+                                  rdp_tol_deg=tolerance)
+    try:
+        path_teach.validate(thinned, arm.axis_count)
+    except path_teach.PathError as e:
+        raise HTTPException(400, f"cannot thin {name!r} that far: {e}")
+
+    path.waypoints = thinned
+    path.note = (f"{path.note} · " if path.note else "") + \
+                f"thinned {before}->{len(thinned)} @ tol {tolerance:g}°"
+    teach_paths.save(path)
+    return _path_model(path)
+
+
 @router.delete("/{device_id}/paths/{name}", response_model=list[TaughtPathModel])
 def delete_path(device_id: str, name: str) -> list[TaughtPathModel]:
     _arm(device_id)
@@ -568,7 +599,7 @@ def delete_path(device_id: str, name: str) -> list[TaughtPathModel]:
 
 @router.post("/{device_id}/paths/{name}/replay", response_model=ArmActionResult)
 def replay_path(device_id: str, name: str, speed: float | None = None,
-                reverse: bool = False) -> ArmActionResult:
+                reverse: bool = False, blend: float = 0.0) -> ArmActionResult:
     """Drive the arm through the taught waypoints in order.
 
     Every waypoint is checked against the joint soft limits *before the first move*.
@@ -589,10 +620,26 @@ def replay_path(device_id: str, name: str, speed: float | None = None,
             reason = arm.check_joint_target(wp)
             if reason:
                 raise ValueError(f"waypoint {i + 1}/{len(waypoints)} rejected: {reason}")
-        for wp in waypoints:
-            arm.move_joints(wp, speed=_speed(arm, speed, angular=True), wait=True)
+
+        # Blending: queue every waypoint but the last with wait=False and a radius, so
+        # the controller arcs through the corners instead of stopping at each one. The
+        # radius is capped by the shortest segment — exceeding the track length is
+        # rejected outright by the controller.
+        cap = path_teach.max_blend_radius(waypoints)
+        radius = min(blend, cap) if (blend and cap) else None
+        joint_speed = _speed(arm, speed, angular=True)
+
+        for wp in waypoints[:-1]:
+            arm.move_joints(wp, speed=joint_speed, wait=radius is None, radius=radius)
+        # The final waypoint is always exact and always waited on: this is where the
+        # path is supposed to *end*, and a cut corner there would miss the target.
+        arm.move_joints(waypoints[-1], speed=joint_speed, wait=True)
+        if radius is not None and not arm.wait_for_idle():
+            raise DriverError("replay queued but the arm did not come to rest in time")
+
+        how = f"blended r={radius:.1f}°" if radius else "point-to-point"
         return (f"replayed {name!r} {'in reverse ' if reverse else ''}"
-                f"({len(waypoints)} waypoints)")
+                f"({len(waypoints)} waypoints, {how})")
     return _command(device_id, action)
 
 

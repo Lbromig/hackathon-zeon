@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from core.config import Settings
+from core.config import CAM_ENV, Settings
 
 HOST = "http://bench.local:8100"
 
@@ -27,9 +27,12 @@ def clean_env(monkeypatch):
     """
     for var in ("HZ_CAMERA_HOST", "HZ_FLEET_FILE"):
         monkeypatch.delenv(var, raising=False)
-    for slot in ("GRIPPER", "OVERVIEW", "HANDOVER"):
-        monkeypatch.setenv(f"CAM_{slot}", "")
-        monkeypatch.setenv(f"CAM_{slot}_TYPE", "")
+    # Derived from CAM_ENV, not a hardcoded slot list: adding a camera to the fleet used to
+    # leave its var un-neutralized here, so the bench .env leaked into the test and it
+    # failed for a reason that had nothing to do with what it checks.
+    for var in CAM_ENV.values():
+        monkeypatch.setenv(var, "")
+        monkeypatch.setenv(f"{var}_TYPE", "")
     for var in ("CAM_WIDTH", "CAM_HEIGHT", "CAM_FPS"):
         monkeypatch.setenv(var, "")
 
@@ -49,7 +52,7 @@ def test_every_camera_slot_becomes_remote(monkeypatch):
     s = Settings.load()
     assert s.camera_host == HOST
     slots = cameras(s.fleet)
-    assert len(slots) == 3
+    assert len(slots) == len(CAM_ENV)      # every configured slot, not a fixed count
     for entry in slots:
         assert entry["type"] == "remote"
         assert entry["base_url"] == HOST

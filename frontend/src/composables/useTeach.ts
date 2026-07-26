@@ -296,10 +296,21 @@ async function deletePath(name: string) {
   }
 }
 
-const replayPath = (name: string, reverse = false) =>
-  send(`replay "${name}"${reverse ? " reversed" : ""}`, () =>
-    api.replayPath(selectedId.value, name, { speed: settings.speed, reverse }),
+const replayPath = (name: string, reverse = false, blend = 0) =>
+  send(`replay "${name}"${reverse ? " reversed" : ""}${blend ? ` blend ${blend}°` : ""}`, () =>
+    api.replayPath(selectedId.value, name, { speed: settings.speed, reverse, blend }),
   );
+
+async function simplifyPath(name: string, tolerance: number) {
+  const startedAt = performance.now();
+  try {
+    const p = await api.simplifyPath(selectedId.value, name, tolerance);
+    pushLog(`thin "${name}" @ ${tolerance}°`, true, `${p.waypoints.length} waypoints`, startedAt);
+    await refreshPaths();
+  } catch (e) {
+    pushLog(`thin "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
+  }
+}
 
 const grabCap = (width?: number) =>
   send("grab cap", () => api.capAction(selectedId.value, "grab", { width }));
@@ -363,6 +374,7 @@ export function useTeach() {
     stopRecording,
     deletePath,
     replayPath,
+    simplifyPath,
     grabCap,
     ungrabCap,
     unscrewCap,

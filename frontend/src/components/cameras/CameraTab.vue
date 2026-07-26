@@ -19,11 +19,41 @@ const error = ref("");
 const lastPick = ref<Detection | null>(null);
 const scanning = ref(false);
 
+// Overlay visibility, shared across every feed and remembered: turning it off is
+// how you get a clean frame for a screenshot or a slide, and having to redo that
+// on each reload (or per camera) defeats the point.
+const OVERLAY_KEY = "cameras.overlay";
+const saved = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(OVERLAY_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+})();
+const showOverlay = ref<boolean>(saved.overlay ?? true);
+const showLabels = ref<boolean>(saved.labels ?? true);
+
+function persistOverlay() {
+  localStorage.setItem(
+    OVERLAY_KEY,
+    JSON.stringify({ overlay: showOverlay.value, labels: showLabels.value }),
+  );
+}
+function toggleOverlay() {
+  showOverlay.value = !showOverlay.value;
+  persistOverlay();
+}
+function toggleLabels() {
+  showLabels.value = !showLabels.value;
+  persistOverlay();
+}
+
 const online = computed(() => devices.value.filter((d) => d.connected).length);
 
 /** Which .env var pins a given fleet id — the whole point of the discovery table. */
 const ENV_VAR: Record<string, string> = {
   gripper_cam: "CAM_GRIPPER",
+  gripper_left_cam: "CAM_GRIPPER_LEFT",
   overview_cam: "CAM_OVERVIEW",
   handover_cam: "CAM_HANDOVER",
 };
@@ -60,7 +90,24 @@ onMounted(refresh);
         AprilTag <code class="text-deck-200">tag36h11</code> detection runs at ~5 Hz on the
         backend. On RGB-D units the tag centre also carries measured depth.
       </span>
-      <div class="ml-auto flex gap-2">
+      <div class="ml-auto flex items-center gap-2">
+        <button
+          class="chip"
+          :class="{ 'chip-on': showOverlay }"
+          title="Draw detection outlines on the feeds"
+          @click="toggleOverlay"
+        >
+          Overlay
+        </button>
+        <button
+          class="chip"
+          :class="{ 'chip-on': showLabels }"
+          :disabled="!showOverlay"
+          title="Draw the id / entity / range text inside the outlines"
+          @click="toggleLabels"
+        >
+          Labels
+        </button>
         <a
           class="btn btn-sm"
           href="/worldmap.html"
@@ -127,6 +174,8 @@ onMounted(refresh);
         :key="cam.id"
         :camera="cam"
         :state="cameras[cam.id]"
+        :overlay="showOverlay"
+        :labels="showLabels"
         @select="lastPick = $event"
         @changed="refresh"
       />

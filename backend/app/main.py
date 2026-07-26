@@ -16,7 +16,9 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 
-from .api import agent, calibration, cameras, instruments, teach, workflow
+from .api import (agent, calibration, cameras, instruments, sequences, teach,
+                   workflow)
+from .services import startup_snapshot
 from .services.camera_hub import camera_hub
 from .services.device_manager import device_manager
 from .services.kinematics import kinematics
@@ -26,6 +28,9 @@ from .services.twin_fusion import twin_fusion
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     device_manager.load_fleet()
+    # One frame per camera slot, written to temp/captures/<slot>/. Backgrounded: a UVC open
+    # can block uninterruptibly on macOS, and the API must come up regardless.
+    startup_snapshot.run()
     kinematics.start()           # arm FK -> twin (no-op until a twin exists + arms connect)
     twin_fusion.start()          # corrective camera->twin fusion (no-op until a twin exists)
     yield
@@ -72,6 +77,7 @@ app.include_router(instruments.router)
 app.include_router(teach.router)
 app.include_router(cameras.router)
 app.include_router(calibration.router)
+app.include_router(sequences.router)
 app.include_router(workflow.router)
 app.include_router(agent.router)
 

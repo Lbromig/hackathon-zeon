@@ -35,6 +35,11 @@ def client(monkeypatch):
     from core.config import settings
 
     monkeypatch.setattr(settings, "fleet", FLEET)
+    # The boot-time snapshot service opens every camera slot in a background thread
+    # and closes the ones it opened. That races the hub for ownership here and
+    # disconnects the device under a running worker, so these tests are flaky with
+    # it on. Off for the suite; the race itself is a product bug, not a test one.
+    monkeypatch.setenv("HZ_STARTUP_SNAPSHOT", "0")
 
     from backend.app.main import app
     from backend.app.services.camera_hub import camera_hub

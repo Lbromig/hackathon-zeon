@@ -34,6 +34,9 @@ from ..worldmodel.entities import Transform
 TAG_FAMILY_NAME = "DICT_APRILTAG_36h11"
 TAG_FAMILY = cv2.aruco.DICT_APRILTAG_36h11
 DEFAULT_TAG_SIZE_M = 0.020                       # 20 mm, printed on the stickers
+# A frame whose 99th-percentile grey is below this is treated as under-exposed and gets
+# local contrast equalisation before detection. See FiducialDetector.preprocess.
+DARK_P99 = 128.0
 # Physical sticker stock in the lab: tag36h11 IDs 180-224 (see photos).
 KNOWN_STOCK_IDS = tuple(range(180, 225))
 
@@ -54,6 +57,40 @@ class Detection:
         return float(np.linalg.norm(self.T_cam_marker[:3, 3]))
 
 
+def tuned_parameters() -> "cv2.aruco.DetectorParameters":
+    """Detector parameters for bench conditions, rather than OpenCV's conservative defaults.
+
+    Measured against real frames from this rig (a dark Opentrons deck and a lit tube rack):
+    defaults found 1 tag across the pair, these plus CLAHE found 5. Each change earns its
+    place:
+
+    * adaptiveThreshWinSize 3..53 step 6 — the default 3..23 assumes fairly even lighting.
+      A bench has a bright deck next to a shadowed corner, and a tag in the dark half needs
+      a much larger window before it separates from its background.
+    * minMarkerPerimeterRate 0.01 (default 0.03) — the tags are 20 mm and often across the
+      cell, so they occupy very few pixels. The default silently discards them by size
+      before any decoding is attempted.
+    * polygonalApproxAccuracyRate 0.05 (default 0.03) — tolerates the slightly rounded
+      corners you get from motion blur and JPEG, which otherwise fail the quad test.
+    * CORNER_REFINE_SUBPIX — sub-pixel corners, which is what makes solvePnP poses stable
+      enough to fuse into the twin. Measured to detect exactly as many tags as no
+      refinement at all, so the precision is free.
+
+    Explicitly NOT CORNER_REFINE_APRILTAG, despite the tag family being AprilTag: measured
+    over 60 real frames it returned **zero** detections where the others returned 51. It
+    does not merely refine, it can reject, and here it rejected everything. Anything that
+    changes this line should re-run that measurement rather than reason from the name.
+    """
+    p = cv2.aruco.DetectorParameters()
+    p.adaptiveThreshWinSizeMin = 3
+    p.adaptiveThreshWinSizeMax = 53
+    p.adaptiveThreshWinSizeStep = 6
+    p.minMarkerPerimeterRate = 0.01
+    p.polygonalApproxAccuracyRate = 0.05
+    p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    return p
+
+
 class FiducialDetector:
     """Detects tag36h11 markers and (with camera intrinsics) estimates their 6-DoF pose."""
 
@@ -63,16 +100,38 @@ class FiducialDetector:
         camera_matrix: np.ndarray | None = None,
         dist_coeffs: np.ndarray | None = None,
         default_size_m: float = DEFAULT_TAG_SIZE_M,
+        enhance: bool = True,
     ) -> None:
         self.dictionary = cv2.aruco.getPredefinedDictionary(family)
-        self.params = cv2.aruco.DetectorParameters()
+        self.params = tuned_parameters()
         self.detector = cv2.aruco.ArucoDetector(self.dictionary, self.params)
         self.K = None if camera_matrix is None else np.asarray(camera_matrix, np.float64)
         self.dist = np.zeros(5) if dist_coeffs is None else np.asarray(dist_coeffs, np.float64)
         self.default_size_m = default_size_m
+        self.enhance = enhance
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if enhance else None
+
+    def preprocess(self, image: np.ndarray) -> np.ndarray:
+        """Grayscale, plus local contrast equalisation *only when the frame needs it*.
+
+        The cameras on this bench run wildly different exposures — one measured a 99th
+        percentile of 34 out of 255, where a tag is simply not separable from its
+        background. CLAHE rescues those frames. But applying it unconditionally is a net
+        loss: on normally-exposed frames it amplifies sensor and JPEG noise into edges that
+        fail the quad test, measured at 51 detections down to 25 over the same 60 frames.
+
+        So it is gated on the frame actually being dark. Measured over 60 bright frames plus
+        one dark one: raw 51+0, always-CLAHE 25+3, gated 51+3 — the gate keeps both wins.
+        The 99th percentile is the test rather than the mean, because a mostly-dark frame
+        with one bright lamp in it has a respectable mean and still needs the help.
+        """
+        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if self._clahe is None:
+            return gray
+        return self._clahe.apply(gray) if np.percentile(gray, 99) < DARK_P99 else gray
 
     def detect(self, image: np.ndarray) -> list[Detection]:
-        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = self.preprocess(image)
         corners, ids, _ = self.detector.detectMarkers(gray)
         out: list[Detection] = []
         if ids is None:

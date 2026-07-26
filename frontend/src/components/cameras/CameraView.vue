@@ -12,7 +12,17 @@ import { computed, ref, watch } from "vue";
 import type { CameraFrameState, CameraSummary, Detection } from "../../api/cameras";
 import { connectCamera, snapshotUrl, stopCamera, streamUrl } from "../../api/cameras";
 
-const props = defineProps<{ camera: CameraSummary; state?: CameraFrameState }>();
+const props = withDefaults(
+  defineProps<{
+    camera: CameraSummary;
+    state?: CameraFrameState;
+    /** Draw detection outlines at all. Off gives a clean feed for screenshots. */
+    overlay?: boolean;
+    /** Draw the id/entity/range text. Off keeps the outlines but unclutters the frame. */
+    labels?: boolean;
+  }>(),
+  { overlay: true, labels: true },
+);
 const emit = defineEmits<{
   (e: "select", detection: Detection): void;
   (e: "changed"): void;
@@ -171,7 +181,7 @@ watch(() => props.camera.id, reconnect);
       </div>
 
       <svg
-        v-if="showVideo"
+        v-if="showVideo && overlay"
         class="pointer-events-none absolute inset-0 h-full w-full"
         :viewBox="`0 0 ${width} ${height}`"
         preserveAspectRatio="none"
@@ -188,6 +198,7 @@ watch(() => props.camera.id, reconnect);
             @click="pick(d)"
           />
           <text
+            v-if="labels"
             :x="d.center[0] * width"
             :y="d.center[1] * height - labelSize * 0.9"
             :font-size="labelSize"

@@ -89,7 +89,10 @@ class MockArmDriver(ArmDriver):
         return list(self._joints)
 
     def move_joints(self, angles: list[float], speed: float | None = None,
-                    wait: bool = True) -> None:
+                    wait: bool = True, radius: float | None = None) -> None:
+        # The mock has no trajectory queue, so a blend radius changes nothing about
+        # where it ends up — it still lands exactly on the waypoint. Accepted so the
+        # blended replay path is exercisable without hardware.
         self._joints = [float(a) for a in angles]
 
     def move_joints_relative(self, deltas: list[float], speed: float | None = None,

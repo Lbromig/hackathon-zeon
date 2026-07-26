@@ -115,6 +115,38 @@ Two macOS-specific facts, both of which look like broken hardware when you hit t
 start, frame delivery, intrinsics, metric depth — and names the fix at whichever link
 breaks first.
 
+### AprilTag detection tuning
+
+`core/perception/fiducials.py` does not use OpenCV's default detector parameters. Two
+things dominate how many 20 mm `tag36h11` markers get found, and they were measured on real
+frames from this bench rather than reasoned about:
+
+**Capture resolution is the bigger lever.** At 640×480 the handover camera averaged 0.5 tags
+per frame and saw markers in 45% of frames; at 1280×720 it averages ~4 and hits 100%. A
+20 mm tag across the cell is only a few pixels wide, and the detector discards it on size
+before it ever tries to decode. Keep `CAM_WIDTH=1280` / `CAM_HEIGHT=720` unless bandwidth
+forces otherwise.
+
+**Detector parameters** (`tuned_parameters()`) add on top of that — +76% detections at
+640×480, +9% at 1280×720, and 0→3 on a badly under-exposed frame. The adaptive-threshold
+window range is most of it: the default 3..23 assumes even lighting, and a bench has a lit
+deck beside a shadowed corner.
+
+Two findings worth not re-discovering:
+
+- **`CORNER_REFINE_APRILTAG` returns zero detections here**, despite the tags being
+  AprilTags — measured 0 where every other mode returned 51 over the same 60 frames. It can
+  reject, not just refine. `CORNER_REFINE_SUBPIX` gives identical recall plus sub-pixel
+  corners, which is what makes the solvePnP poses stable enough to fuse into the twin.
+- **CLAHE has to be conditional.** It rescues dark frames (0→3) but costs more than it gains
+  on well-exposed ones (51→25), because it amplifies sensor and JPEG noise into false quads.
+  It is applied only when the frame's 99th-percentile grey is under `DARK_P99`.
+
+If a camera still finds nothing, check the scene before the code: the overview camera is a
+D4xx **infrared** node, and the projector's dot pattern is superimposed on every surface,
+which breaks the quad edges a tag detector needs. That one needs the emitter off (SDK, so
+root) or the RGB node instead.
+
 ### Running the three-camera rig
 
 `core/config.py` defines three `realsense` fleet slots (`gripper_cam`, `overview_cam`,
@@ -172,6 +204,14 @@ re-check them after any change. Verify whatever mix you end up with:
 ```bash
 .venv/bin/python scripts/validate_camera.py --fleet --frames 20
 ```
+
+**Every backend start writes one frame per camera slot** to `temp/captures/<slot>/`
+(`backend/app/services/startup_snapshot.py`). A slot is a name pointing at a device index,
+and macOS reassigns those indices whenever the rig changes — so a slot can come up aimed at
+a different camera, or at nothing, with no config change and no error. The boot frame turns
+that from invisible drift into something you can look at. It runs on a daemon thread so a
+camera that blocks cannot hang startup, is skipped under pytest (a test run must never open
+bench hardware), and is disabled with `HZ_STARTUP_SNAPSHOT=0`.
 
 Add `--persist` to write each camera's frame to disk, one subfolder per camera — which is
 how you work out which physical viewpoint a fleet id actually is:

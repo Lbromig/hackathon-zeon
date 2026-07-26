@@ -155,13 +155,27 @@ class ArmDriver(InstrumentDriver):
 
     @abstractmethod
     def move_joints(self, angles: list[float], speed: float | None = None,
-                    wait: bool = True) -> None:
-        """Absolute joint move. ``angles`` in deg, one per axis."""
+                    wait: bool = True, radius: float | None = None) -> None:
+        """Absolute joint move. ``angles`` in deg, one per axis.
+
+        ``radius`` (deg) asks the controller to *blend* this move into the next instead
+        of stopping at it — the arm arcs through the waypoint, passing within `radius`
+        of it rather than exactly through. Only meaningful with ``wait=False`` so the
+        moves queue. Drivers without blending may ignore it.
+        """
 
     @abstractmethod
     def move_joints_relative(self, deltas: list[float], speed: float | None = None,
                              wait: bool = True) -> None:
         """Relative joint move. ``deltas`` in deg, one per axis."""
+
+    def wait_for_idle(self, timeout: float = 60.0) -> bool:
+        """Block until queued motion finishes. Returns False on timeout.
+
+        Only matters for drivers that queue blended moves with ``wait=False``; the
+        default assumes moves complete synchronously and so is already idle.
+        """
+        return True
 
     def check_pose_target(self, pose: Pose) -> str | None:
         """Pre-flight a cartesian target. Returns a reason string, or None if fine.

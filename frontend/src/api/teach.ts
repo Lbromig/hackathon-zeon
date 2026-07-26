@@ -190,15 +190,29 @@ export const stopPathRecording = (id: string, name: string, note = "") =>
   );
 export const deletePath = (id: string, name: string) =>
   request<TaughtPath[]>(`/api/arms/${id}/paths/${encodeURIComponent(name)}`, { method: "DELETE" });
-export const replayPath = (id: string, name: string, opts: { speed?: number; reverse?: boolean } = {}) => {
+/** `blend` (deg) arcs through corners instead of stopping at each waypoint. It is
+ *  clamped server-side to the shortest segment, since the controller rejects a radius
+ *  longer than the track. */
+export const replayPath = (
+  id: string,
+  name: string,
+  opts: { speed?: number; reverse?: boolean; blend?: number } = {},
+) => {
   const q = new URLSearchParams();
   if (opts.speed) q.set("speed", String(opts.speed));
   if (opts.reverse) q.set("reverse", "true");
+  if (opts.blend) q.set("blend", String(opts.blend));
   const qs = q.toString();
   return post<ActionResult>(
     `/api/arms/${id}/paths/${encodeURIComponent(name)}/replay${qs ? `?${qs}` : ""}`,
   );
 };
+
+/** Thin a saved path in place — fewer waypoints, fewer stops. Destructive. */
+export const simplifyPath = (id: string, name: string, tolerance: number) =>
+  post<TaughtPath>(
+    `/api/arms/${id}/paths/${encodeURIComponent(name)}/simplify?tolerance=${tolerance}`,
+  );
 
 export type CapAction = "grab" | "ungrab" | "unscrew";
 

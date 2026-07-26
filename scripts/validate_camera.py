@@ -498,7 +498,7 @@ def stage_concurrent(serials: list[str], width: int, height: int, fps: int,
 
 
 SETTLE_FRAMES = 5   # auto-exposure needs a few frames; frame 1 routinely reads saturated
-PROBE_INDICES = 6   # fallback index count when device names cannot be enumerated
+PROBE_INDICES = 10  # cv2 indices to walk; a 4-camera rig plus built-ins runs past 6
 
 # A lab camera is a RealSense. Everything else AVFoundation offers on a MacBook — the
 # built-in camera, Desk View, a Continuity iPhone, screen capture — is not part of the rig

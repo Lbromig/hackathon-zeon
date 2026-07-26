@@ -101,3 +101,34 @@ def test_length_reports_total_joint_travel():
     p = pt.TaughtPath(name="p", device_id="right",
                       waypoints=[[0.0] * 6, [3.0, 4.0, 0, 0, 0, 0]])
     assert p.length_deg == pytest.approx(5.0)
+
+
+def test_blend_radius_is_bounded_by_the_shortest_segment():
+    """The controller rejects a radius longer than the track, so one tight corner
+    caps blending for the whole route."""
+    wps = [[0.0] * 6, [10.0] + [0.0] * 5, [12.0] + [0.0] * 5, [40.0] + [0.0] * 5]
+    r = pt.max_blend_radius(wps)          # shortest segment is 2 deg
+    assert 0 < r <= 2.0
+
+
+def test_no_blend_radius_without_a_corner():
+    """Two points are a straight line — nothing to round."""
+    assert pt.max_blend_radius([[0.0] * 6, [10.0] + [0.0] * 5]) == 0.0
+    assert pt.max_blend_radius([]) == 0.0
+
+
+def test_blend_radius_scales_with_the_path():
+    tight = pt.max_blend_radius([[0.0] * 6, [5.0] + [0.0] * 5, [10.0] + [0.0] * 5])
+    open_ = pt.max_blend_radius([[0.0] * 6, [50.0] + [0.0] * 5, [100.0] + [0.0] * 5])
+    assert open_ > tight
+
+
+def test_rerunning_simplify_at_a_coarser_tolerance_removes_more():
+    """This is what the Thin button does to an already-saved path."""
+    zig = [[i * 1.0, 8.0 * math.sin(i / 3), 0, 0, 0, 0] for i in range(120)]
+    once = pt.simplify(zig, rdp_tol_deg=3.0)
+    twice = pt.simplify(once, deadband_deg=0.0, rdp_tol_deg=25.0)
+    assert len(twice) < len(once)
+    # endpoints must survive repeated thinning
+    assert twice[0] == pytest.approx(once[0])
+    assert twice[-1] == pytest.approx(once[-1])

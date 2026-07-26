@@ -33,6 +33,7 @@ JPEG_QUALITY = 80
 IDLE_LINGER_S = float(os.getenv("HZ_CAMERA_IDLE_LINGER_S", "0"))
 ERROR_BACKOFF_S = 1.0
 REOPEN_AFTER_FAILURES = 5   # consecutive grab failures before cycling the device
+WORKER_JOIN_S = 3.0         # how long stop() waits for a worker to release its device
 
 
 @dataclass
@@ -185,6 +186,16 @@ class CameraWorker(threading.Thread):
             if self._jpeg is None or self._snapshot.seq <= last_seq:
                 return None
             return self._snapshot.seq, self._jpeg
+
+    @property
+    def usable(self) -> bool:
+        """Alive AND not shutting down.
+
+        A worker whose stop has been requested still reports `is_alive()` for a
+        tick or two, but its teardown will disconnect the driver — handing it out
+        in that window gives the caller a feed that is about to die under it.
+        """
+        return self.is_alive() and not self._stop.is_set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -434,7 +445,7 @@ class CameraHub:
         """Get (or start) the worker for this camera, connecting it if needed."""
         with self._guard:
             worker = self._workers.get(driver.device_id)
-            if worker is not None and worker.is_alive():
+            if worker is not None and worker.usable:
                 return worker
             if driver.state != ConnectionState.CONNECTED:
                 driver.connect()          # raises DriverError -> surfaced as 503
@@ -445,7 +456,7 @@ class CameraHub:
 
     def get(self, device_id: str) -> CameraWorker | None:
         worker = self._workers.get(device_id)
-        if worker is not None and not worker.is_alive():
+        if worker is not None and not worker.usable:
             self._workers.pop(device_id, None)
             return None
         return worker
@@ -464,6 +475,7 @@ class CameraHub:
             worker = self._workers.pop(device_id, None)
         if worker is not None:
             worker.stop()
+            worker.join(timeout=WORKER_JOIN_S)   # the device is not free until it exits
 
     def stop_all(self) -> None:
         with self._guard:
@@ -471,6 +483,8 @@ class CameraHub:
             self._workers.clear()
         for worker in workers:
             worker.stop()
+        for worker in workers:          # stop them all first, then wait once
+            worker.join(timeout=WORKER_JOIN_S)
 
 
 def mjpeg_stream(worker: CameraWorker, boundary: str = "frame") -> Iterator[bytes]:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from drivers import ArmDriver, DeckLocation, LiquidHandlerDriver, Pose
+from drivers import ArmDriver, DeckLocation, InstrumentKind, LiquidHandlerDriver, Pose
 
 from core import teach_poses
 from core.verification.agents import AGENTS, Evidence
@@ -256,7 +256,11 @@ def _collect_evidence(step: Step, dm: DeviceManager) -> Evidence:
     from ..services import twin
 
     ev = Evidence(world=twin.get_world())
-    for cam_id in ("gripper_cam", "overview_cam", "handover_cam"):
+    # Every camera slot, so evidence is not silently missing a viewpoint when one is added.
+    # Derived from the fleet rather than hardcoded: a new camera should widen the evidence
+    # a verifier sees without anyone remembering to edit this tuple.
+    for cam_id in [d.device_id for d in dm.all()
+                   if getattr(d.info, "kind", None) == InstrumentKind.CAMERA]:
         try:
             ev.frames[cam_id] = dm.get(cam_id).capture()  # type: ignore[attr-defined]
         except Exception:
