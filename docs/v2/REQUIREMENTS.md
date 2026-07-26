@@ -348,7 +348,123 @@ feature is never blocked on a key. Say if the chat specifically is what you want
 
 ---
 
-## 17. Acceptance criteria
+## 17. Amendment 1 — 2026-07-26
+
+Five additions from the operator, plus the resolution of the offset-conditioning problem.
+
+### 17.1 Per-arm waypoint ownership
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-WP-1** | M | A waypoint is **owned by exactly one device**. The set of waypoints an arm may be commanded to is the set taught for *that* arm. |
+| **R-WP-2** | M | A move action naming a waypoint that is **not owned by the acting device must be refused** — at pre-flight, before any motion, with a message naming both the waypoint's owner and the acting device. It must not fall back to a same-named waypoint on another arm, and must not resolve by search order. |
+| **R-WP-3** | M | The frontend must only ever offer an arm **its own** waypoints. A waypoint picker that can express an invalid pairing is a defect. |
+| **R-WP-4** | M | Waypoint names need only be unique **within** a device. `HOME` exists once per arm and means a different pose on each. |
+| **R-WP-5** | S | Pre-flight reports missing waypoints as `(device, name)` pairs, never bare names, so the operator cannot mis-read which arm is untaught. |
+
+Storage is already device-scoped — `store.setdefault(device_id, {})[name]`
+([api/teach.py:677](../../backend/app/api/teach.py#L677)) — so this is enforcement at the plan/engine
+and UI layers, not a data migration.
+
+### 17.2 Waypoint persistence
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-WP-6** | M | A waypoint saved from the frontend is **persisted to disk before the request returns**, and survives a backend restart. Deletion likewise. |
+| **R-WP-7** | M | The write is **atomic** — a crash mid-write must never truncate or corrupt the library. |
+| **R-WP-8** | M | Covered by a regression test that saves, restarts the storage layer, and reads back. |
+
+**Already implemented and must not regress:** `save_pose` writes under a lock via a temp file plus
+`os.replace` ([api/teach.py:758-767](../../backend/app/api/teach.py#L758)), with the "never leave a
+half-written pose library" comment. What is missing is only the **test** (R-WP-8).
+
+### 17.3 Camera identity
+
+Motivation: the USB hub and cables are re-plugged frequently, and a camera slot is currently just a
+cv2 device **index**. Re-plugging silently rebinds a slot to a different physical camera — observed
+(the physical right-arm camera is the slot named `gripper_left_cam`) and documented
+([startup_snapshot.py:3-8](../../backend/app/services/startup_snapshot.py#L3-L8)).
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-CAM-6** | M | Every camera slot binds to a **stable physical identity**, not a device index, and initialization resolves identity → index by discovery rather than trusting configuration. |
+| **R-CAM-7** | M | If a slot cannot be resolved to its expected physical camera, that slot is **unavailable with a stated reason**. It must never silently serve a different camera. |
+| **R-CAM-8** | M | Identity, resolved index, resolution and colour/IR mode are reported per camera in the API and shown in the frontend. |
+| **R-CAM-9** | M | Any per-camera calibration (intrinsics, offsets) is **bound to that identity plus resolution**, and mismatch is a **refusal**, not a warning. |
+
+**Constraint on the mechanism** — the obvious approaches do not work here, and the codebase already
+knows why:
+- A **UVC node cannot report a serial or name through OpenCV**; only an index is available.
+- The **USB-descriptor serial differs from the RealSense SDK serial**, so pairing them invents a
+  mapping ([validate_camera.py:359-366](../../scripts/validate_camera.py#L359)).
+- **Device names cannot identify a cv2 index**: ffmpeg and OpenCV enumerate AVFoundation in different
+  orders ([core/config.py:249-250](../../core/config.py#L249-L250)).
+
+So identity must come from one of:
+
+| Route | Works | Cost |
+|---|---|---|
+| **RealSense SDK serial** (`enable_device`) | yes, exactly | needs the `realsense` driver path, which on macOS needs root — the reason the bench moved to UVC |
+| **Content fingerprint at boot** — probe each index, capture a frame, classify it (colour vs IR by channel saturation, resolution, and similarity to a stored per-slot reference frame) | yes, and it is the only route that works for UVC | a boot probe of each index; needs a stored reference per slot, which `startup_snapshot` already writes every boot |
+| USB enumeration (`ioreg`/`system_profiler`) | **no** — cannot be mapped to a cv2 index | — |
+
+**Decision:** implement the **content fingerprint** as the general mechanism, and prefer the
+**RealSense SDK serial** whenever a slot is running the `realsense` driver. The colour/IR classifier
+(§17.5) is the primary discriminator and is already validated — it separated all 51 capture files
+correctly.
+
+### 17.4 Camera resolution selectable from the frontend
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-CAM-10** | M | Resolution is selectable **per camera from the frontend**, from a fixed list of supported modes. |
+| **R-CAM-11** | M | Changing resolution restarts that camera's controller and no other, and the new mode is reflected in the API and UI. |
+| **R-CAM-12** | M | A mode the device rejects **fails visibly** and the camera returns to its previous working mode. RealSense rejects combinations it has no profile for; OpenCV silently substitutes the nearest, so the **achieved** resolution must be read back and reported, never assumed. |
+| **R-CAM-13** | M | Changing resolution **invalidates** that camera's resolution-bound calibration (R-CAM-9). |
+
+Offered modes (D4xx colour profiles, which all four units are):
+
+| Mode | Use |
+|---|---|
+| 640×480 @30 | low bandwidth / many cameras on one hub. **Below the servo minimum** — must be labelled as such |
+| 848×480 @30 | native D4xx wide mode; good bandwidth/detail trade |
+| **1280×720 @30** | **default.** The measured minimum at which the tube tag is detectable (P-1) |
+| 1920×1080 @30 | maximum detail for detection; highest USB load |
+
+### 17.5 Colour vs IR
+
+Motivation: several slots currently deliver greyscale RealSense **IR with the structured-light dot
+projector on**, which is poor for object recognition. Root cause: a D4xx enumerates as *multiple* UVC
+nodes and the configured index is landing on an **IR node** — `.env` annotates `CAM_OVERVIEW=0` as
+"D4xx IR node — projector dots visible". This is the same index-instability as R-CAM-6, not a
+RealSense configuration problem.
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-CAM-14** | M | **Colour is the default** for every camera. |
+| **R-CAM-15** | M | Initialization **detects** that a slot is delivering greyscale/IR when colour was requested, and reports it as a warning naming the slot. Detection is by channel equality across the frame — validated, and it classified all 51 capture files correctly. |
+| **R-CAM-16** | M | Where a physical unit exposes both a colour and an IR node, slot resolution (R-CAM-6) **prefers the colour node**. |
+| **R-CAM-17** | C | *Later phase:* an explicit per-camera colour/IR toggle in the frontend, for the case where IR is genuinely wanted. Not required for the first deliverable. |
+
+### 17.6 Offset solve — conditioning resolved
+
+See [VISION_OFFSET_OPTIONS.md](VISION_OFFSET_OPTIONS.md) for the nine options and the reasoning.
+
+| ID | Pri | Requirement |
+|---|---|---|
+| **R-VIS-12** | M | Primary offset solve is **direct 3D from tag poses** (PnP) on a flat tag on the pipette carriage and a flat tag on the tube assembly — a vector subtraction in one camera's frame. No image jacobian on the primary path. |
+| **R-VIS-13** | M | Tags are **40–50 mm** and **flat** (P-2b). Fixed tag→feature offsets (tag→tip-bottom, tag→tube-rim) are measured once and configured. |
+| **R-VIS-14** | M | Fallback, when only one tag is visible: **axis-decoupled** jacobian control — x,y from the top-down view, z from the side view — with **damped least squares** and **online gain adaptation** (measure the pixel change a commanded step actually produced). |
+| **R-VIS-15** | M | Always on: 4-corner and multi-frame averaging; conditioning **refusal** on an ill-conditioned solve; **per-axis `sigma_mm`** from the solve covariance as the reported confidence; per-iteration clamp and no-progress abort. |
+| **R-VIS-16** | M | A wrong-sign or 2×-wrong gain must cause a **visible, immediate divergence-and-abort**, not a slow walk into the deck. Covered by a test that inverts the sign. |
+| **R-VIS-17** | M | **Camera intrinsics are now a prerequisite** (P-7 upgraded from "not required"). One-time per camera: a ChArUco pass, or the RealSense factory intrinsics the driver already reports ([realsense.py:74-79](../../drivers/camera/realsense.py#L74)). Bound to camera identity + resolution (R-CAM-9). |
+
+**Scope effect:** the image-jacobian module, its 6-jog calibration script and its fingerprint-binding
+machinery shrink to "intrinsics per camera", which R-CAM-9 provides anyway. Net simplification.
+
+---
+
+## 18. Acceptance criteria
 
 The deliverable is accepted when, **with no hardware attached**:
 
