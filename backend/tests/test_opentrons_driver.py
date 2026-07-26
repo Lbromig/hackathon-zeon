@@ -39,8 +39,9 @@ class FakeBoard:
         self.relative = False
         self.closed = False
         # Which direction moves an axis away from its min switch, in the FAKE machine's
-        # wiring. Mirrors the real bench: Z is inverted, X/Y are not.
-        self.away = {"X": +1.0, "Y": +1.0, "Z": -1.0}
+        # wiring. Mirrors the measured bench geometry: every min switch is reached by moving
+        # NEGATIVE, and on Z that means min_z is at the TOP (so up is -Z, toward it).
+        self.away = {"X": +1.0, "Y": +1.0, "Z": +1.0}
         # Coordinate at which each min switch engages. Modelling the switch POSITION (not
         # just a boolean) is what makes "clear of the switch, but only just" representable —
         # the state the real Z was left in, and the one that catches a leading
@@ -172,16 +173,16 @@ def test_axis_clear_of_switch_but_close_to_it_moves_away_first(monkeypatch):
     The step is 2 mm, so a leading toward-the-switch move re-latches the halt. This is a
     regression test for that bug, which this driver had until the move order was flipped.
     """
-    fake = FakeBoard(pos={"X": 0.0, "Y": 0.0, "Z": -1.0}, switch_at={"Z": 0.0})
+    fake = FakeBoard(pos={"X": 0.0, "Y": 0.0, "Z": 1.0}, switch_at={"Z": 0.0})
     d = _driver(fake, monkeypatch)
     report = d.initialize()
 
     first_z = next(c for c in fake.log if c.startswith("G0 Z"))
-    assert first_z.startswith("G0 Z-"), (
+    assert first_z.startswith("G0 Z+"), (
         f"must move away from a nearby switch first, sent {first_z}")
     assert not fake.halted, "drove into min_z despite it being only 1 mm away"
     assert report["axes"]["Z"]["net_mm"] == 0.0
-    assert pytest.approx(fake.pos["Z"], abs=1e-6) == -1.0, "must end where it started"
+    assert pytest.approx(fake.pos["Z"], abs=1e-6) == 1.0, "must end where it started"
 
 
 def test_initialize_never_touches_the_plungers(monkeypatch):
@@ -199,14 +200,14 @@ def test_axis_on_endstop_moves_away_not_into_it(monkeypatch):
     report = d.initialize()
 
     first_z = next(c for c in fake.log if c.startswith("G0 Z"))
-    assert first_z.startswith("G0 Z-"), f"first Z move must be away from min_z, got {first_z}"
+    assert first_z.startswith("G0 Z+"), f"first Z move must be away from min_z, got {first_z}"
     assert report["axes"]["Z"]["started_on_endstop"] is True
     assert report["axes"]["Z"]["released"] is True
     assert not fake.halted, "must not latch a limit halt"
     # Left off the switch, not parked back on it: resting on a triggered limit is what
     # makes the NEXT move fail.
     assert report["endstops"]["min_z"] is False
-    assert fake.pos["Z"] < 0
+    assert fake.pos["Z"] > 0, "released downward, away from the top switch"
 
 
 def test_wrong_assumed_direction_is_detected_not_repeated(monkeypatch):
@@ -351,9 +352,9 @@ def test_move_by_refuses_to_drive_into_a_triggered_endstop(monkeypatch):
     fake = FakeBoard(triggered={"min_z"})
     d = _driver(fake, monkeypatch)
     with pytest.raises(DriverError, match="moves toward it"):
-        d.move_by(dz=+2.0)                   # toward min_z, since Z's away sign is -1
+        d.move_by(dz=-2.0)                   # -Z is up, toward the top switch
     assert not fake.halted
-    d.move_by(dz=-2.0)                       # away from it is fine
+    d.move_by(dz=+2.0)                       # down, away from it, is fine
 
 
 # ---------------------------------------------------------------------------
@@ -367,51 +368,54 @@ def test_retract_z_moves_up_in_bounded_steps(monkeypatch):
     result = d.retract_z(12.0)
 
     assert result["retracted_mm"] == 12.0
-    # Up is Z-negative, measured with the handover camera.
+    # Up is -Z: measured by camera (Z+ lowers the head) and by endstop (Z+ releases min_z).
     z_moves = [c for c in fake.log if c.startswith("G0 Z")]
     assert all("Z-" in m for m in z_moves), f"retract must move up, sent {z_moves}"
-    assert len(z_moves) == 3, "12 mm in 5 mm steps = 5 + 5 + 2"
+    assert len(z_moves) == 6, "12 mm in 2 mm steps"
     assert pytest.approx(fake.pos["Z"], abs=1e-6) == -12.0
+    assert result["at_top"] is False, "never reached the switch, so cannot claim to be up"
 
 
 def test_retract_z_refuses_an_unbounded_request(monkeypatch):
-    """There is no endstop at the top of travel, so the bound is the only protection."""
+    """The bound is the backstop for a switch that never reports."""
     fake = FakeBoard()
     d = _driver(fake, monkeypatch)
-    with pytest.raises(DriverError, match="no endstop at the top"):
+    with pytest.raises(DriverError, match="exceeds"):
         d.retract_z(500.0)
     for bad in (0.0, -5.0, float("nan")):
         with pytest.raises(DriverError, match="must be positive"):
             d.retract_z(bad)
 
 
-def test_retract_z_works_when_parked_on_min_z(monkeypatch):
-    """The state retract exists to fix: head parked on the bottom switch.
+def test_retract_z_is_a_no_op_when_already_on_the_top_switch(monkeypatch):
+    """min_z triggered means fully up already — pushing further only stalls the motor.
 
-    Regression test. An earlier version treated a triggered min_z as "stop", which made
-    retract_z a no-op exactly when it was needed — moving up moves AWAY from min_z, so that
-    switch can only release.
+    This is the head's PARKED state, so it is the common case. Measured on the bench: a
+    10 mm retract from a head already at the top advanced the step counter 10 mm while the
+    camera showed ~2 mm, the motor skipping the rest.
     """
     fake = FakeBoard(triggered={"min_z"})
     d = _driver(fake, monkeypatch)
     result = d.retract_z(10.0)
 
-    assert result["retracted_mm"] == 10.0, "must retract despite min_z being triggered"
-    assert result["released_min_z"] is True
-    assert pytest.approx(fake.pos["Z"], abs=1e-6) == -10.0
-    assert not fake.halted and "M999" not in fake.log
+    assert result["already_there"] is True
+    assert result["at_top"] is True
+    assert result["retracted_mm"] == 0.0
+    assert not [c for c in fake.log if c.startswith("G0 Z")], "must not command a move"
 
 
-def test_retract_z_aborts_if_up_does_not_release_the_switch(monkeypatch):
-    """If min_z survives an upward move, 'up' is wrong — stop rather than keep driving."""
-    fake = FakeBoard(triggered={"min_z"}, latch_on_touch=False)
+def test_retract_z_stops_at_the_top_switch(monkeypatch):
+    """The switch is the real "fully up" stop; stop there rather than counting to the bound."""
+    fake = FakeBoard(pos={"X": 0.0, "Y": 0.0, "Z": 0.0}, switch_at={"Z": -5.0})
     d = _driver(fake, monkeypatch)
-    fake._move = lambda line: "ok"          # moves, but the switch never releases
+    result = d.retract_z(30.0)
 
-    with pytest.raises(DriverError, match="did not release"):
-        d.retract_z(30.0)
-    z_moves = [c for c in fake.log if c.startswith("G0 Z")]
-    assert len(z_moves) == 1, f"must stop after the first step, sent {z_moves}"
+    assert result["at_top"] is True
+    assert result["retracted_mm"] < 30.0, "stopped early at the switch"
+    assert fake.triggered >= {"min_z"}
+    # Reaching an endstop mid-move latches a halt; for a retract that is success, so it is
+    # cleared rather than surfaced as an error.
+    assert fake.halted is False
 
 
 def test_initialize_retract_is_off_by_default_and_opt_in(monkeypatch):

@@ -46,30 +46,33 @@ GANTRY_AXES = ("X", "Y", "Z")
 INIT_STEP_MM = {"X": 3.0, "Y": 3.0, "Z": 2.0}
 INIT_FEED = 600                        # mm/min, gentle
 
-# Which SIGN moves an axis AWAY from its min endstop.
+# Z geometry, measured on the bench 2026-07-26 by two independent means that agree:
 #
-# Not the obvious +1 for every axis. Measured on this machine: Z was resting on min_z and a
-# `G0 Z+2` drove *into* the switch and latched a halt — so on Z the positive direction is
-# toward min, and the axis polarity is inverted relative to the endstop naming. X and Y were
-# both clear of their switches, so their polarity is unverified; +1 is assumed for them and
-# the assumption is CHECKED at runtime (initialize re-reads M119 and fails loudly if a
-# release move did not release the switch), never trusted silently.
-AWAY_FROM_MIN = {"X": +1.0, "Y": +1.0, "Z": -1.0}
-
-# Which sign raises the pipette head. MEASURED with the handover camera, not assumed:
-# `G0 Z+6` moved the head DOWN 14 px in frame and `G0 Z-6` moved it back UP 14 px (template
-# match scores 0.80/0.81, net displacement 0 px at score 0.99). So Z-negative is up, and
-# `min_z` sits at the BOTTOM of travel, near the deck — the head had been parked on it, and
-# an early `G0 Z+2` was pushing it toward the deck until the switch stopped the move.
+#   * Camera (handover_cam, which sees the OT deck): `G0 Z+6` moved the pipette head DOWN
+#     in frame, `G0 Z-6` moved it back UP, net displacement zero. Confirmed by eye on the
+#     cropped before/after pair, not just by template score.
+#   * Endstops: with `min_z` triggered, `G0 Z+5` RELEASED it — so min_z lies in the -Z
+#     direction, i.e. at the TOP of travel, and the head parks up there.
+#
+# Both together: **-Z is up and toward min_z; +Z is down and away from it.** Getting this
+# backwards is not a cosmetic error — "retract" would drive the pipette into the deck.
 Z_UP_SIGN = -1.0
 
-# Retracting up moves AWAY from min_z, so it cannot trip that switch. But `M119` reports
-# only min_* endstops — there is NO max endstop at the top of travel, so nothing but this
-# bound stops a retract from driving into the mechanical top. Hence "retract by a known
-# distance" rather than "retract until something stops us".
+# Which SIGN moves an axis AWAY from its min endstop.
+#
+# Z is +1 (down) because its switch is at the top, per the measurements above. X and Y were
+# never observed near their switches, so +1 is an assumption for them — and it is CHECKED at
+# runtime rather than trusted: a release move that does not release the switch aborts
+# (see :meth:`_init_axis`).
+AWAY_FROM_MIN = {"X": +1.0, "Y": +1.0, "Z": +1.0}
+
+# Retracting up moves TOWARD min_z, so that switch is the natural "fully up" stop and the
+# retract checks it between steps. Steps are small so the switch is noticed at a step
+# boundary rather than mid-move (a non-homing move that reaches an endstop latches a halt).
+# The distance bound remains, as a backstop for a switch that never reports.
 DEFAULT_RETRACT_MM = 30.0
 MAX_RETRACT_MM = 80.0          # refuse to be asked for more in one call
-RETRACT_STEP_MM = 5.0          # checked against the endstops between steps
+RETRACT_STEP_MM = 2.0          # checked against the endstops between steps
 
 # Largest single commanded move per axis, always enforced (R-LH-3). The machine is unhomed,
 # so there is no absolute envelope to check against by default; this bounds the damage a
@@ -487,17 +490,19 @@ class OpentronsDriver(LiquidHandlerDriver):
             )
 
     def retract_z(self, distance_mm: float | None = None) -> dict[str, Any]:
-        """Raise the pipette head by a bounded distance (R-LH-2, R-VIS-11).
+        """Raise the pipette head, stopping at the top switch or the distance bound.
 
-        Deliberately NOT "up until something stops it". Up is away from `min_z` (measured —
-        see :data:`Z_UP_SIGN`), and `M119` shows no max endstop, so there is no switch at the
-        top of travel to stop against: an unbounded retract would drive into the mechanical
-        top. A non-homing move that *does* reach an endstop latches a halt needing `M999`,
-        so making that the normal path would also mean every retract logged a fault
-        indistinguishable from a real one.
+        Up is `-Z`, toward `min_z` at the top of travel (:data:`Z_UP_SIGN`). So `min_z` is
+        the real "fully up" stop, and this steps toward it in small increments, re-reading
+        the endstops between steps so the switch is seen at a step boundary rather than
+        mid-move — a non-homing move that reaches an endstop latches a halt needing `M999`.
 
-        Moves in steps, re-reading the endstops between them, so an unexpected switch stops
-        it cleanly rather than by fault.
+        **`retracted_mm` is what was commanded, not what was travelled.** The OT-One has no
+        encoders (:data:`POSITION_PROVENANCE`), so a stalled axis is counted as if it moved:
+        measured on this bench, a 10 mm retract from a head already near the top advanced the
+        step counter by 10 mm while the camera showed ~2 mm of travel and the motor skipped
+        the rest. `at_top` (from the switch) is the only trustworthy statement about where
+        the head actually is.
         """
         distance = DEFAULT_RETRACT_MM if distance_mm is None else float(distance_mm)
         if not math.isfinite(distance) or distance <= 0:
@@ -505,40 +510,47 @@ class OpentronsDriver(LiquidHandlerDriver):
         if distance > MAX_RETRACT_MM:
             raise DriverError(
                 f"{self.device_id}: retract of {distance:g} mm exceeds the {MAX_RETRACT_MM:g} "
-                f"mm bound — there is no endstop at the top of travel to stop against"
+                f"mm bound — a retract should stop at min_z well before this, so a larger "
+                f"request means something is wrong rather than something is far away"
             )
 
         self._refresh(force=True)
         start = self._position.get("z", 0.0)
-        # Parked on min_z is the NORMAL starting state for this machine, and retracting is
-        # precisely how to leave it — so a triggered min_z must not block the retract. It is
-        # used as a check instead: moving up must RELEASE it, and if it does not then up is
-        # not up and Z_UP_SIGN is wrong. (An earlier version aborted here instead, which
-        # made retract_z a no-op in the one state it exists to fix.)
-        started_on_min = bool(self._endstops.get("min_z"))
-        released: bool | None = None
-        moved = 0.0
+        # Already on the top switch: fully retracted by definition, and pushing further is
+        # what stalls the motor against the mechanical top. This is the head's parked state,
+        # so it is the common case, not an edge case.
+        if self._endstops.get("min_z"):
+            return {"requested_mm": distance, "retracted_mm": 0.0, "z_travel_mm": 0.0,
+                    "at_top": True, "already_there": True, "position": self.position()}
+
+        moved, at_top = 0.0, False
         self._send("G91")
         try:
             while moved < distance - 1e-9:
                 step = min(RETRACT_STEP_MM, distance - moved)
-                self._jog("Z", Z_UP_SIGN * step)
+                try:
+                    self._jog("Z", Z_UP_SIGN * step)
+                except DriverError as e:
+                    # Reaching the top switch mid-step latches a halt. For a *retract* that
+                    # is success, not failure — the goal was "as far up as it goes" — so it
+                    # is cleared and reported rather than raised.
+                    if "limit switch" not in str(e).lower():
+                        raise
+                    log.info("%s: retract reached the top switch mid-step", self.device_id)
+                    self._clear_halt()
+                    at_top = True
+                    break
                 moved += step
-                if started_on_min:
-                    if self._read_endstops().get("min_z"):
-                        raise DriverError(
-                            f"{self.device_id}: min_z did not release after retracting "
-                            f"{moved:g} mm — 'up' is not the direction this driver thinks "
-                            f"it is (Z_UP_SIGN={Z_UP_SIGN:+g}), or Z is stuck"
-                        )
-                    started_on_min, released = False, True
+                if self._read_endstops().get("min_z"):
+                    at_top = True
+                    break
         finally:
             self._send("G90", allow_fault=True)
 
         self._refresh(force=True)
         return {"requested_mm": distance, "retracted_mm": round(moved, 3),
                 "z_travel_mm": round(self._position.get("z", 0.0) - start, 3),
-                "released_min_z": released, "position": self.position()}
+                "at_top": at_top, "already_there": False, "position": self.position()}
 
     def position(self) -> dict[str, Any]:
         """Position plus how it is known (R-LH-4).
