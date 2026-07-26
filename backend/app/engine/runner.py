@@ -88,6 +88,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _artifact_refs(artifacts: Any) -> list[dict[str, str]]:
+    """Artifacts as log-safe references: kind, path, camera, label. Never bytes (R-LOG-8).
+
+    Kept deliberately narrow. A log line is read by a human scrolling a file and by the log
+    viewer resolving each `path` through the artifact endpoint; neither needs anything else,
+    and every extra field is one more thing to keep in step with the model.
+    """
+    out: list[dict[str, str]] = []
+    for a in artifacts or ():
+        ref = {"kind": str(getattr(a, "kind", "")), "path": str(getattr(a, "path", ""))}
+        camera = getattr(a, "camera", None)
+        if camera:
+            ref["camera"] = str(camera)
+        label = getattr(a, "label", "")
+        if label:
+            ref["label"] = str(label)
+        out.append(ref)
+    return out
+
+
 def _jsonable(value: Any) -> Any:
     """Enough of a JSON coercion for an inputs record. Images never get here — an artifact is
     a path (R-LOG-8) — so this only has to survive pydantic models and numbers."""
@@ -821,9 +841,20 @@ class Runner:
                 outputs=outputs, artifacts=ctx.collected_artifacts(),
                 warnings=ctx.collected_warnings(), error=error,
                 log_ref=LogRef(run_id=self.run_id, aid=action.aid))
+            # `artifacts` rides the log record as **references**, never bytes (R-LOG-8): a
+            # JSONL line with a base64 frame in it is unreadable, unbounded, and rotates the
+            # log away in minutes. Paths are enough — the log viewer resolves them through
+            # the artifact endpoint and renders the image inline.
+            #
+            # Without this the overlays were invisible from the log. They are the whole
+            # evidence trail for the servo loop: "the tip was 1.9 mm off" is a number you
+            # either trust or do not, and the annotated frame is what settles it. Reading the
+            # log after a run and finding the measurement but not the picture is exactly the
+            # position you do not want to be in.
             logger.info("%s in %d ms", status,
                         duration_ms, extra={"event": "action_output", "status": status,
-                                            "outputs": _jsonable(outputs)})
+                                            "outputs": _jsonable(outputs),
+                                            "artifacts": _artifact_refs(result.artifacts)})
         return result
 
     def _dispatch(self, action: ActionBase, ctx: ActionContext) -> OutputsBase:
@@ -1099,7 +1130,8 @@ class Runner:
                  if isinstance(v, (int, float))} if isinstance(sigma_raw, dict) else {}
         observed = _observed_axes(value)
         if observed is not None:
-            missing = sorted(CORRECTED_AXES - observed)
+            required = frozenset(getattr(loop, "corrected_axes", None) or CORRECTED_AXES)
+            missing = sorted(required - observed)
             if missing:
                 # Not a failure and not zero: unknown. `None` counts as no progress, so the
                 # loop stalls with `sigma_mm` and `observed_axes` on the record — the honest
@@ -1107,7 +1139,7 @@ class Runner:
                 self._watch_warn(
                     ctx, "unobserved_axis",
                     f"{loop.watch_slot!r} does not observe {', '.join(missing)}; the loop "
-                    f"corrects {', '.join(sorted(CORRECTED_AXES))} and cannot report a "
+                    f"corrects {', '.join(sorted(required))} and cannot report a "
                     f"remaining offset it did not measure, so this iteration counts as no "
                     f"progress rather than as converged (R-VIS-4)")
                 return None, sigma

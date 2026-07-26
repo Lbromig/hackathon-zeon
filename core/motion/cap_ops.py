@@ -56,6 +56,21 @@ DEFAULT_TURNS = 1.0             # one full turn of the cap
 DEFAULT_JOINT_SPEED = 30.0      # deg/s — unscrewing is not a place to hurry
 RETURN_TOLERANCE_DEG = 1.0      # how far off "back at the start" is still acceptable
 
+#: Extra degrees to unwind beyond the bare minimum, so the plan clears the soft limit with
+#: room rather than landing exactly on it.
+#:
+#: From the bench: "J6 would reach 360.0° — J6=360.00° outside soft limit [-360, 360]", which
+#: reads as a contradiction until you notice the printed value is rounded. `required_unwind`
+#: computed an unwind that put the plan's peak *exactly* at `hi`, and a commanded relative
+#: move on a real arm does not land exactly — a few hundredths short and the peak is over the
+#: limit again, so the pre-flight refuses a plan the unwind was supposed to have fixed. The
+#: mock lands exactly, which is why this only ever appeared on hardware.
+#:
+#: 2° is far more than the arm's positioning error and far less than a 90° bite, so it costs
+#: nothing and cannot mask a genuinely impossible plan: `required_unwind` still raises when no
+#: starting angle fits, and the margin is included in that feasibility check.
+UNWIND_MARGIN_DEG = 2.0
+
 #: A step of the plan. ``("turn", deg)`` moves the tool axis; ``("open", 0.0)`` and
 #: ``("close", 0.0)`` drive the jaws.
 Step = tuple[str, float]
@@ -154,6 +169,10 @@ class RatchetResult:
     # inside J6's soft limit. Reported because it is real motion the operator did not ask
     # for: a recovery that happens silently is indistinguishable from a bug.
     unwound_deg: float = 0.0
+    #: Total cartesian +Z the arm was raised across the run, `(bites - 1) * lift_per_regrip_mm`
+    #: when lifting is on. The arm therefore does NOT end where it started; the wrist still
+    #: does, which is what `net_wrist_travel_deg` tracks.
+    lifted_mm: float = 0.0
 
     @property
     def returned(self) -> bool:
@@ -297,12 +316,19 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
     bites = count_bites(steps)
     bite_no, rotated = 0, 0.0
 
+    lifted = 0.0
     for action, degrees in steps:
         if action == "turn":
             turn_tool_axis(arm, degrees, cfg.joint_speed)
         elif action == "open":
             arm.release()
         elif action == "close":
+            # Follow the cap up its thread before taking hold of it again. Done here, with
+            # the jaws still open, so the arm never lifts while gripping the cap.
+            if cfg.lift_per_regrip_mm:
+                lifted += lift_for_regrip(arm, cfg)
+                if on_step:
+                    on_step(f"lift +{cfg.lift_per_regrip_mm:g} mm (jaws open)")
             arm.grip(width=cfg.grip_counts)
         if cfg.settle_s:
             time.sleep(cfg.settle_s)
@@ -323,6 +349,7 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
         net_wrist_travel_deg=arm.get_joints()[index] - start[index],
         preflight_ok=True,
         unwound_deg=unwound,
+        lifted_mm=lifted,
     )
 
 
@@ -335,8 +362,11 @@ def unscrew_cap(arm: ArmDriver, cfg: CapConfig | None = None,
         f" WARNING: wrist ended {result.net_wrist_travel_deg:+.1f}° from start, expected 0")
     prefix = ("" if not result.unwound_deg else
               f"rewound wrist {result.unwound_deg:.0f}° first (jaws open, cap untouched); ")
+    lift = ("" if not result.lifted_mm else
+            f", arm raised {result.lifted_mm:.0f} mm following the thread")
     return (f"{prefix}unscrewed {result.total_rotation_deg:.0f}° in {result.bites} x "
-            f"{result.step_deg:.0f}° bites; cap released, wrist returned to start{note}")
+            f"{result.step_deg:.0f}° bites; cap released, wrist returned to start"
+            f"{lift}{note}")
 
 
 def tool_axis(arm: ArmDriver) -> int:
@@ -364,9 +394,22 @@ def preflight_turns(arm: ArmDriver, steps: list[Step]) -> None:
         angles[index] += degrees
         reason = arm.check_joint_target(angles)
         if reason:
+            # Report the excess, at enough precision to be believable. The bench saw
+            # "would reach 360.0° — J6=360.00° outside soft limit [-360, 360]", which reads as
+            # a contradiction: both numbers were rounded, the real angle was a few hundredths
+            # over, and the operator was left rotating a wrist that looked already in range.
+            # A limit message whose own numbers appear to satisfy it is worse than no message.
+            limits = arm.limits.joints
+            over = ""
+            if limits and index < len(limits):
+                lo, hi = limits[index]
+                excess = max(angles[index] - hi, lo - angles[index])
+                if excess > 0:
+                    over = f", {excess:.3f}° past it"
             raise CapOpError(
                 f"unscrew refused before starting: J{index + 1} would reach "
-                f"{angles[index]:.1f}° — {reason}. Rotate the wrist back before unscrewing."
+                f"{angles[index]:.3f}°{over} — {reason}. Rotate the wrist back before "
+                f"unscrewing."
             )
 
 
@@ -384,9 +427,16 @@ def plan_excursion(steps: list[Step]) -> tuple[float, float]:
 def required_unwind(arm: ArmDriver, steps: list[Step]) -> float:
     """How far the tool axis must rotate BACK for every planned turn to become legal.
 
-    0 when the plan already fits. Positive means "rotate the tool axis this many degrees
-    negative first". Raises when unwinding cannot help — the plan needs more range than the
-    joint has between its limits, so no starting angle would work.
+    0 when the plan already fits **with margin**. Positive means "rotate the tool axis this
+    many degrees negative first". Raises when unwinding cannot help — the plan needs more range
+    than the joint has between its limits, so no starting angle would work.
+
+    The margin (:data:`UNWIND_MARGIN_DEG`) is the difference between this working on the bench
+    and not. Unwinding to put the peak *exactly* at `hi` is arithmetically sufficient and
+    physically useless: the unwind is a commanded relative move, a real arm lands a few
+    hundredths off, and a peak that was exactly on the limit is then over it — so the
+    pre-flight refuses the very plan the unwind existed to make legal. The mock lands exactly,
+    which is why this failed only on hardware.
     """
     index = tool_axis(arm)
     limits = arm.limits.joints
@@ -396,14 +446,20 @@ def required_unwind(arm: ArmDriver, steps: list[Step]) -> float:
     start = list(arm.get_joints())[index]
     peak, trough = plan_excursion(steps)
 
-    if (span := peak - trough) > (hi - lo):
+    # The margin is needed at both ends, so it counts twice against the available range.
+    # Included in the feasibility check rather than bolted on after it, so an impossible plan
+    # is still reported as impossible instead of being unwound into a different refusal.
+    span = peak - trough
+    usable = (hi - lo) - 2 * UNWIND_MARGIN_DEG
+    if span > usable:
         raise CapOpError(
             f"unscrew needs {span:.0f}° of J{index + 1} travel but its soft limit "
-            f"[{lo:g}, {hi:g}] only allows {hi - lo:.0f}° — no starting angle can fit this "
-            f"plan; reduce the bite or the number of turns"
+            f"[{lo:g}, {hi:g}] only allows {hi - lo:.0f}° "
+            f"({usable:.0f}° once a {UNWIND_MARGIN_DEG:g}° margin is kept at each end) — no "
+            f"starting angle can fit this plan; reduce the bite or the number of turns"
         )
-    unwind = max(0.0, (start + peak) - hi)
-    if start - unwind + trough < lo:
+    unwind = max(0.0, (start + peak) - (hi - UNWIND_MARGIN_DEG))
+    if start - unwind + trough < lo + UNWIND_MARGIN_DEG:
         # Unwinding to fit the top would push the bottom of the excursion out instead.
         raise CapOpError(
             f"J{index + 1} cannot be positioned to fit this unscrew: at {start:.1f}° it "
@@ -411,6 +467,20 @@ def required_unwind(arm: ArmDriver, steps: list[Step]) -> float:
             f"plan's low point past {lo:g}°"
         )
     return unwind
+
+
+def lift_for_regrip(arm: ArmDriver, cfg: "CapConfig") -> float:
+    """Raise the arm by one re-grip's worth of Z, in the base frame. Returns mm moved.
+
+    Cartesian, not joint space: "up" is a direction in the world, and which joints deliver it
+    depends on the arm's pose. Orientation is left alone — only Z changes — so the tool stays
+    aligned with the cap it is about to re-grip.
+    """
+    lift = float(cfg.lift_per_regrip_mm)
+    if not lift:
+        return 0.0
+    arm.move_relative(dz=lift, speed=cfg.lift_speed, wait=True)
+    return lift
 
 
 def unwind_tool_axis(arm: ArmDriver, degrees: float, cfg: "CapConfig") -> float:
