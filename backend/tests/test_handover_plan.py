@@ -100,6 +100,39 @@ def test_the_cap_is_gripped_before_decap_and_released_after_the_store_move():
     assert close < decap < store < release
 
 
+def test_the_tube_and_cap_are_gripped_at_thirty_five_percent():
+    """Operator-specified grip width for both the tube and the cap.
+
+    The fraction is authoritative; counts are derived from the gripper's 0..850 full scale.
+    Both closes and the decap re-grip must agree, or the ratchet would re-close harder or
+    looser than the initial grab.
+    """
+    assert handover.GRIP_FRACTION == pytest.approx(0.35)
+    assert handover.GRIP_COUNTS == round(0.35 * handover.GRIPPER_FULL_SCALE_COUNTS) == 298
+
+    plan = handover.build()
+    closes = [a for a in plan if isinstance(a, ArmGripper) and a.state == "close"]
+    assert {a.device for a in closes} == {"left", "right"}, "tube and cap"
+    for a in closes:
+        assert a.width == handover.GRIP_COUNTS, f"{a.device} closes at 35%"
+
+    decap = next(a for a in plan if isinstance(a, ArmDecap))
+    assert decap.grip_counts == handover.GRIP_COUNTS
+
+
+def test_the_grip_width_is_inside_the_grippers_range():
+    """A width outside 0..full-scale is rejected by the driver, not clamped — so a bad
+    constant here would refuse to run rather than crush a tube, but it must not be bad."""
+    assert 0 < handover.GRIP_COUNTS < handover.GRIPPER_FULL_SCALE_COUNTS
+
+
+def test_opening_the_gripper_never_specifies_a_width():
+    """`open` means fully open; a width on an open action would be ambiguous."""
+    for a in handover.build():
+        if isinstance(a, ArmGripper) and a.state == "open":
+            assert a.width is None
+
+
 def test_decap_is_a_full_turn_in_ninety_degree_bites():
     """R-ARM-5: 360° in 90° steps. The rewind between bites is the handler's invariant."""
     decap = next(a for a in handover.build() if isinstance(a, ArmDecap))

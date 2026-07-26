@@ -43,6 +43,28 @@ SERVO_CAMERAS: tuple[str, ...] = ("handover_cam", "gripper_cam")
 OFFSET_THRESHOLD_MM = 1.5
 MAX_SERVO_ITERATIONS = 12
 
+#: How far to close on a tube or a cap, as a fraction of the gripper's full opening.
+#: Operator-specified: "for the grab tube and cap, the gripper should go to about 35 %".
+#:
+#: The **fraction is the authoritative number**; the count below is derived from it. The
+#: xArm parallel gripper commands in controller counts over a 0..850 range (measured — the
+#: taught library records 848-851 when open), so 35 % is ~298 counts.
+#:
+#: Note the taught poses record 398 counts at `TUBE` and 430 at `CAP_GRAB`, but those are
+#: just where the jaws happened to be when the pose was captured — a *recording*, not a
+#: target. This is what actually gets commanded.
+#:
+#: Deliberately NOT clamped by the driver: `ArmDriver.grip` rejects an out-of-range width
+#: rather than clamping it, because clamping silently turns a unit-conversion bug into a
+#: crushed tube.
+GRIP_FRACTION = 0.35
+#: Full-scale opening of the parallel gripper, in controller counts. A bench fact about this
+#: end-effector. If the gripper is ever changed this is the line to revisit — and the right
+#: fix is a `width_from_fraction` on the capability, alongside the existing
+#: `width_from_metres`, so a plan need not know counts at all.
+GRIPPER_FULL_SCALE_COUNTS = 850.0
+GRIP_COUNTS = round(GRIP_FRACTION * GRIPPER_FULL_SCALE_COUNTS)   # 298
+
 # The three TRANSITION_* waypoints and the two LIQUID_HANDLER_* ones were written in the
 # brief with a `LEFT_ARM_` prefix, but the arm that visits them is the RIGHT one — it is
 # carrying the tube. They are owned by `right`, and `core.waypoints` will refuse to send the
@@ -112,8 +134,9 @@ def build() -> list[Action]:
         ArmWaypoint(device=right, waypoint="APPROACH_TUBE_GRAB", speed="fast"),
         ArmWaypoint(device=right, waypoint="TUBE", speed="slow"),
 
-        # 6 — the tube is now held.
-        ArmGripper(device=right, state="close", label="right gripper close on the tube"),
+        # 6 — the tube is now held, at 35 % of full opening.
+        ArmGripper(device=right, state="close", width=GRIP_COUNTS,
+                   label=f"right gripper close on the tube ({GRIP_FRACTION:.0%})"),
 
         # 7 — lift it clear of the rack. `medium`: loaded, but nothing is near it.
         ArmWaypoint(device=right, waypoint="APPROACH_TUBE_TRANSFER", speed="medium"),
@@ -121,13 +144,16 @@ def build() -> list[Action]:
         # 8-10 — left arm takes the cap, while the right arm holds the tube steady.
         ArmWaypoint(device=left, waypoint="APPROACH_CAP_GRAB", speed="fast"),
         ArmWaypoint(device=left, waypoint="CAP_GRAB", speed="slow"),
-        ArmGripper(device=left, state="close", label="left gripper close on the cap"),
+        ArmGripper(device=left, state="close", width=GRIP_COUNTS,
+                   label=f"left gripper close on the cap ({GRIP_FRACTION:.0%})"),
 
         # 11 — decap: 360° in 90° bites, rewinding the wrist between each so net wrist
         # travel is zero. Without the rewind, every run walks the tool joint another 360°
         # toward its limit; with it, the operation is repeatable (R-ARM-5, D12).
+        # `grip_counts` is the width it re-grips to between bites — the same 35 %, so the
+        # ratchet does not re-close harder or looser than the initial grab.
         ArmDecap(device=left, step_deg=90.0, turns=1.0, speed="slow",
-                 label="unscrew cap · 4 × 90°"),
+                 grip_counts=GRIP_COUNTS, label="unscrew cap · 4 × 90°"),
 
         # 12-13 — cap up and away. SLOW then FAST, not the other way round: the slow move is
         # the one lifting the loosened cap clear of the tube mouth.
