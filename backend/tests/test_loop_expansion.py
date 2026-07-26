@@ -134,7 +134,7 @@ def test_each_iteration_becomes_real_indexed_rows_with_their_own_outputs(handler
                                                                         runner_factory):
     """D8/R-VIS-8. Iteration 4's snapshot has to be a row with its own result, or "what did the
     loop see on iteration 4" is unanswerable and the workflow tab has nothing to show."""
-    world = World(offset=8.0, gain=2.0).install(handlers)
+    World(offset=8.0, gain=2.0).install(handlers)
     runner = runner_factory([_loop(threshold_mm=1.5, max_iterations=8)])
     loop_aid = runner.plan.aids()[0]
     assert runner.run_to_completion(timeout=10.0) == "complete"
