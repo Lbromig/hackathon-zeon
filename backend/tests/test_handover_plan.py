@@ -117,16 +117,26 @@ def test_the_tube_stays_seated_in_the_rack_until_the_cap_is_off_and_stored():
     lift = kinds.index(("ArmWaypoint", "APPROACH_TUBE_TRANSFER"))
     decap = next(i for i, a in enumerate(plan) if isinstance(a, ArmDecap))
     cap_store = kinds.index(("ArmWaypoint", "CAP_STORE"))
-    cap_released = next(i for i, a in enumerate(plan)
-                        if i > decap and isinstance(a, ArmGripper)
-                        and a.device == "left" and a.state == "open")
 
     assert decap < lift, "the tube was lifted before the cap was unscrewed"
     assert cap_store < lift, "the tube was lifted before the cap reached its store"
-    assert cap_released < lift, "the tube was lifted before the left arm let the cap go"
 
 
-def test_nothing_the_right_arm_does_happens_between_the_cap_grab_and_the_cap_release():
+def test_the_left_arm_never_lets_go_of_the_cap():
+    """Operator decision: the left arm keeps the cap for a later recap step.
+
+    `arm.decap` ends gripped (`cap_ops.END_GRIPPED`), so the cap is held continuously from
+    CAP_GRAB onward — there is no moment where the arm carries nothing, and no moment where the
+    cap is left somewhere. A stray `open` here is the bug that made the lift carry air.
+    """
+    plan = handover.build()
+    decap = next(i for i, a in enumerate(plan) if isinstance(a, ArmDecap))
+    after = [a for a in plan[decap:]
+             if isinstance(a, ArmGripper) and a.device == "left" and a.state == "open"]
+    assert not after, "the left arm releases the cap; it is supposed to keep holding it"
+
+
+def test_nothing_the_right_arm_does_happens_while_the_left_arm_works_the_cap():
     """While the left arm works on the cap, the right arm holds still.
 
     Any right-arm motion in that window is either the tube moving under an applied torque or
@@ -136,11 +146,9 @@ def test_nothing_the_right_arm_does_happens_between_the_cap_grab_and_the_cap_rel
     plan = handover.build()
     kinds = _step_indices(plan)
     first_cap = kinds.index(("ArmWaypoint", "APPROACH_CAP_GRAB"))
-    cap_released = next(i for i, a in enumerate(plan)
-                        if i > first_cap and isinstance(a, ArmGripper)
-                        and a.device == "left" and a.state == "open")
+    cap_stored = kinds.index(("ArmWaypoint", "CAP_STORE"))
 
-    moved = [i for i in range(first_cap, cap_released)
+    moved = [i for i in range(first_cap, cap_stored)
              if plan[i].device == "right"
              and isinstance(plan[i], (ArmWaypoint, ArmTraverse, ArmDecap))]
     assert not moved, (
@@ -148,17 +156,14 @@ def test_nothing_the_right_arm_does_happens_between_the_cap_grab_and_the_cap_rel
     )
 
 
-def test_the_cap_is_gripped_before_decap_and_released_after_the_store_move():
+def test_the_cap_is_gripped_before_decap_and_carried_to_the_store():
     plan = handover.build()
     decap = next(i for i, a in enumerate(plan) if isinstance(a, ArmDecap))
     close = next(i for i, a in enumerate(plan)
                  if isinstance(a, ArmGripper) and a.device == "left" and a.state == "close")
     store = next(i for i, a in enumerate(plan)
                  if isinstance(a, ArmWaypoint) and a.waypoint == "CAP_STORE")
-    release = next(i for i, a in enumerate(plan)
-                   if i > decap and isinstance(a, ArmGripper) and a.device == "left"
-                   and a.state == "open")
-    assert close < decap < store < release
+    assert close < decap < store
 
 
 def test_the_tube_and_cap_are_gripped_at_thirty_five_percent():

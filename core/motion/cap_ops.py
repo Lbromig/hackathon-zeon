@@ -106,6 +106,20 @@ PREFLIGHT_TOLERANCE_DEG = 0.5
 #: already seated drives the thread against the tube with the full joint torque behind it.
 UNSCREW_SIGN = -1.0
 
+#: Whether the ratchet finishes **holding** the loosened cap.
+#:
+#: True, from the bench: "when retracting after the decap, the gripper opened first, so it
+#: didn't hold on to the decapped cap". The last bite is turn / open / unwind, and with no
+#: closing grip the arm left for the cap-store waypoint with open jaws and the cap still sitting
+#: on the tube — so the lift carried nothing and the later release released nothing.
+#:
+#: The wrist still returns to where it started (the final unwind happens with the jaws open, as
+#: it must, or it would screw the cap back down); the close is added *after* that, so
+#: `end_gripped` costs the invariant nothing. What it changes is the routine's contract: it is
+#: now "unscrew the cap and hold it", not "unscrew the cap and let go" — which is what a caller
+#: that has to carry the cap away needs, and what the teach tab's /cap button gets too.
+END_GRIPPED = True
+
 #: A step of the plan. ``("turn", deg)`` moves the tool axis; ``("open", 0.0)`` and
 #: ``("close", 0.0)`` drive the jaws.
 Step = tuple[str, float]
@@ -149,6 +163,8 @@ class CapConfig:
     # hardcoded positive turn was tightening the cap, and tightening a seated cap drives the
     # thread against the tube with the full joint torque behind it.
     unscrew_sign: float = UNSCREW_SIGN
+    # Finish holding the loosened cap, so the caller can carry it away. See END_GRIPPED.
+    end_gripped: bool = END_GRIPPED
     lift_per_regrip_mm: float = 2.0
     lift_speed: float = 30.0             # mm/s for the lift; unscrewing is not a race
     # Rewind the wrist (jaws open, so the cap does not turn) when it is parked too far round
@@ -188,8 +204,9 @@ class CapConfig:
     def plan(self) -> list[Step]:
         """The ratchet this config describes, as steps. Pure."""
         if not self.generalized:
-            return plan_unscrew(self.half_turns, self.unscrew_sign)
-        return plan_ratchet(self.bite_deg, self.total_deg, self.unscrew_sign)
+            return plan_unscrew(self.half_turns, self.unscrew_sign, self.end_gripped)
+        return plan_ratchet(self.bite_deg, self.total_deg, self.unscrew_sign,
+                            self.end_gripped)
 
 
 @dataclass(frozen=True)
@@ -207,6 +224,10 @@ class RatchetResult:
     # Degrees the wrist was rewound (jaws open) before the first bite, to bring the plan
     # inside J6's soft limit. Reported because it is real motion the operator did not ask
     # for: a recovery that happens silently is indistinguishable from a bug.
+    #: True when the routine finished with the jaws closed on the cap (`END_GRIPPED`). Recorded
+    #: rather than assumed: whether the caller still has the cap decides what its next move may
+    #: safely be, and a lift with open jaws carries nothing.
+    ended_gripped: bool = END_GRIPPED
     unwound_deg: float = 0.0
     #: Total cartesian +Z the arm was raised across the run, `(bites - 1) * lift_per_regrip_mm`
     #: when lifting is on. The arm therefore does NOT end where it started; the wrist still
@@ -261,13 +282,14 @@ def bite_sizes(step_deg: float = DEFAULT_STEP_DEG,
 
 def plan_ratchet(step_deg: float = DEFAULT_STEP_DEG,
                  total_deg: float = FULL_TURN_DEG,
-                 sign: float = UNSCREW_SIGN) -> list[Step]:
+                 sign: float = UNSCREW_SIGN,
+                 end_gripped: bool = END_GRIPPED) -> list[Step]:
     """The ratchet as a list of (action, degrees) steps — pure, so it is testable.
 
     Every bite is turn-gripped / open / unwind-free, and the unwind must happen with the
     jaws OPEN or it would simply screw the cap back on. Between bites the jaws re-grip;
-    after the last one they do not, so the routine ends with the cap released and the
-    wrist back exactly where it started.
+    after the last one the jaws close again on the loosened cap (`end_gripped`), so the
+    routine ends **holding** it with the wrist back exactly where it started.
 
     That final unwind is what makes the operation repeatable: net wrist travel is zero,
     so unscrewing twice in a row does not walk J6 toward its limit.
@@ -283,15 +305,21 @@ def plan_ratchet(step_deg: float = DEFAULT_STEP_DEG,
         steps.append(("turn", -turn * bite))         # free: wrist returns
         if i < len(sizes) - 1:
             steps.append(("close", 0.0))             # re-grip for the next bite
+    if end_gripped:
+        # Take hold of the loosened cap so the arm can carry it away. See END_GRIPPED: the
+        # workflow's next move lifts the cap clear of the tube, and it cannot do that with
+        # open jaws.
+        steps.append(("close", 0.0))
     return steps
 
 
 def plan_unscrew(half_turns: int = DEFAULT_HALF_TURNS,
-                 sign: float = UNSCREW_SIGN) -> list[Step]:
+                 sign: float = UNSCREW_SIGN,
+                 end_gripped: bool = END_GRIPPED) -> list[Step]:
     """The 180°-bite ratchet — the teach tab's ``/cap`` spelling of `plan_ratchet`."""
     if half_turns < 1:
         raise CapOpError("half_turns must be >= 1")
-    return plan_ratchet(HALF_TURN_DEG, HALF_TURN_DEG * half_turns, sign)
+    return plan_ratchet(HALF_TURN_DEG, HALF_TURN_DEG * half_turns, sign, end_gripped)
 
 
 def count_bites(steps: list[Step]) -> int:
@@ -399,6 +427,9 @@ def run_ratchet(arm: ArmDriver, cfg: CapConfig | None = None, *,
         total_rotation_deg=gripped_rotation(steps),
         net_wrist_travel_deg=arm.get_joints()[index] - start[index],
         preflight_ok=True,
+        # Derived from the plan that actually ran, not from config: if a caller passed
+        # end_gripped=False the record must say so.
+        ended_gripped=bool(steps and steps[-1][0] == "close"),
         unwound_deg=unwound,
         lifted_mm=lifted,
     )
@@ -416,7 +447,9 @@ def unscrew_cap(arm: ArmDriver, cfg: CapConfig | None = None,
     lift = ("" if not result.lifted_mm else
             f", arm raised {result.lifted_mm:.0f} mm following the thread")
     return (f"{prefix}unscrewed {result.total_rotation_deg:.0f}° in {result.bites} x "
-            f"{result.step_deg:.0f}° bites; cap released, wrist returned to start"
+            f"{result.step_deg:.0f}° bites; "
+            f"{'cap held' if result.ended_gripped else 'cap released'}, "
+            f"wrist returned to start"
             f"{lift}{note}")
 
 

@@ -168,7 +168,10 @@ def build() -> list[Action]:
         # the one lifting the loosened cap clear of the tube mouth.
         ArmWaypoint(device=left, waypoint="APPROACH_CAP_STORE", speed="slow"),
         ArmWaypoint(device=left, waypoint="CAP_STORE", speed="fast"),
-        ArmGripper(device=left, state="open", label="release the cap into its store"),
+        # No release here, by operator decision: the left arm KEEPS the cap, for a later recap
+        # step. `arm.decap` now ends gripped (cap_ops.END_GRIPPED), so the cap is held
+        # continuously from CAP_GRAB through the rest of the run — there is no moment where the
+        # arm is carrying nothing and no moment where the cap is left somewhere.
 
         # 14 — ONLY NOW lift the tube clear of the rack.
         #
