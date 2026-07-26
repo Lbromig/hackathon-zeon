@@ -14,7 +14,10 @@ import time
 
 import serial
 
-PORT = "/dev/cu.usbmodem11201"
+sys.path.insert(0, ".")
+
+from scripts import require_port  # noqa: E402
+
 FEED = 300.0          # mm/min = 5 mm/s. Slow enough to stop by hand.
 MAX_STEP = 15.0       # refuse anything larger in a single relative step
 
@@ -23,6 +26,7 @@ if abs(step) > MAX_STEP:
     raise SystemExit(f"refusing a {step} mm step: cap is {MAX_STEP} mm per jog "
                      f"with no endstops and labware on the deck.")
 
+PORT = require_port()
 s = serial.Serial(PORT, 115200, timeout=0.25, write_timeout=0.5)
 time.sleep(2.0)
 s.reset_input_buffer()
@@ -53,6 +57,16 @@ def estop():
 
 
 try:
+    # Clear a latched HALT first. A halted board silently ignores every G-code
+    # while still acking, so the jog below "completes" without moving: observed
+    # as a 15 mm step reporting 1.00s against 3.00s expected, with M119 replying
+    # `!!` instead of the usual min_x:0 line. The position counter still advanced,
+    # so afterwards the counter disagreed with the machine by the whole step.
+    # M999 is a no-op when nothing is halted, so it is always sent, exactly as
+    # OpentronsDriver.connect does.
+    cmd("M999")
+    time.sleep(0.6)
+    s.reset_input_buffer()
     cmd("M17")                      # ensure steppers energised
     print(f"jogging Z {step:+.1f} mm ({'DOWN' if step > 0 else 'UP'}) "
           f"at F{FEED:.0f} = {FEED/60:.1f} mm/s")
