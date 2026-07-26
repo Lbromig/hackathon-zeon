@@ -75,6 +75,10 @@ const fetched = ref(false);
 async function loadLogs(force = false): Promise<void> {
   if (logLoading.value) return;
   if (fetched.value && !force) return;
+  // `aid` alone would match the same action of a *previous* run of the same plan, because aids
+  // restart per run. Without a run id there is nothing honest to fetch, so the socket's own lines
+  // are all this row shows.
+  if (!state.runId) return;
   logLoading.value = true;
   logError.value = "";
   try {
@@ -101,8 +105,8 @@ watch(() => props.item.state, (next) => {
     void loadLogs(true);
   }
 });
-// A different action in the same slot (rows re-key on aid, but be explicit).
-watch(() => props.item.aid, () => {
+// A different action in the same slot, or a different run: both invalidate what was fetched.
+watch(() => [props.item.aid, state.runId], () => {
   records.value = [];
   fetched.value = false;
   if (open.value) void loadLogs(true);

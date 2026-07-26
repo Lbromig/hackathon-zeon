@@ -398,10 +398,11 @@ function fieldError(field: FieldSpec, raw: unknown): string {
 /**
  * Validate the form and build the payload.
  *
- * Only fields with a value are sent. A `null`-able field left empty is sent as `null` when the
- * model's own default is `null`, and omitted otherwise — never coerced to `0` or `""`, which for
- * `width` would be "close fully" and for `blend_deg` would be "point-to-point": two different
- * commands from one blank box.
+ * Only fields with a value are sent, and **an empty nullable field is sent as `null`** rather than
+ * omitted: for `blend_deg` that is the difference between point-to-point and the 5° default, and
+ * for `width` between "close fully" and the driver's default. Neither is ever coerced to `0` or
+ * `""` — one blank box must not be able to mean two different commands. A non-nullable field left
+ * empty is omitted, so the model's own default applies.
  */
 export function buildAction(kind: ActionKind, values: FormValues): Built {
   const spec = specFor(kind);
@@ -420,7 +421,7 @@ export function buildAction(kind: ActionKind, values: FormValues): Built {
     }
     const empty = raw === null || raw === undefined || raw === "";
     if (empty) {
-      if (field.nullable && field.default === null) action[field.name] = null;
+      if (field.nullable) action[field.name] = null;
       continue;
     }
     switch (field.type) {
