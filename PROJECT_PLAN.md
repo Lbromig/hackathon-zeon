@@ -4,6 +4,41 @@ Goal: **Cooperative Uncap → Aspirate**, verified. Three owners, one per device
 owning their driver + the matching capability/verification slice + their share of the
 backend and UI.
 
+## Objective — OT-One motion, then vision-driven positioning
+
+**The pipette moves in all directions, so we can build a real-world understanding
+with depth perception and have an agent drive the pipette to where the tube
+actually is.**
+
+Four steps. The first is done; the rest now have a route rather than a blocker.
+
+1. **Move every axis under software control.** **DONE.** All six axes jog from the
+   UI (X, Y, Z, A + plungers B/C). Motion is continuous, not stepped: coordinated
+   multi-axis `G0`s queued as one path, +6 ms/leg over an 806 mm 3D sweep. Y jogs
+   fine — the fault was only ever *homing* it. Travel measured: X ~375 mm usable,
+   Z ~90 mm below the homed top.
+2. **A coordinate frame.** **Exists, with a caveat.** Homing zeroes against a
+   mechanical stop rather than a switch, but a hard stop is repeatable and the
+   position counter **survives reconnection**, so a homed axis carries a real
+   machine coordinate. `move_to_machine` commands absolute positions. Y is the
+   exception: unhomeable, so no machine coordinate — vision must supply it.
+3. **Depth perception → tube pose.** `core/perception/fiducials.py` returns a real
+   6-DoF `T_cam_marker`. Open: marker→entity offsets are unmeasured
+   (Q-FIDUCIAL-IDS), so poses are numerically placeholder.
+4. **Agent-directed motion.** `core/calibration/ot_hand_eye.py` fits the
+   camera↔OT transform from paired observations and returns a relative correction
+   in OT axes. Tested against a mock camera; needs a real one plus a nozzle marker.
+
+### The property that makes this more than positioning
+
+This machine has **no endstops and no current sensing**. A stalled stepper still
+has its steps issued, the move completes in the predicted time, and the counter
+keeps counting — so a crash silently corrupts the machine coordinate while every
+software signal reports success. Re-observing the nozzle with the camera is the
+only thing that can detect it. **Positioning and verification are therefore the
+same loop**, which is why the servo correction belongs in the calibration module
+rather than being a separate nicety.
+
 ## Ownership
 
 | Owner | Device | Owns |
@@ -38,13 +73,16 @@ closed and now committed:** the verifiers are real (`409f562`) *and* `_execute` 
 executes → verifies → retries per step (`backend/tests/test_workflow_execute.py`). **The whole stack landed
 in git this cycle** (commits `2b0ed34`..`e641f56`; HEAD `e641f56`), so a clean checkout of `agent-loop-p0`
 runs the real thing — the multi-cycle "uncommitted WIP" gap is closed (Q-COMMIT-1). Remaining caveats are now
-hardware, not code: the OT transport is still a no-op (Q-OT-1) and it needs a taught real bench to move
+hardware, not code. **The OT transport is NOT a no-op** — `drivers/opentrons/driver.py` has zero `TODO`s and
+drives G-code over USB serial; all six axes move on the bench, X travel is measured to ~375 mm usable and Z to
+~90 mm, and `move_to_machine` commands absolute coordinates. What OT `aspirate` still needs is the plunger
+calibration (Q-OT-PLUNGER-1), a bench measurement, not code. It also needs a taught real bench to move
 (Q-POSES-1) — see Risks.
 
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver now committed (`368efba`). The **xArm safety/teaching layer** landed in git (commit `3800c2c`): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model. The **measured J5 override is now in config for both arms** (`FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}`, measured 2026-07-25 on one arm and reused for the other, since both carry a flange camera — the second arm is still unmeasured, see Q-JLIMIT-1). Genuine dexterity groundwork, and this cycle it is committed. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver now committed (`368efba`). The **xArm safety/teaching layer** landed in git (commit `3800c2c`): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model. The **measured J5 override is now in config for both arms** (`FLANGE_CAM_J5_LIMITS = {"5": [-78.4, 95.0]}`, measured 2026-07-25 on one arm and reused for the other, since both carry a flange camera — the second arm is still unmeasured, see Q-JLIMIT-1). Genuine dexterity groundwork, and this cycle it is committed. **The OT-One's real action landed too, on this branch** (not on `feat/ot-one-serial-driver`): `drivers/opentrons/driver.py` has zero `TODO`s and drives G-code over USB serial to the Smoothieboard `v1.0.3`. Verified on the bench — all six axes jog (4 gantry + 2 plungers), continuous coordinated multi-axis motion (806 mm 3D sweep at +6 ms/leg overhead, closing to 0.00 on every axis), tip pickup at a measured 53 mm engagement depth, X travel measured to ~375 mm usable and Z clear to ~90 mm below the homed top, and absolute positioning via `move_to_machine` — the position counter survives reconnection, so a homed axis carries a real machine coordinate. Driveable from the browser (`OpentronsJog.vue` → `/api/liquid-handlers/{id}/jog`), so a click moves the gantry. *Still unverified: a real **aspirate**, which needs the plunger calibrated (Q-OT-PLUNGER-1) — a bench measurement, not code.*
 - [~] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Code-complete **and committed** this cycle (`ae94f94`): `uncap_aspirate.py::_execute` is wired — a data-driven `CHOREOGRAPHY` (left clamps the tube; right pulls the cap straight up, parks it, takes the tube, presents it under the OT tip; OT aspirates) driven through the capability interfaces against **taught poses**, with a `preflight` that refuses to run on any untaught pose and a `run()` that executes→verifies→retries. Asserted by `backend/tests/test_workflow_execute.py`; a clean checkout now runs it. **Not yet demonstrable end-to-end** for two hardware reasons only: the OT `aspirate` transport is a no-op so the pipette never draws (Q-OT-1), and only 2 of the 12 choreography poses are taught so far (`data/teach_poses.json` now on disk, right arm) — the rest and the left arm must still be taught on the real bench before `preflight` will run (Q-POSES-1).*
 - [~] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Both halves have now landed on disk. Verifiers (previous cycle): all four `core/verification/agents.py` agents return **real verdicts** — `cap_removed` (cap reparented off the tube + separation gate, torque-drop telemetry bonus), `grasp_secure` (tube reparented onto a tool + gripper-width band), `tube_aligned` (distance to the pipette nozzle < 15 mm), `aspiration_ok` (positive aspirated volume) — each with a dedicated `ok=False`/`ok=True` test (`backend/tests/test_verification.py`). Wiring (this cycle): `_execute` now drives the choreography for real, so the real verdicts finally **gate real motion** in `run()`. A **perception→twin fusion loop** feeds the verifiers: `core/perception/fusion.py::TwinFuser` composes marker detections with the camera's twin pose to correct entity positions, driven by `backend/app/services/twin_fusion.py` (started in `main.py` lifespan at ~10 Hz), with a RealSense RGB-D driver (`drivers/camera/realsense.py`) on disk; new `projection.py` (twin→image overlay) and `shapes.py` (Hough-circle detection of untagged labware) round out perception. **All of the above is now committed** (commits `2b0ed34`..`e641f56`; HEAD `e641f56`) — a clean checkout runs the real verifiers and wired motion, closing the multi-cycle uncommitted-WIP gap (Q-COMMIT-1). Still open (hardware/calibration, not code): OT transport no-op (Q-OT-1); calibration hand-eye/world-frame/scan steps TODO so world poses are placeholder (Q-CALIB-1); marker→entity offsets unmeasured; right-arm J5 override unmeasured (Q-JLIMIT-1); the parent-based verifiers (`grasp_secure`, `cap_removed` reparent clause) are hollow on the live bench because `reparent`/motion→twin updates exist only in tests, never in `_execute`/`twin_fusion` (Q-TWIN-COUPLING); dual-arm ratchet-unscrew (TARGET rung) not encoded — the wired path is the snap-cap FLOOR.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
