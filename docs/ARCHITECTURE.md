@@ -32,12 +32,12 @@ flowchart TB
       FUSE[TwinFuser · REAL COMMITTED<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
       PROJ[Twin→image projection · REAL COMMITTED<br/>core/perception/projection.py<br/>world entity + K → overlay polygon]:::be
       SHP[Shape detect · REAL COMMITTED<br/>core/perception/shapes.py<br/>Hough circles → untagged labware]:::be
-      CAL[Calibration pipeline<br/>runs + publishes twin<br/>hand-eye/world-frame/scan · TODO]:::be
+      CAL[Calibration pipeline<br/>runs + publishes twin · world-frame extrinsics WIP<br/>fixed-cam T_world_cam from 210/211 board<br/>hand-eye/scan · TODO]:::be
       DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
       RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
     end
-    WM[World model · twin<br/>core/worldmodel + services/twin<br/>populated after /ws/calibrate · placeholder poses]:::be
+    WM[World model · twin · RLock-guarded<br/>core/worldmodel + services/twin · lock&#40;&#41; for atomic seq<br/>populated after /ws/calibrate · placeholder poses]:::be
     BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
     REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
@@ -47,7 +47,7 @@ flowchart TB
     REG[registry]:::dr
     XA[xarm]:::dr
     OT[opentrons]:::dr
-    CAMd[camera]:::dr
+    CAMd[camera<br/>realsense · UVC · still-replay · mock]:::dr
   end
 
   subgraph TP[third_party]
@@ -133,7 +133,16 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) backed by a
   worker-threaded `services/camera_hub.py`, and its per-camera detections ride `/ws/state`; a
   RealSense RGB-D driver (`drivers/camera/realsense.py`) is now **committed** (`368efba`) covering all
-  three fixed viewpoints. The **workflow orchestrator streams** over `/ws/workflow` with a
+  three fixed viewpoints, and a **still-image replay driver** (`drivers/camera/still.py`, `aa83f21`) now
+  backs a viewpoint whose hardware is temporarily unplugged — it serves the last saved frame (and a
+  sibling `*_depth.png` if present) so detection, the Cameras tab and the twin keep working against a
+  known view, while honestly marking itself a still in `info.meta` so a verifier never mistakes a
+  stored frame for a live observation. Camera selection is now hardened in `core/config.py`
+  (`CAM_EXCLUDE_INDICES` blocks the operator's built-in laptop cam from being opened as a bench slot).
+  The **world model is now thread-safe:** `WorldModel` wraps its reads/writes in a re-entrant lock and
+  exposes `lock()` so a multi-step manipulation sequence can be made atomic (`aa83f21`,
+  `test_worldmodel_concurrency.py`) — the concurrency substrate a future reparent-on-grasp would need
+  (Q-TWIN-COUPLING), though nothing in the live path uses it yet. The **workflow orchestrator streams** over `/ws/workflow` with a
   `/api/workflow/plan` endpoint, and the **teach layer** (jog / move-to / pose library) is hardened and
   tested (`backend/tests/test_teach_api.py`). **Verification agents are now real and committed** (`409f562`): all four
   `core/verification/agents.py` agents run genuine twin-query predicates fused with driver telemetry —
@@ -163,10 +172,17 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   disk with **2 of 12 poses taught** (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z);
   the remaining 10 poses and the entire **left** arm are untaught, so `preflight` still correctly **refuses to
   run** the full choreography (Q-POSES-1) — a green test suite is not a moving demo, but a real arm is now being
-  taught. Calibration's `hand_eye` / `world_frame` / `arm_to_arm` / scan steps are still `TODO`, so twin poses are
-  placeholder (the `PlaceholderScanAdapter`) and fused/projected world coords are camera-frame until calibrated;
-  `MARKER_MAP` now uses **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity
-  offsets (0.02 placeholder).
+  taught. Calibration's **fixed-camera `world_frame` step is now being wired** (uncommitted WIP on disk):
+  `core/calibration/world_board.py` defines a shared world frame from a two-tag board (`tag36h11` ids 210 & 211),
+  `core/calibration/extrinsics.py::solve_world_cam` solves each fixed camera's `T_world_cam` against that board
+  (hardware-free solver, synthetic round-trip unit test), and `pipeline.py::_world_frame` now detects the board on
+  `overview_cam`/`handover_cam`, writes `T_world_cam` into the twin and persists it under `calib/extrinsics/`. This
+  turns fused/projected coords for the fixed cameras from camera-frame toward a real shared metric world frame — the
+  honest substrate the geometry verifiers need. **Still TODO / placeholder:** the on-arm gripper camera's `hand_eye`,
+  `arm_to_arm`, and the scan step remain `TODO` (`PlaceholderScanAdapter`); the board's real tag spacing is an
+  unmeasured `TODO(measure)` placeholder; and `MARKER_MAP` uses **real** printed stock ids (`tag36h11` 180–224) but
+  keeps `identity()` marker→entity offsets (0.02 placeholder). Until the WIP is committed and the spacing measured,
+  world poses are still not trustworthy end-to-end (Q-CALIB-1, Q-FUSE-1).
 - **Twin↔physics coupling is not wired in the live path (verifier-critical):** `WorldModel.reparent()` and any
   motion-driven twin pose update are exercised **only in tests** (`test_worldmodel.py`, `test_integration_loop.py`,
   `test_verification.py`) — `grep` finds **zero** `reparent` calls in `backend/app/` or `core/` production code, and
