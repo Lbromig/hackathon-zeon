@@ -575,7 +575,14 @@ class Runner:
                     self.plan.cursor = self.plan.region_of(action.aid)[1]
                 else:
                     self.plan.cursor = self.plan.index_of(action.aid) + 1
-                if result.status == "aborted" or self._abort.is_set():
+                if result.status == "aborted":
+                    # A handler raising `ActionAborted` on its own — a driver that noticed an
+                    # e-stop, say — aborts the *run*, not just the step. Setting the flag here
+                    # is what keeps the run from reporting `complete` with an aborted action
+                    # in it, and it is also what stops a resume walking past the abort.
+                    self._abort.set()
+                    break
+                if self._abort.is_set():
                     break
                 if result.status == "failed" and action.on_failure == "halt":
                     self._halted = True
@@ -950,11 +957,13 @@ class Runner:
         magnitude = _attr(value, "magnitude_mm")
         if magnitude is None:
             residual = _attr(value, "residual_offset_mm")
-            if isinstance(residual, dict):
-                observed = [float(v) for v in residual.values()
-                            if isinstance(v, (int, float))]
-                if observed:
-                    magnitude = math.sqrt(sum(c * c for c in observed))
+            if isinstance(residual, dict) and residual:
+                # An axis reported as `None` is unobservable, and `None` is not 0.0 — treating
+                # it as zero is what turns "nobody can see the z offset" into "z is already
+                # aligned", and the loop would converge on an offset it never measured
+                # (R-VIS-4). So one missing axis makes the whole magnitude unknown.
+                if all(isinstance(v, (int, float)) for v in residual.values()):
+                    magnitude = math.sqrt(sum(float(v) ** 2 for v in residual.values()))
         if magnitude is None:
             return None, sigma
         try:

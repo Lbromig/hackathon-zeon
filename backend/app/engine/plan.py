@@ -237,10 +237,14 @@ def _walk(actions: Iterable[ActionBase], parent: ActionBase | None = None
             yield from _walk(action.body, action)
 
 
-def waypoint_pairs(actions: Iterable[ActionBase]) -> list[tuple[str, str]]:
-    """Every `(device, waypoint)` the plan references, deduplicated, order preserved."""
-    pairs: list[tuple[str, str]] = []
-    for action, _parent in _walk(actions):
+def _waypoint_refs(actions: Iterable[ActionBase]) -> dict[tuple[str, str], int]:
+    """`(device, waypoint)` -> the aid that first referenced it, order preserved.
+
+    The aid is carried so a pre-flight problem can point at a row. A body action has no aid of
+    its own before materialization, so it is attributed to its loop.
+    """
+    refs: dict[tuple[str, str], int] = {}
+    for action, parent in _walk(actions):
         names: list[str] = []
         one = getattr(action, "waypoint", None)
         if isinstance(one, str) and one:
@@ -249,10 +253,14 @@ def waypoint_pairs(actions: Iterable[ActionBase]) -> list[tuple[str, str]]:
         if isinstance(many, list):
             names.extend(n for n in many if isinstance(n, str) and n)
         for name in names:
-            pair = (action.device or "", name)
-            if pair not in pairs:
-                pairs.append(pair)
-    return pairs
+            refs.setdefault((action.device or "", name),
+                            action.aid or (parent.aid if parent else 0))
+    return refs
+
+
+def waypoint_pairs(actions: Iterable[ActionBase]) -> list[tuple[str, str]]:
+    """Every `(device, waypoint)` the plan references, deduplicated, order preserved."""
+    return list(_waypoint_refs(actions))
 
 
 def _fleet_ids() -> frozenset[str]:
@@ -306,20 +314,21 @@ def preflight(actions: Sequence[ActionBase], *,
                             f"run. It is reported rather than skipped: a silently skipped "
                             f"step reads downstream as 'it ran' (R-ENG-17)."))
 
-    pairs = waypoint_pairs(actions)
+    refs = _waypoint_refs(actions)
     owned: list[tuple[str, str]] = []
-    for device, name in pairs:
+    for device, name in refs:
         try:
             waypoints.assert_owned(device, name)
         except waypoints.WaypointNotOwned as e:
             problems.append(PreflightProblem(
-                code="waypoint_not_owned", device=device, waypoint=name, message=str(e)))
+                code="waypoint_not_owned", aid=refs[(device, name)], device=device,
+                waypoint=name, message=str(e)))
             continue
         owned.append((device, name))
 
     for device, name in waypoints.missing_for_plan(owned, path=teach_path):
         problems.append(PreflightProblem(
-            code="waypoint_not_taught", device=device, waypoint=name,
+            code="waypoint_not_taught", aid=refs[(device, name)], device=device, waypoint=name,
             message=f"waypoint ({device!r}, {name!r}) is not taught. Discovering that at "
                     f"step 7 leaves an arm holding an open tube in mid-air, so the run is "
                     f"refused now (R-ENG-16)."))
