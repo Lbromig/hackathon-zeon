@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -41,6 +42,8 @@ from pydantic import BaseModel, Field
 
 from drivers import DriverError, InstrumentKind
 from drivers.opentrons.driver import MAX_JOG_MM, MAX_PLUNGER_JOG_MM, PLUNGER_AXES
+
+from core import teach_poses
 
 from ..services.device_manager import device_manager
 
@@ -204,3 +207,169 @@ def stop(device_id: str) -> LhActionResult:
         detail="NOTHING WAS SENT - no bytes reached the board. Cut power at the switch.",
         status=_status(dev),
     )
+
+
+# --- taught points -----------------------------------------------------------
+# A taught point is only as good as the datum it was recorded against, and on
+# this unit the datum does NOT survive a power cycle. Measured 2026-07-25: the
+# counters read X=300 before a replug and X=0 after, with the carriage never
+# having moved. A point saved in one counter epoch therefore names a different
+# physical place in the next one, and nothing on the board reports the change.
+#
+# So every point carries the datum state it was saved under, and goto refuses
+# when that state cannot be reproduced rather than driving to a coordinate whose
+# meaning has silently changed. This is the same discipline as the verification
+# agents: an unknown state escalates, it does not average out to a pass.
+#
+# Y is stored but never replayed. G28.2 Y searches for an endstop that never
+# reports, so Y has no physical reference at all and a Y coordinate cannot be
+# returned to. Vision is what supplies Y's datum -- see
+# core/calibration/ot_hand_eye.py -- and until that is fitted, Y is record-only.
+
+class OtDatum(BaseModel):
+    homed: bool = Field(..., description="was Z homed in the session that saved this")
+    y_referenced: bool = Field(False, description="always False: Y cannot be homed")
+    counters: dict[str, float] = Field(default_factory=dict,
+                                       description="raw axis counters at save time")
+
+
+class OtPoint(BaseModel):
+    name: str
+    # Same {x, y, z} shape core.teach_poses.get reads, so a workflow can look an
+    # OT point up by name exactly as it looks up an arm pose.
+    pose: dict[str, float] = Field(default_factory=dict)
+    datum: OtDatum | None = None
+    note: str | None = None
+    saved_at: str | None = None
+
+
+class OtPointRequest(BaseModel):
+    name: str
+    note: str | None = None
+
+
+_points_guard = threading.Lock()
+
+REPLAYABLE_AXES = ("X", "Z")
+
+
+def _is_homed(dev) -> bool:
+    return bool(getattr(dev, "_homed", False))
+
+
+def _positionable(dev):
+    """A handler that can report machine coordinates, or a 501 saying it cannot.
+
+    Not every liquid handler is coordinate-addressable, and an AttributeError
+    surfacing as a 500 would read like a server fault rather than the capability
+    gap it is.
+    """
+    if not hasattr(dev, "machine_position"):
+        raise HTTPException(
+            501, f"{dev.device_id} does not report machine coordinates, so points "
+                 f"cannot be taught on it")
+    return dev
+
+
+def _points(device_id: str) -> dict[str, dict[str, Any]]:
+    return teach_poses.load().get(device_id, {})
+
+
+@router.get("/{device_id}/points", response_model=list[OtPoint])
+def list_points(device_id: str) -> list[OtPoint]:
+    _lh(device_id)
+    return [OtPoint(**p) for p in _points(device_id).values()]
+
+
+@router.post("/{device_id}/points", response_model=list[OtPoint])
+def save_point(device_id: str, req: OtPointRequest) -> list[OtPoint]:
+    """Record where the OT is right now, under a name.
+
+    Saving is always allowed, homed or not: an un-homed point still carries the
+    relative geometry of the deck, which is worth keeping. What the datum block
+    decides is whether it can ever be replayed.
+    """
+    dev = _positionable(_lh(device_id))
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "a point needs a name")
+    try:
+        counters = dev.machine_position()
+    except DriverError as e:
+        raise HTTPException(503, f"could not read the position counters: {e}")
+
+    entry = OtPoint(
+        name=name,
+        pose={k.lower(): float(v) for k, v in counters.items() if k in ("X", "Y", "Z")},
+        datum=OtDatum(homed=_is_homed(dev), y_referenced=False, counters=counters),
+        note=req.note,
+        saved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    with _points_guard:
+        store = teach_poses.load()
+        store.setdefault(device_id, {})[name] = entry.model_dump()
+        teach_poses.write(store)
+    return [OtPoint(**p) for p in _points(device_id).values()]
+
+
+@router.delete("/{device_id}/points/{name}", response_model=list[OtPoint])
+def delete_point(device_id: str, name: str) -> list[OtPoint]:
+    _lh(device_id)
+    with _points_guard:
+        store = teach_poses.load()
+        if store.get(device_id, {}).pop(name, None) is None:
+            raise HTTPException(404, f"no taught point {name!r} for {device_id}")
+        teach_poses.write(store)
+    return [OtPoint(**p) for p in _points(device_id).values()]
+
+
+@router.post("/{device_id}/points/{name}/goto", response_model=LhActionResult)
+def goto_point(device_id: str, name: str) -> LhActionResult:
+    """Drive X and Z back to a taught point, if the datum still means the same thing.
+
+    Refuses rather than guessing. The failure this prevents is specific: replay a
+    point saved before a power cycle and the machine drives to a coordinate that
+    now sits somewhere else entirely, at full speed, with no endstop to stop it.
+    """
+    dev = _positionable(_lh(device_id))
+    saved = _points(device_id).get(name)
+    if saved is None:
+        raise HTTPException(404, f"no taught point {name!r} for {device_id}")
+    entry = OtPoint(**saved)
+
+    if entry.datum is None or not entry.datum.homed:
+        raise HTTPException(
+            409,
+            f"{name!r} was taught without a homed datum, so its coordinates are "
+            f"relative to a zero that no longer exists. Re-teach it after homing."
+        )
+    if not _is_homed(dev):
+        raise HTTPException(
+            409,
+            f"{device_id} has not been homed in this session, so its counters are "
+            f"not comparable with the ones {name!r} was saved against. POST "
+            f"/api/liquid-handlers/{device_id}/home first."
+        )
+
+    target = {a: entry.pose[a.lower()] for a in REPLAYABLE_AXES
+              if entry.pose.get(a.lower()) is not None}
+    if not target:
+        raise HTTPException(400, f"{name!r} has no replayable X or Z coordinate")
+
+    lock = _lock_for(device_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(409, f"{device_id} is already executing a command")
+    try:
+        t0 = time.time()
+        dev.move_to_machine(**target)
+        axes = ", ".join(f"{a}={v:.1f}" for a, v in sorted(target.items()))
+        return LhActionResult(
+            ok=True,
+            detail=f"went to {name!r} ({axes}); Y not replayed, it has no datum",
+            duration_s=round(time.time() - t0, 3),
+            status=_status(dev),
+        )
+    except DriverError as e:
+        return LhActionResult(ok=False, detail=str(e), status=_status(dev))
+    finally:
+        lock.release()

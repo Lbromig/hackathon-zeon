@@ -272,6 +272,11 @@ class MockLiquidHandlerDriver(LiquidHandlerDriver):
         super().__init__(device_id, config)
         self._has_tip = False
         self._aspirated_ul = 0.0
+        # Mirrors the OT-One: open-loop axis counters plus a homed flag. The flag
+        # matters because a taught point is only replayable against a datum that
+        # has been re-established, and the API refuses when it has not been.
+        self._pos = {"X": 0.0, "Y": 0.0, "Z": 0.0}
+        self._homed = False
 
     @property
     def info(self) -> DeviceInfo:
@@ -289,7 +294,19 @@ class MockLiquidHandlerDriver(LiquidHandlerDriver):
         self._state = ConnectionState.DISCONNECTED
 
     def home(self) -> None:
-        pass
+        self._pos["Z"] = 0.0
+        self._homed = True
+
+    def machine_position(self) -> dict[str, float]:
+        return dict(self._pos)
+
+    def move_to_machine(self, feedrate: float = 0.0, **axes: float) -> dict[str, float]:
+        for axis, target in axes.items():
+            a = axis.upper()
+            if a not in self._pos:
+                raise DriverError(f"axis {a} not reported by the board")
+            self._pos[a] = float(target)
+        return dict(self._pos)
 
     def pick_up_tip(self, location: DeckLocation) -> None:
         self._has_tip = True

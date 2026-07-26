@@ -74,6 +74,23 @@ def get(device_id: str, name: str, path: str | None = None) -> TaughtPose:
     )
 
 
+def write(store: dict[str, dict[str, Any]], path: str | None = None) -> None:
+    """Persist the whole library atomically.
+
+    Written via a temp file and os.replace so an interrupted save can never leave
+    a half-written library: the pose that was already taught is the one thing
+    here that cannot be recovered by re-running anything.
+    """
+    path = path or settings.teach_poses_file
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f, indent=2)
+    os.replace(tmp, path)
+
+
 def require(device_id: str, names: list[str], path: str | None = None) -> list[str]:
     """Which of ``names`` are not taught yet. Lets a workflow pre-flight in one go
     instead of failing halfway through a physical sequence."""
