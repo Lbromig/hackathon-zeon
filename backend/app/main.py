@@ -19,6 +19,7 @@ from core.config import settings
 from .api import (
     agent,
     calibration,
+    camera,
     cameras,
     instruments,
     liquid_handler,
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
     # Stop the frame workers before the drivers they hold go away, or a worker
     # keeps grabbing from a released VideoCapture during shutdown.
     camera_hub.stop_all()
+    await camera.shutdown()
     device_manager.disconnect_all()
 
 
@@ -77,6 +79,7 @@ app.include_router(liquid_handler.router)
 app.include_router(calibration.router)
 app.include_router(workflow.router)
 app.include_router(agent.router)
+app.include_router(camera.router)
 
 
 @app.get("/api/health")
