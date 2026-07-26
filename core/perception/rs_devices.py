@@ -121,3 +121,59 @@ def enumerate_devices(timeout: float = 25.0) -> RSEnumeration:
         )
         for d in payload.get("devices", [])
     ])
+
+
+# Runs in the child. Starting a pipeline is the operation that actually faults,
+# so viability has to be tested by doing it, not by inspecting state.
+_CAN_CLAIM = r"""
+import json, sys
+serial = sys.argv[1] if len(sys.argv) > 1 else ""
+try:
+    import pyrealsense2 as rs
+    p = rs.pipeline(); c = rs.config()
+    if serial:
+        c.enable_device(serial)
+    c.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    p.start(c); p.stop()
+    print(json.dumps({"ok": True}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+"""
+
+
+def can_claim(serial: str = "", timeout: float = 25.0) -> tuple[bool, str]:
+    """Whether a pipeline can actually be started. Returns (ok, reason).
+
+    `connect()` on the driver calls `pipe.start()` in-process, and that is the
+    call that faults when UVCAssistant holds the interfaces. A fault there kills
+    the server, so the question is asked in a child first. A child that dies by
+    signal is a no, with the signal named.
+
+    Not cached: unlike enumeration, claimability changes when another process
+    releases the device, and a stale no would keep a working camera offline.
+    """
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", _CAN_CLAIM, serial],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"claim attempt hung and was killed after {timeout:.0f}s"
+    except OSError as exc:
+        return False, f"could not start the claim probe: {exc}"
+
+    for line in reversed((done.stdout or "").strip().splitlines()):
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if payload.get("ok"):
+            return True, ""
+        return False, str(payload.get("error", "claim refused"))
+
+    if done.returncode < 0:
+        return False, (
+            f"the SDK crashed attempting the claim (signal {-done.returncode}); "
+            "on macOS this means another process holds the camera interfaces"
+        )
+    return False, f"claim probe exited {done.returncode} with no result"

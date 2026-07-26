@@ -65,6 +65,17 @@ class RealSenseCameraDriver(CameraDriver):
 
         self._state = ConnectionState.CONNECTING
         try:
+            # Ask a child whether the claim can succeed before doing it here.
+            # pipe.start() is the call that faults when UVCAssistant holds the
+            # interfaces, and a fault in this process kills the whole backend.
+            # Refusing with a reason is recoverable; crashing is not.
+            from core.perception.rs_devices import can_claim
+
+            ok, why = can_claim(str(self.config.get("serial", "")))
+            if not ok:
+                self._state = ConnectionState.ERROR
+                raise DriverError(f"cannot claim camera: {why}")
+
             self._pipe = rs.pipeline()
             profile = self._pipe.start(cfg)
             self._align = rs.align(rs.stream.color)          # align depth -> colour
