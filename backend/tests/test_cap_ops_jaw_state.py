@@ -13,6 +13,13 @@ decap**. Both are physical safety properties rather than implementation details:
 These are asserted as an ordered transcript rather than per-call, because the property is about
 the *sequence*: any single call in isolation looks fine.
 
+A fourth, from the same bench and the same day: the routine must end **holding** the cap when
+`cap_ops.END_GRIPPED` says so. "When retracting after the decap, the gripper opened first, so
+it didn't hold on to the decapped cap" — the arm then lifted away carrying nothing. The
+closing grip has to come *after* the last unwind, though, because an unwind taken gripped
+screws the cap straight back down; that ordering is the property, and it is asserted for both
+settings so neither path rots.
+
 None of them is a claim about which *way* the wrist turns — that is `cap_ops.UNSCREW_SIGN`,
 and it depends on how the gripper is bolted to the flange. A gripped turn goes the loosening
 way and an unwind comes back; the transcript is read through `GRIPPED`/`FREE` so the sequence
@@ -29,6 +36,8 @@ GRIP = 298.0          # 35 % of the parallel gripper's 0..850, as the workflow c
 
 SIGN = cap_ops.UNSCREW_SIGN
 MARGIN = cap_ops.UNWIND_MARGIN_DEG
+#: Whether the ratchet finishes holding the cap. Read from the module, never restated.
+END_GRIPPED = cap_ops.END_GRIPPED
 #: How a cap-turning and a wrist-returning move appear in the transcript below. The gripped
 #: turn takes the loosening sign; every unwind — between bites and in the recovery — opposes it.
 GRIPPED = "+" if SIGN > 0 else "-"
@@ -61,6 +70,11 @@ class _Recorder(MockArmDriver):
     def move_joints_relative(self, deltas, speed=None, wait=True):
         self.transcript.append(f"turn({deltas[5]:+.0f})")
         super().move_joints_relative(deltas, speed=speed, wait=wait)
+
+
+def _last_jaw(transcript: list[str]) -> str:
+    """The final thing the sequence did to the jaws — ``"open"`` or ``"close(...)"``."""
+    return next(e for e in reversed(transcript) if e == "open" or e.startswith("close"))
 
 
 def _cfg(**kw):
@@ -121,14 +135,54 @@ def test_every_close_in_the_sequence_uses_the_configured_width():
     assert "close(full)" not in arm.transcript, arm.transcript
 
 
-def test_the_ratchet_ends_with_the_cap_released():
+def test_the_ratchet_ends_holding_the_cap_so_the_arm_can_lift_it():
+    """The bench report, as a jaw-state property.
+
+    The last bite is turn / open / unwind. Left there the routine finishes with the jaws open,
+    the cap still sitting on the tube, and the arm's next move — lifting the cap clear —
+    carrying nothing. So the final operation on the jaws is a close, and it comes *after* the
+    unwind that brings the wrist home, never before it.
+    """
     arm = _Recorder(j6=0.0)
     arm.grip(width=GRIP)
     arm.transcript.clear()
-    cap_ops.run_ratchet(arm, _cfg())
-    last_jaw = next(e for e in reversed(arm.transcript)
-                    if e == "open" or e.startswith("close"))
-    assert last_jaw == "open", f"the ratchet finished still holding the cap: {arm.transcript}"
+    result = cap_ops.run_ratchet(arm, _cfg(end_gripped=True))
+
+    assert result.ended_gripped is True
+    assert _last_jaw(arm.transcript).startswith("close"), \
+        f"the ratchet let go of the cap it was meant to carry away: {arm.transcript}"
+    assert arm.transcript[-1].startswith("close"), \
+        f"nothing may follow the closing grip: {arm.transcript[-3:]}"
+    assert arm.transcript[-2].startswith(f"turn({FREE}"), (
+        f"the grip was taken before the wrist came home, which screws the cap back down: "
+        f"{arm.transcript[-3:]}")
+
+
+def test_the_ratchet_ends_released_when_asked_to_let_go():
+    """The other contract. Kept covered so `end_gripped=False` stays a real path rather than
+    a branch nothing exercises: the cap is left loose on the tube and the jaws are open."""
+    arm = _Recorder(j6=0.0)
+    arm.grip(width=GRIP)
+    arm.transcript.clear()
+    result = cap_ops.run_ratchet(arm, _cfg(end_gripped=False))
+
+    assert result.ended_gripped is False
+    assert _last_jaw(arm.transcript) == "open", \
+        f"the ratchet finished still holding the cap: {arm.transcript}"
+    assert arm.transcript[-1].startswith(f"turn({FREE}"), \
+        f"the wrist must still come home last: {arm.transcript[-3:]}"
+
+
+def test_the_ratchet_ends_in_the_state_the_module_is_configured_for():
+    """Whichever of the two above is the default, `END_GRIPPED` is what decides it — the
+    routine may not have an opinion of its own."""
+    arm = _Recorder(j6=0.0)
+    arm.grip(width=GRIP)
+    arm.transcript.clear()
+    result = cap_ops.run_ratchet(arm, _cfg())
+    assert result.ended_gripped is END_GRIPPED
+    assert _last_jaw(arm.transcript).startswith("close" if END_GRIPPED else "open"), \
+        arm.transcript
 
 
 # --- the recovery unwind: open, then close, then decap ------------------------

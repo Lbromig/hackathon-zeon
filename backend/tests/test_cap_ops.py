@@ -11,6 +11,15 @@ gripper happens to be bolted to the flange. The bench found the old hardcoded po
 is a test that goes wrong the next time a gripper is re-mounted. Everything below therefore
 derives its expectations from `SIGN`, and the assertions are about the shape of the plan:
 gripped turns go one way, jaws-open unwinds come back the other, net travel is zero.
+
+The same goes for what the routine does with the cap when it finishes. `cap_ops.END_GRIPPED`
+says whether the ratchet ends **holding** the loosened cap or leaves it sitting on the tube;
+the bench asked for holding, because the arm's next move lifts the cap away and it cannot do
+that with open jaws. That is a contract knob, not an invariant, so nothing here spells a step
+count or a final jaw state either — expectations come from `END_GRIPPED`/`FINAL_GRIP`, and
+both settings get their own test so neither path rots. What *is* invariant survives both:
+the cap only turns gripped, the wrist only unwinds open, net travel is zero, and the closing
+grip comes strictly after the last unwind.
 """
 from __future__ import annotations
 
@@ -25,6 +34,31 @@ from drivers import build_driver
 SIGN = cap_ops.UNSCREW_SIGN
 MARGIN = cap_ops.UNWIND_MARGIN_DEG
 TOL = cap_ops.PREFLIGHT_TOLERANCE_DEG
+#: Whether the ratchet finishes holding the cap. Read, not restated, for the same reason.
+END_GRIPPED = cap_ops.END_GRIPPED
+#: The tail the contract adds: a closing grip on the loosened cap, or nothing at all.
+FINAL_GRIP: list[cap_ops.Step] = [("close", 0.0)] if END_GRIPPED else []
+
+#: The mock parallel gripper's fully-open width, in counts.
+OPEN_COUNTS = 850.0
+
+
+def _closes(steps: list[cap_ops.Step]) -> int:
+    """How many times a plan closes the jaws — one lift each, and the last one may be the
+    contract's final grip rather than a re-grip between bites."""
+    return sum(1 for action, _ in steps if action == "close")
+
+
+def _final_jaw(steps: list[cap_ops.Step]) -> str:
+    """The last thing a plan does to the jaws: ``"close"`` or ``"open"``."""
+    return next(action for action, _ in reversed(steps) if action in ("open", "close"))
+
+
+def _resting_width(grip_counts: float | None = None) -> float:
+    """The gripper width the ratchet leaves behind, for the configured end state."""
+    if not END_GRIPPED:
+        return OPEN_COUNTS
+    return 0.0 if grip_counts is None else grip_counts
 
 
 def _toward(deg: float) -> float:
@@ -71,19 +105,20 @@ def _arm(joints=None, limits=None):
 
 def test_plan_matches_the_specified_ratchet():
     """One bite gripped, open, the same bite back free, close, again — a full turn in two
-    bites, ending released and back at the starting wrist angle. The gripped turn goes the
-    loosening way and the unwind comes back; which way that is, is `UNSCREW_SIGN`'s business.
+    bites, back at the starting wrist angle, then whatever `END_GRIPPED` asks for. The gripped
+    turn goes the loosening way and the unwind comes back; which way that is, is
+    `UNSCREW_SIGN`'s business.
     """
     assert cap_ops.plan_unscrew(2) == [
         ("turn", _gripped(180.0)), ("open", 0.0), ("turn", _unwind(180.0)),
         ("close", 0.0),
         ("turn", _gripped(180.0)), ("open", 0.0), ("turn", _unwind(180.0)),
-    ]
+    ] + FINAL_GRIP
 
 
 def test_single_bite_still_opens_and_returns():
     assert cap_ops.plan_unscrew(1) == [
-        ("turn", _gripped(180.0)), ("open", 0.0), ("turn", _unwind(180.0))]
+        ("turn", _gripped(180.0)), ("open", 0.0), ("turn", _unwind(180.0))] + FINAL_GRIP
 
 
 def test_the_direction_of_a_gripped_turn_is_configuration_not_a_constant():
@@ -103,12 +138,54 @@ def test_the_direction_of_a_gripped_turn_is_configuration_not_a_constant():
         cap_ops.plan_ratchet(180.0, 360.0, +1.0)
 
 
-def test_plan_ends_released_and_unwound():
-    """The cap is left loose on the tube; lifting it away is a separate action."""
+def test_the_plan_ends_unwound_and_in_the_configured_jaw_state():
+    """The wrist always comes home last; what the jaws do after that is `END_GRIPPED`.
+
+    The unwind itself must be the final *turn* and must be preceded by the release — a wrist
+    that came back gripped would have screwed the cap straight back down. Whether a closing
+    grip then follows is the contract, not the invariant, so it is read off the module.
+    """
     for n in (1, 2, 3, 4):
         steps = cap_ops.plan_unscrew(n)
-        assert steps[-1] == ("turn", _unwind(180.0))
-        assert steps[-2] == ("open", 0.0)
+        turns = [i for i, (action, _) in enumerate(steps) if action == "turn"]
+        assert steps[turns[-1]] == ("turn", _unwind(180.0))
+        assert steps[turns[-1] - 1] == ("open", 0.0)
+        assert _final_jaw(steps) == ("close" if END_GRIPPED else "open")
+        assert steps[turns[-1] + 1:] == FINAL_GRIP, "nothing may follow but the closing grip"
+
+
+def test_ending_gripped_only_appends_a_close_after_the_wrist_is_home():
+    """The bench fix, as a difference between two plans.
+
+    "When retracting after the decap, the gripper opened first, so it didn't hold on to the
+    decapped cap" — the last bite was turn / open / unwind and the routine finished with the
+    jaws open. Holding the cap must therefore cost nothing but a trailing close: the same
+    turns, in the same order, with the grip taken *after* the final unwind. Closing any
+    earlier would screw the cap back down by exactly that unwind.
+    """
+    for step_deg, total in ((180.0, 360.0), (90.0, 360.0), (90.0, 200.0)):
+        released = cap_ops.plan_ratchet(step_deg, total, SIGN, end_gripped=False)
+        held = cap_ops.plan_ratchet(step_deg, total, SIGN, end_gripped=True)
+        where = (step_deg, total)
+        assert held == released + [("close", 0.0)], where
+        assert _final_jaw(released) == "open", where
+        assert _final_jaw(held) == "close", where
+        # Neither invariant notices the difference.
+        for steps in (released, held):
+            assert cap_ops.net_wrist_travel(steps) == pytest.approx(0.0), where
+            assert cap_ops.gripped_rotation(steps) == pytest.approx(_toward(total)), where
+        # And the default is the module's contract rather than whichever the code writes.
+        assert cap_ops.plan_ratchet(step_deg, total) == (held if END_GRIPPED else released)
+
+
+def test_the_config_threads_the_end_state_through_both_spellings():
+    """`CapConfig.end_gripped` is what gets the teach tab's /cap button the same contract."""
+    assert cap_ops.CapConfig().end_gripped == END_GRIPPED
+    for end_gripped in (True, False):
+        assert cap_ops.CapConfig(step_deg=90.0, end_gripped=end_gripped).plan() == \
+            cap_ops.plan_ratchet(90.0, 360.0, SIGN, end_gripped)
+        assert cap_ops.CapConfig(half_turns=2, end_gripped=end_gripped).plan() == \
+            cap_ops.plan_unscrew(2, SIGN, end_gripped)
 
 
 def test_the_wrist_only_ever_unwinds_while_the_jaws_are_open():
@@ -163,11 +240,38 @@ def test_unscrew_returns_every_joint_to_where_it_started():
     assert arm.get_joints() == pytest.approx(before), "the arm must end where it began"
 
 
-def test_unscrew_leaves_the_cap_released():
+def test_unscrew_leaves_the_cap_in_the_configured_state():
     arm = _arm()
     cap_ops.grab_cap(arm)
     cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0))
-    assert arm.gripper_width() == pytest.approx(850.0), "jaws must end open"
+    assert arm.gripper_width() == pytest.approx(_resting_width()), \
+        f"jaws must end {'closed on the cap' if END_GRIPPED else 'open'}"
+
+
+def test_a_run_that_ends_gripped_really_is_still_holding_the_cap():
+    """The point of the change: the caller's next move lifts the cap, and a lift with open
+    jaws carries nothing. Asserted against the arm, not against the plan."""
+    arm = _arm()
+    cap_ops.grab_cap(arm, cap_ops.CapConfig(grip_counts=298.0))
+    result = cap_ops.run_ratchet(
+        arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0, grip_counts=298.0,
+                               end_gripped=True))
+    assert result.ended_gripped is True
+    assert arm.gripper_width() == pytest.approx(298.0), "the jaws must still be on the cap"
+    assert result.net_wrist_travel_deg == pytest.approx(0.0), \
+        "and the wrist still came home — the grip is taken after the unwind, not instead of it"
+
+
+def test_a_run_that_ends_released_leaves_the_cap_on_the_tube():
+    """The other contract, kept alive so `end_gripped=False` cannot rot into a dead branch."""
+    arm = _arm()
+    cap_ops.grab_cap(arm, cap_ops.CapConfig(grip_counts=298.0))
+    result = cap_ops.run_ratchet(
+        arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0, grip_counts=298.0,
+                               end_gripped=False))
+    assert result.ended_gripped is False
+    assert arm.gripper_width() == pytest.approx(OPEN_COUNTS), "the cap was let go"
+    assert result.net_wrist_travel_deg == pytest.approx(0.0)
 
 
 def test_unscrewing_twice_does_not_accumulate_wrist_travel():
@@ -314,7 +418,7 @@ def test_ninety_degree_bites_take_four_of_them_to_turn_the_cap_once():
     steps = cap_ops.plan_ratchet(90.0, 360.0)
     bite = [("turn", _gripped(90.0)), ("open", 0.0), ("turn", _unwind(90.0))]
     assert steps == bite + [("close", 0.0)] + bite + [("close", 0.0)] + \
-        bite + [("close", 0.0)] + bite
+        bite + [("close", 0.0)] + bite + FINAL_GRIP
     assert cap_ops.count_bites(steps) == 4
 
 
@@ -361,7 +465,9 @@ def test_a_total_that_is_not_a_whole_number_of_bites_gets_a_short_last_bite():
     steps = cap_ops.plan_ratchet(90.0, 200.0)
     assert cap_ops.gripped_rotation(steps) == pytest.approx(_gripped(200.0))
     assert cap_ops.net_wrist_travel(steps) == pytest.approx(0.0)
-    assert steps[-1] == ("turn", _unwind(20.0))
+    # The short bite is unwound like any other; only the contract's closing grip may follow.
+    assert [s for s in steps if s[0] == "turn"][-1] == ("turn", _unwind(20.0))
+    assert steps[-1] == (FINAL_GRIP or [("turn", _unwind(20.0))])[-1]
 
 
 def test_no_float_dust_bite_when_the_total_divides_exactly():
@@ -411,7 +517,8 @@ def test_a_90_degree_decap_runs_four_bites_and_returns_the_wrist():
     assert result.net_wrist_travel_deg == pytest.approx(0.0)
     assert result.returned and result.preflight_ok
     assert arm.get_joints() == pytest.approx(before)
-    assert arm.gripper_width() == pytest.approx(850.0), "cap must be left released"
+    assert result.ended_gripped is END_GRIPPED
+    assert arm.gripper_width() == pytest.approx(_resting_width())
 
 
 def test_on_bite_fires_between_bites_with_the_jaws_open_and_the_wrist_home():
@@ -479,12 +586,16 @@ def test_grab_and_ungrab_drive_the_gripper():
 
 def test_unscrew_emits_a_step_callback_for_progress():
     arm = _arm()
+    cfg = cap_ops.CapConfig(half_turns=2, settle_s=0.0)
+    plan = cfg.plan()
     seen: list[str] = []
-    cap_ops.unscrew_cap(arm, cap_ops.CapConfig(half_turns=2, settle_s=0.0), on_step=seen.append)
-    # 7 plan steps plus one lift, which is reported because it is real arm motion.
-    assert len(seen) == 8
+    cap_ops.unscrew_cap(arm, cfg, on_step=seen.append)
+    # One report per plan step, plus one per close: the lift that precedes a re-grip is real
+    # arm motion and is reported as its own line. Derived from the plan, so the contract's
+    # trailing grip (and the lift in front of it) does not turn this into arithmetic upkeep.
+    assert len(seen) == len(plan) + _closes(plan), seen
     assert seen[0].startswith(f"turn {_gripped(180.0):+.0f}"), seen
-    assert seen[-1].startswith(f"turn {_unwind(180.0):+.0f}"), seen
+    assert seen[-1] == ("close" if END_GRIPPED else f"turn {_unwind(180.0):+.0f}°"), seen
     assert "open" in seen and "close" in seen
     assert any("lift" in s for s in seen)
 
@@ -496,12 +607,18 @@ def test_the_arm_lifts_at_every_regrip():
     """A cap backing off rises; the jaws must come up with it or fight the thread."""
     arm = _arm()
     z_before = arm.get_pose().z
-    # 90° bites => 4 bites => 3 re-grips => 3 lifts.
-    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
+    cfg = cap_ops.CapConfig(step_deg=90.0, settle_s=0.0)
+    plan = cfg.plan()
+    # One lift per close: 90° bites => 4 bites => 3 re-grips between them, plus the closing
+    # grip when the routine ends holding the cap. Counted off the plan rather than written
+    # down, because which of those exist is the contract's business.
+    expected = _closes(plan) * cfg.lift_per_regrip_mm
+    result = cap_ops.run_ratchet(arm, cfg)
 
     assert result.bites == 4
-    assert result.lifted_mm == pytest.approx(6.0), "3 re-grips x 2 mm"
-    assert arm.get_pose().z == pytest.approx(z_before + 6.0)
+    assert result.lifted_mm == pytest.approx(expected), \
+        f"{_closes(plan)} closes x {cfg.lift_per_regrip_mm:g} mm"
+    assert arm.get_pose().z == pytest.approx(z_before + expected)
     assert result.net_wrist_travel_deg == pytest.approx(0.0), "the wrist still returns"
 
 
@@ -546,16 +663,39 @@ def test_lift_can_be_switched_off_and_then_the_arm_returns_exactly():
     assert arm.get_joints() == pytest.approx(before)
 
 
-def test_a_single_bite_never_regrips_so_it_never_lifts():
-    arm = _arm()
-    z_before = arm.get_pose().z
-    result = cap_ops.run_ratchet(arm, cap_ops.CapConfig(half_turns=1, settle_s=0.0))
-    assert result.bites == 1
-    assert result.lifted_mm == 0.0
-    assert arm.get_pose().z == pytest.approx(z_before)
+def test_a_single_bite_never_regrips_between_bites_so_it_only_lifts_to_take_hold():
+    """There is no *inter-bite* re-grip in a one-bite plan, so the only lift a single bite can
+    make is the one in front of the contract's closing grip — and with `end_gripped` off there
+    is no lift at all. Both spellings are asserted, so neither depends on the other."""
+    for end_gripped in (True, False):
+        arm = _arm()
+        z_before = arm.get_pose().z
+        cfg = cap_ops.CapConfig(half_turns=1, settle_s=0.0, end_gripped=end_gripped)
+        expected = (cfg.lift_per_regrip_mm if end_gripped else 0.0)
+        result = cap_ops.run_ratchet(arm, cfg)
+        assert result.bites == 1
+        assert _closes(cfg.plan()) == (1 if end_gripped else 0), "no re-grip between bites"
+        assert result.lifted_mm == pytest.approx(expected)
+        assert arm.get_pose().z == pytest.approx(z_before + expected)
 
 
 def test_unscrew_sentence_reports_the_lift():
     arm = _arm()
-    sentence = cap_ops.unscrew_cap(arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
-    assert "raised 6 mm" in sentence
+    cfg = cap_ops.CapConfig(step_deg=90.0, settle_s=0.0)
+    lifted = _closes(cfg.plan()) * cfg.lift_per_regrip_mm
+    sentence = cap_ops.unscrew_cap(arm, cfg)
+    assert f"raised {lifted:.0f} mm" in sentence, sentence
+
+
+def test_unscrew_sentence_says_whether_the_cap_is_still_held():
+    """A caller reading the result has to be able to tell whether the arm can now lift the
+    cap. "Cap released" when it is in fact held (or the reverse) is the bench report again,
+    only in prose."""
+    for end_gripped, expected in ((True, "cap held"), (False, "cap released")):
+        arm = _arm()
+        sentence = cap_ops.unscrew_cap(
+            arm, cap_ops.CapConfig(step_deg=90.0, settle_s=0.0, end_gripped=end_gripped))
+        assert expected in sentence, sentence
+    # And the default sentence matches the module's contract.
+    assert ("cap held" if END_GRIPPED else "cap released") in cap_ops.unscrew_cap(
+        _arm(), cap_ops.CapConfig(step_deg=90.0, settle_s=0.0))
