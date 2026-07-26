@@ -1,24 +1,30 @@
 <script setup lang="ts">
-import { ref } from "vue";
+// App shell: the reality banner, the four tabs, and the two long-lived sockets.
+//
+// The engine socket is opened here rather than in the Workflow view, for two reasons: the
+// reality banner has to stay truthful on every tab, and a run must keep streaming while the
+// operator is watching a camera — remounting the store on tab change would drop events and
+// force a resync each time.
+import { onMounted, onUnmounted, provide } from "vue";
+import { RouterLink, RouterView } from "vue-router";
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
-import TeachPanel from "./components/teach/TeachPanel.vue";
-import CameraTab from "./components/cameras/CameraTab.vue";
+import { CamerasKey } from "./stores/fleet";
+import { connectEngine, disconnectEngine } from "./stores/engine";
+import RealityBanner from "./components/workflow/RealityBanner.vue";
+import { routes } from "./router";
 
-type Tab = "fleet" | "teach" | "cameras";
+const { cameras, connected } = useFleet();
+provide(CamerasKey, cameras);
 
-const { instruments, cameras, connected } = useFleet();
-// Remembered across reloads — during bring-up you live in one tab for hours.
-const tab = ref<Tab>((localStorage.getItem("tab") as Tab) ?? "fleet");
+const tabs = routes.filter((r) => typeof r.meta?.label === "string");
 
-function select(next: Tab) {
-  tab.value = next;
-  localStorage.setItem("tab", next);
-}
+onMounted(connectEngine);
+onUnmounted(disconnectEngine);
 </script>
 
 <template>
-  <div class="mx-auto max-w-[1400px] p-6">
+  <div class="mx-auto max-w-[1600px] p-6">
     <header class="flex items-center gap-3">
       <h1 class="text-xl font-semibold text-white">hackathon-zeon · control</h1>
       <span
@@ -30,39 +36,37 @@ function select(next: Tab) {
       <button class="btn btn-primary ml-auto" @click="connectAll">Connect all</button>
     </header>
 
-    <nav class="mt-5 flex gap-1 border-b border-deck-600">
-      <button
-        v-for="t in (['fleet', 'teach', 'cameras'] as Tab[])"
-        :key="t"
-        class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition-colors"
-        :class="
-          tab === t
-            ? 'border-blue-500 text-white'
-            : 'border-transparent text-deck-400 hover:text-deck-100'
-        "
-        @click="select(t)"
+    <!-- Persistent, on every tab: with simulation the default (D29/R-SIM-8) a simulated run
+         must be impossible to mistake for a real one, and a banner that only exists on the
+         workflow tab is a banner the operator can navigate away from. -->
+    <RealityBanner class="mt-4" />
+
+    <nav class="mt-4 flex gap-1 border-b border-deck-600">
+      <RouterLink
+        v-for="t in tabs"
+        :key="String(t.name)"
+        :to="t.path"
+        class="-mb-px border-b-2 px-4 py-2 text-sm font-semibold transition-colors"
+        active-class="border-blue-500 text-white"
+        exact-active-class="border-blue-500 text-white"
       >
-        {{ t }}
-      </button>
+        <span class="border-transparent">{{ t.meta?.label }}</span>
+      </RouterLink>
     </nav>
 
     <main class="mt-5">
-      <!-- Placeholder. S6 replaces this shell with a router + the workflow tab
-           (R-UI-1); the device cards' raw-status-JSON view and the "Run uncap ->
-           aspirate" button both went with the executor they drove. -->
-      <div v-if="tab === 'fleet'" class="card">
-        <h2 class="card-title">Fleet</h2>
-        <ul class="mt-2 space-y-1 text-sm text-deck-100">
-          <li v-for="d in instruments" :key="d.id" class="num">
-            {{ d.id }} · {{ d.kind }} · {{ d.state }}
-          </li>
-        </ul>
-      </div>
-
-      <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab,
-           and drops the MJPEG connections so the backend can release the cameras -->
-      <TeachPanel v-else-if="tab === 'teach'" />
-      <CameraTab v-else-if="tab === 'cameras'" :cameras="cameras" />
+      <RouterView />
     </main>
   </div>
 </template>
+
+<style scoped>
+/* RouterLink's default (inactive) look; `active-class` overrides the border and colour. */
+nav a {
+  border-color: transparent;
+  color: var(--color-deck-400);
+}
+nav a:hover {
+  color: var(--color-deck-100);
+}
+</style>
