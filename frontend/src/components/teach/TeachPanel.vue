@@ -16,7 +16,6 @@ import JointJog from "./JointJog.vue";
 import MoveTo from "./MoveTo.vue";
 import PathTeach from "./PathTeach.vue";
 import PoseLibrary from "./PoseLibrary.vue";
-import SequenceBuilder from "./SequenceBuilder.vue";
 import TeachChecklist from "./TeachChecklist.vue";
 
 const t = useTeach();
@@ -262,8 +261,6 @@ onUnmounted(() => {
         </div>
       </div>
     </section>
-
-    <SequenceBuilder />
 
     <div class="grid gap-4 lg:grid-cols-2">
       <TeachChecklist />

@@ -157,37 +157,6 @@ class FreeDriveRequest(BaseModel):
     on: bool = True
 
 
-class SequenceStepModel(FiniteModel):
-    """One action in a user-built sequence."""
-    action: Literal["move", "grip", "ungrip", "unscrew"]
-    device: str
-    pose: str = ""                # move: taught pose name
-    width: float | None = None    # grip: gripper units; None = close fully
-    half_turns: int = 2           # unscrew: 180 deg bites
-    speed: float | None = None
-    note: str = ""
-
-
-class SequenceModel(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
-    steps: list[SequenceStepModel] = []
-    note: str = ""
-    updated_at: str = ""
-
-
-class SequenceStepResult(BaseModel):
-    index: int
-    phase: str                    # preflight | started | done | failed | complete
-    ok: bool
-    detail: str = ""
-
-
-class SequenceRunResult(BaseModel):
-    ok: bool
-    events: list[SequenceStepResult] = []
-    problems: list[str] = []
-
-
 class TaughtPathModel(BaseModel):
     """A hand-guided travel route, stored as joint waypoints."""
     name: str = Field(min_length=1, max_length=64)
