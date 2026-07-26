@@ -61,6 +61,20 @@ MAX_JOG_MM = 15.0         # refuse larger single relative steps
 APPROACH_FEED = 300.0     # mm/min (5 mm/s)
 ENGAGE_FEED = 180.0       # mm/min (3 mm/s), gentler for seating the tip
 
+# --- plungers -----------------------------------------------------------------
+# B and C are the two pipette plungers. They are NOT gantry axes: travel is short
+# and a plunger driven past its seal jams, so they get a much tighter per-jog cap.
+PLUNGER_AXES = ("B", "C")
+MAX_PLUNGER_JOG_MM = 3.0
+PLUNGER_FEED = 120.0      # mm/min (2 mm/s): plungers are geared, go gently
+
+# Volume calibration is a MEASUREMENT, not a constant. It has never been taken on
+# this unit, so it lives in config and aspirate/dispense refuse without it rather
+# than guessing. `M119` reports `min_b` but no `min_c`, so the plungers are not
+# symmetric and the mounted side must be identified empirically too.
+# Populate both via scripts/calibrate_plunger.py:
+#     {"plunger_axis": "B", "plunger_ul_per_mm": <measured>}
+
 
 class OpentronsDriver(LiquidHandlerDriver):
     """Config: {"transport": "serial", "port": "/dev/cu.usbmodem11201"}."""
@@ -308,9 +322,18 @@ class OpentronsDriver(LiquidHandlerDriver):
                 labels them by axis rather than by direction.
         """
         axis = axis.upper()
-        if axis not in ("X", "Y", "Z", "A"):
+        if axis not in ("X", "Y", "Z", "A", *PLUNGER_AXES):
             raise DriverError(f"unknown axis {axis!r}")
-        if abs(delta_mm) > MAX_JOG_MM:
+        if axis in PLUNGER_AXES:
+            # Plungers get their own, much smaller cap: short travel, and one
+            # driven past its seal jams.
+            if abs(delta_mm) > MAX_PLUNGER_JOG_MM:
+                raise DriverError(
+                    f"refusing a {delta_mm} mm jog on plunger {axis}: the cap is "
+                    f"{MAX_PLUNGER_JOG_MM} mm, because plunger travel is short and "
+                    f"overrunning the seal jams it."
+                )
+        elif abs(delta_mm) > MAX_JOG_MM:
             raise DriverError(
                 f"refusing a {delta_mm} mm jog: the cap is {MAX_JOG_MM} mm per "
                 f"step, with no endstops to catch an overrun."
@@ -444,15 +467,73 @@ class OpentronsDriver(LiquidHandlerDriver):
             "not home at all. Use jog_z() for relative Z motion."
         )
 
+    # --- plunger ------------------------------------------------------------
+    def _plunger_config(self) -> tuple[str, float]:
+        """The measured plunger axis and µL-per-mm, or a refusal explaining how.
+
+        Deliberately not defaulted. Guessing either value would move a plunger
+        the wrong way or by the wrong amount, and neither is recoverable from a
+        firmware read: this board's config has no plunger entries, exactly as it
+        has none for the axis limits.
+        """
+        axis = self.config.get("plunger_axis")
+        ul_per_mm = self.config.get("plunger_ul_per_mm")
+        if not axis or not ul_per_mm:
+            raise DriverError(
+                "plunger is not calibrated, so volumes cannot be commanded. "
+                "Two values are needed in the fleet config and both are "
+                "measurements, not constants: 'plunger_axis' (B or C — M119 "
+                "reports min_b but no min_c, so the mounted side is not "
+                "symmetric and must be found empirically) and "
+                "'plunger_ul_per_mm'. Run scripts/calibrate_plunger.py."
+            )
+        axis = str(axis).upper()
+        if axis not in PLUNGER_AXES:
+            raise DriverError(f"plunger_axis must be one of {PLUNGER_AXES}, got {axis!r}")
+        try:
+            per_mm = float(ul_per_mm)
+        except (TypeError, ValueError):
+            raise DriverError(f"plunger_ul_per_mm must be a number, got {ul_per_mm!r}")
+        if per_mm <= 0:
+            raise DriverError("plunger_ul_per_mm must be positive")
+        return axis, per_mm
+
+    def _move_plunger(self, volume_ul: float, direction: int) -> None:
+        """Move the plunger by a volume. direction -1 draws up, +1 pushes out.
+
+        The sign convention is part of the calibration: which way the plunger
+        travels to draw liquid is recorded by calibrate_plunger.py as the sign of
+        plunger_ul_per_mm's axis motion, so it is not assumed here.
+        """
+        axis, per_mm = self._plunger_config()
+        if volume_ul <= 0:
+            raise DriverError("volume must be positive")
+        mm = volume_ul / per_mm
+        if mm > MAX_PLUNGER_JOG_MM:
+            # Split it, but keep each step inside the plunger cap.
+            steps = []
+            remaining = mm
+            while remaining > 1e-9:
+                s = min(MAX_PLUNGER_JOG_MM, remaining)
+                steps.append((axis, direction * s))
+                remaining -= s
+            self.jog_path(steps, feedrate=PLUNGER_FEED,
+                          max_total_mm=MAX_PLUNGER_JOG_MM * 20)
+        else:
+            self.jog(axis, direction * mm, feedrate=PLUNGER_FEED)
+
     def aspirate(self, volume_ul: float, location: DeckLocation) -> None:
-        raise DriverError(
-            "aspirate is not implemented on the OT-One: the plunger axes (B/C) "
-            "have never been moved on this unit and no volume calibration "
-            "exists. Implementing it needs plunger travel measured first."
-        )
+        """Draw `volume_ul` with the calibrated plunger.
+
+        Does NOT travel to `location`: this unit has no datum, so there is no
+        absolute move (see move_to). Position the tip over the liquid first with
+        relative jogs, then call this.
+        """
+        self._move_plunger(volume_ul, direction=-1)
 
     def dispense(self, volume_ul: float, location: DeckLocation) -> None:
-        raise DriverError(
-            "dispense is not implemented on the OT-One, for the same reason as "
-            "aspirate: the plunger axes are uncalibrated and untested."
-        )
+        """Push `volume_ul` back out with the calibrated plunger.
+
+        Like aspirate, this does not travel — position first.
+        """
+        self._move_plunger(volume_ul, direction=+1)

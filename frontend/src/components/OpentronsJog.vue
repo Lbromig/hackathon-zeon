@@ -32,7 +32,16 @@ const AXES = [
   { axis: "Y", label: "Y", minus: "−Y", plus: "+Y", hint: "gantry · jog only, never home" },
   { axis: "Z", label: "Z", minus: "Up", plus: "Down", hint: "shared lift · +Z is DOWN" },
   { axis: "A", label: "A", minus: "Up", plus: "Down", hint: "right mount" },
+  // Plungers. Capped far tighter than the gantry (3 mm vs 15 mm): travel is
+  // short and one driven past its seal jams. Labelled by effect, not sign.
+  { axis: "B", label: "B", minus: "Draw", plus: "Push", hint: "plunger · max 3 mm/step" },
+  { axis: "C", label: "C", minus: "Draw", plus: "Push", hint: "plunger · max 3 mm/step" },
 ] as const;
+
+// The plunger cap is smaller than the gantry cap, so large step sizes have to be
+// disabled per-axis rather than globally.
+const PLUNGER_AXES = ["B", "C"];
+const MAX_PLUNGER_STEP = 3;
 
 const canMove = computed(
   () => !busy.value && status.value?.connected === true && !status.value?.reference_lost,
@@ -42,6 +51,12 @@ const depth = computed(() =>
     ? status.value.z_below_datum_mm.toFixed(2)
     : "—",
 );
+
+// A plunger refuses anything over its own cap, so disable the button rather than
+// let the operator fire a request the backend will reject.
+function stepTooBig(axis: string): boolean {
+  return PLUNGER_AXES.includes(axis) && step.value > MAX_PLUNGER_STEP;
+}
 
 function note(msg: string, ok: boolean) {
   const t = new Date().toLocaleTimeString();
@@ -128,14 +143,24 @@ onMounted(async () => {
 
     <div v-for="a in AXES" :key="a.axis" class="row axis">
       <span class="lbl">{{ a.label }}</span>
-      <button :disabled="!canMove" @click="doJog(a.axis, -1)">{{ a.minus }}</button>
-      <button :disabled="!canMove" @click="doJog(a.axis, 1)">{{ a.plus }}</button>
+      <button
+        :disabled="!canMove || stepTooBig(a.axis)"
+        :title="stepTooBig(a.axis) ? `step too large for a plunger (max ${MAX_PLUNGER_STEP} mm)` : ''"
+        @click="doJog(a.axis, -1)"
+      >{{ a.minus }}</button>
+      <button
+        :disabled="!canMove || stepTooBig(a.axis)"
+        :title="stepTooBig(a.axis) ? `step too large for a plunger (max ${MAX_PLUNGER_STEP} mm)` : ''"
+        @click="doJog(a.axis, 1)"
+      >{{ a.plus }}</button>
       <span class="hint">{{ a.hint }}</span>
     </div>
 
     <p class="note">
-      All four axes jog. <strong>Home Z only</strong> — homing Y drives a long
-      search for an endstop that never reports and grinds against a hard stop.
+      All six axes jog: four gantry, two plungers. <strong>Home Z only</strong> —
+      homing Y drives a long search for an endstop that never reports and grinds
+      against a hard stop. Plungers are uncalibrated, so <code>aspirate</code>
+      still refuses; jogging them is how the calibration gets measured.
     </p>
 
     <ul class="log">
