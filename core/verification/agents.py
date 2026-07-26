@@ -32,6 +32,35 @@ class VerificationAgent(ABC):
     def verify(self, evidence: Evidence) -> VerificationResult: ...
 
 
+def _unimplemented(name: str) -> VerificationResult:
+    """Result for a checker nobody has written yet.
+
+    Fails closed by default: an unwritten check must never launder itself into a
+    recorded success. `HZ_ALLOW_UNIMPLEMENTED_VERIFIERS=1` flips it to a pass so
+    the workflow can be demonstrated end to end, but the pass is labelled
+    SIMULATED and carries zero confidence, so nothing downstream and nobody
+    reading the run log can mistake it for evidence.
+    """
+    from core.config import settings
+
+    if settings.allow_unimplemented_verifiers:
+        return VerificationResult(
+            ok=True,
+            confidence=0.0,
+            detail=f"SIMULATED PASS: {name} is not implemented and nothing was "
+                   "checked. HZ_ALLOW_UNIMPLEMENTED_VERIFIERS is on.",
+            data={"simulated": True, "checked": False},
+        )
+    return VerificationResult(
+        ok=False,
+        confidence=0.0,
+        detail=f"{name} is not implemented; fails closed so an unwritten check "
+               "cannot report success. Set HZ_ALLOW_UNIMPLEMENTED_VERIFIERS=1 "
+               "to demo the chain end to end.",
+        data={"simulated": False, "checked": False},
+    )
+
+
 class CapRemovedAgent(VerificationAgent):
     """Cap off? Measured as a height delta at the tube mouth.
 
@@ -107,11 +136,7 @@ class GraspSecureAgent(VerificationAgent):
     name = "grasp_secure"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(
-            ok=False, confidence=0.0,
-            detail="not implemented; fails closed so an unwritten check "
-                   "cannot report success",
-        )
+        return _unimplemented(self.name)
 
 
 class TubeAlignedAgent(VerificationAgent):
@@ -119,11 +144,7 @@ class TubeAlignedAgent(VerificationAgent):
     name = "tube_aligned"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(
-            ok=False, confidence=0.0,
-            detail="not implemented; fails closed so an unwritten check "
-                   "cannot report success",
-        )
+        return _unimplemented(self.name)
 
 
 class AspirationAgent(VerificationAgent):
@@ -131,11 +152,7 @@ class AspirationAgent(VerificationAgent):
     name = "aspiration_ok"
 
     def verify(self, evidence: Evidence) -> VerificationResult:
-        return VerificationResult(
-            ok=False, confidence=0.0,
-            detail="not implemented; fails closed so an unwritten check "
-                   "cannot report success",
-        )
+        return _unimplemented(self.name)
 
 
 AGENTS: dict[str, VerificationAgent] = {

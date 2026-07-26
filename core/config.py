@@ -91,6 +91,14 @@ class Settings:
     fleet: list[dict[str, Any]] = field(default_factory=lambda: list(DEFAULT_FLEET))
     # Poses taught through the UI, persisted so they survive a backend restart.
     teach_poses_file: str = os.path.join(REPO_ROOT, "data", "teach_poses.json")
+    # Let verification agents that are not implemented yet report a pass, so the
+    # workflow can be demonstrated end to end before every checker exists.
+    #
+    # OFF by default, and it must stay that way. A verifier that passes without
+    # checking is the failure this layer exists to prevent, so turning it on is a
+    # deliberate act that shows up in the run log and in the UI rather than a
+    # quiet default. Never enable it for a run whose result anyone will believe.
+    allow_unimplemented_verifiers: bool = False
 
     @classmethod
     def load(cls) -> "Settings":
@@ -110,6 +118,9 @@ class Settings:
             s.fleet = _apply_env_overrides(DEFAULT_FLEET)
 
         s.teach_poses_file = os.getenv("HZ_TEACH_POSES_FILE", s.teach_poses_file)
+        s.allow_unimplemented_verifiers = os.getenv(
+            "HZ_ALLOW_UNIMPLEMENTED_VERIFIERS", ""
+        ).strip().lower() in ("1", "true", "yes")
         return s
 
 
