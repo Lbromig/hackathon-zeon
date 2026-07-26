@@ -15,6 +15,7 @@ import JogPad from "./JogPad.vue";
 import JointJog from "./JointJog.vue";
 import MoveTo from "./MoveTo.vue";
 import PoseLibrary from "./PoseLibrary.vue";
+import WaypointChecklist from "./WaypointChecklist.vue";
 
 const t = useTeach();
 const {
@@ -261,6 +262,9 @@ onUnmounted(() => {
     </section>
 
     <div class="grid gap-4 lg:grid-cols-2">
+      <!-- First, because on a teach session it is the task: everything below it is a tool
+           for getting the arm to the point this list is asking for. -->
+      <WaypointChecklist />
       <JogPad />
       <JointJog />
       <MoveTo />

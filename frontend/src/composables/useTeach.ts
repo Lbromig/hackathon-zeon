@@ -11,7 +11,12 @@ import type {
   ActionResult,
   ArmState,
   ArmSummary,
+  ArmWaypoints,
+  SpeedTier,
   TaughtPose,
+  WaypointProblem,
+  WaypointReport,
+  WaypointRow,
 } from "../api/teach";
 
 const POLL_MS = 500; // 2 Hz — matches the backend's gripper-width cache
@@ -58,6 +63,8 @@ const log = ref<LogEntry[]>([]);
 const sending = ref(false);
 const loadError = ref("");
 const settings = reactive<JogSettings>(loadSettings());
+const waypointReport = ref<WaypointReport | null>(null);
+const waypointError = ref("");
 
 let poller: number | undefined;
 let polling = false; // single-flight: skip a tick if the last one is still out
@@ -68,6 +75,34 @@ const connected = computed(() => state.value?.connected ?? false);
 const faulted = computed(() => Boolean(state.value?.error_code));
 /** Motion controls are live only when the arm can actually move. */
 const canMove = computed(() => connected.value && !faulted.value && !sending.value);
+
+/**
+ * The selected arm's workflow waypoints — and *only* that arm's (R-WP-3).
+ *
+ * Derived by matching on `device`, never by index or by merging the two arms' lists: a
+ * picker that can express `right` + a left-arm waypoint is a defect, and the cheapest way
+ * to guarantee it cannot is for the UI to never hold a combined list at all.
+ * `null` when the selected arm owns no workflow waypoints, which the panel says out loud
+ * rather than showing an empty checklist that reads as "nothing to teach".
+ */
+const waypoints = computed<ArmWaypoints | null>(
+  () => waypointReport.value?.devices.find((d) => d.device === selectedId.value) ?? null,
+);
+
+/** Problems that concern the selected arm. Blocking ones first. */
+const waypointProblems = computed<WaypointProblem[]>(() =>
+  (waypointReport.value?.problems ?? [])
+    .filter((p) => p.device === selectedId.value)
+    .sort((a, b) => Number(b.blocking) - Number(a.blocking)),
+);
+
+/** Untaught rows, in workflow order — the operator's remaining work. */
+const untaughtWaypoints = computed<WaypointRow[]>(
+  () => waypoints.value?.waypoints.filter((w) => !w.taught) ?? [],
+);
+
+/** The next one to teach, so the panel can point at it without the operator scanning. */
+const nextWaypoint = computed<WaypointRow | null>(() => untaughtWaypoints.value[0] ?? null);
 
 function persistSettings() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
@@ -117,7 +152,12 @@ async function refreshArms() {
     loadError.value = "";
     if (!arms.value.some((a) => a.id === selectedId.value)) {
       await select(arms.value[0]?.id ?? "");
+      return;
     }
+    // The arm remembered in localStorage is still there, so `select` does not run — but
+    // its poses and checklist still have to be loaded, or a reload leaves the panel
+    // showing an empty library and "0 of 10 taught" for a fully taught arm.
+    await Promise.all([refreshPoses(), refreshWaypoints()]);
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : String(e);
   }
@@ -129,7 +169,7 @@ async function select(id: string) {
   poses.value = [];
   if (!id) return;
   localStorage.setItem("teach.arm", id);
-  await Promise.all([tick(), refreshPoses()]);
+  await Promise.all([tick(), refreshPoses(), refreshWaypoints()]);
 }
 
 async function refreshPoses() {
@@ -138,6 +178,20 @@ async function refreshPoses() {
     poses.value = await api.listPoses(selectedId.value);
   } catch {
     /* the pose library is a convenience; don't break the panel over it */
+  }
+}
+
+/**
+ * Re-read the checklist. Unlike the pose library this failing is *not* cosmetic: a stale
+ * checklist tells the operator a waypoint is taught when it is not, so the error is
+ * surfaced rather than swallowed.
+ */
+async function refreshWaypoints() {
+  try {
+    waypointReport.value = await api.getWaypointReport();
+    waypointError.value = "";
+  } catch (e) {
+    waypointError.value = e instanceof Error ? e.message : String(e);
   }
 }
 
@@ -208,6 +262,7 @@ async function savePose(name: string, note = "") {
   try {
     poses.value = await api.savePose(selectedId.value, name, note);
     pushLog(`save pose "${name}"`, true, "", startedAt);
+    await refreshWaypoints();
     return true;
   } catch (e) {
     pushLog(`save pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
@@ -220,13 +275,31 @@ async function deletePose(name: string) {
   try {
     poses.value = await api.deletePose(selectedId.value, name);
     pushLog(`delete pose "${name}"`, true, "", startedAt);
+    await refreshWaypoints();
   } catch (e) {
     pushLog(`delete pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
   }
 }
 
 const gotoPose = (name: string) =>
-  send(`goto "${name}"`, () => api.gotoPose(selectedId.value, name, settings.speed));
+  send(`goto "${name}"`, () => api.gotoPose(selectedId.value, name, { speed: settings.speed }));
+
+/**
+ * Teach the selected arm's waypoint: snapshot where it is now under that exact name.
+ *
+ * The name comes from the checklist, so it is always one this arm owns; the backend
+ * re-checks and refuses otherwise, and that refusal lands in the command log.
+ */
+const teachWaypoint = (name: string, note = "") => savePose(name, note);
+
+/**
+ * Drive to a waypoint at its *intended* tier rather than at the jog slider's speed —
+ * verifying a taught point at the speed the workflow will use is the point of the button.
+ */
+const gotoWaypoint = (name: string, tier: SpeedTier) =>
+  send(`goto waypoint ${name} (${tier})`, () =>
+    api.gotoPose(selectedId.value, name, { tier }),
+  );
 
 /** Hand-guiding on/off. Turning it off is also how we get back to position control,
  *  so it must stay reachable even when `canMove` is false. */
@@ -262,11 +335,18 @@ export function useTeach() {
     connected,
     faulted,
     canMove,
+    // workflow waypoints (R-WP-3: only ever the selected arm's own)
+    waypoints,
+    waypointProblems,
+    waypointError,
+    untaughtWaypoints,
+    nextWaypoint,
     // lifecycle
     startPolling,
     stopPolling,
     refreshArms,
     refreshPoses,
+    refreshWaypoints,
     select,
     persistSettings,
     // commands
@@ -285,6 +365,8 @@ export function useTeach() {
     savePose,
     deletePose,
     gotoPose,
+    teachWaypoint,
+    gotoWaypoint,
     setFreeDrive,
     grabCap,
     ungrabCap,

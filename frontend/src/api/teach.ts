@@ -75,6 +75,51 @@ export interface TaughtPose {
   saved_at: string;
 }
 
+export type SpeedTier = "slow" | "medium" | "fast";
+
+/** One row of the workflow-waypoint checklist, from `core/waypoints.py`'s spec. */
+export interface WaypointRow {
+  device: string;
+  name: string;
+  /** The workflow step it serves — also the order it makes sense to teach in. */
+  step: number;
+  /** Intended tier; the backend resolves it to mm/s and °/s and clamps to soft limits. */
+  speed: SpeedTier;
+  note: string;
+  taught: boolean;
+  saved_at: string | null;
+  /** Joints were captured, so replay uses angles the arm physically reached. */
+  has_joints: boolean;
+}
+
+/** One arm's checklist. Contains **only** that arm's own waypoints — the API is the
+ *  reason a picker built from this cannot express an invalid pairing (R-WP-3). */
+export interface ArmWaypoints {
+  device: string;
+  taught: number;
+  total: number;
+  complete: boolean;
+  waypoints: WaypointRow[];
+  /** Taught names that are not spec waypoints for this arm — scratch points. */
+  extra: string[];
+}
+
+export interface WaypointProblem {
+  /** missing | wrong_device | name_mismatch | ad_hoc | unusable */
+  kind: string;
+  device: string;
+  name: string;
+  detail: string;
+  blocking: boolean;
+}
+
+export interface WaypointReport {
+  devices: ArmWaypoints[];
+  problems: WaypointProblem[];
+  total: number;
+  taught: number;
+}
+
 export type JogSpace = "cartesian" | "joint";
 export const CARTESIAN_AXES = ["x", "y", "z", "roll", "pitch", "yaw"] as const;
 export type CartesianAxis = (typeof CARTESIAN_AXES)[number];
@@ -131,10 +176,28 @@ export const savePose = (id: string, name: string, note = "") =>
   post<TaughtPose[]>(`/api/arms/${id}/poses`, { name, note });
 export const deletePose = (id: string, name: string) =>
   request<TaughtPose[]>(`/api/arms/${id}/poses/${encodeURIComponent(name)}`, { method: "DELETE" });
-export const gotoPose = (id: string, name: string, speed?: number) =>
-  post<ActionResult>(
-    `/api/arms/${id}/poses/${encodeURIComponent(name)}/goto${speed ? `?speed=${speed}` : ""}`,
+/** Replay a taught pose. `tier` wins over `speed` on the backend, so the checklist can
+ *  replay a waypoint at the speed the workflow will use rather than the jog slider's. */
+export const gotoPose = (
+  id: string,
+  name: string,
+  opts: { speed?: number; tier?: SpeedTier } = {},
+) => {
+  const q = new URLSearchParams();
+  if (opts.tier) q.set("tier", opts.tier);
+  else if (opts.speed) q.set("speed", String(opts.speed));
+  const query = q.toString();
+  return post<ActionResult>(
+    `/api/arms/${id}/poses/${encodeURIComponent(name)}/goto${query ? `?${query}` : ""}`,
   );
+};
+
+/** The whole fleet's waypoint checklist plus everything wrong with the library.
+ *  One request, because the panel needs the arm's rows and its warnings together. */
+export const getWaypointReport = () => request<WaypointReport>("/api/arms/waypoints");
+
+/** One arm's checklist. Only that arm's own waypoints, by construction. */
+export const listWaypoints = (id: string) => request<ArmWaypoints>(`/api/arms/${id}/waypoints`);
 
 /** Hand-guiding. The arm becomes back-drivable — support it before enabling, and
  *  note that commanded moves do not behave normally until it is switched off. */
