@@ -13,47 +13,25 @@ on **dexterity + physical verification**; the Opentrons hand-off is the narrativ
 lands both themes in one motion. The floor we will always be able to show is a snap-cap +
 OT-nest aspirate; the target adds the dual-arm screw-cap and arm-held aspiration; the honest
 differentiator over "another pick-and-place" is the closed **verify → retry** loop.
-**Verification substrate is marker-based, not learned:** a real AprilTag detector + 6-DoF pose
-(`core/perception/fiducials.py`) feeding a live twin is the pragmatic sensing layer for verdicts —
-the heavy learned-perception stack (SAM 2 / FoundationPose / Kaolin) stays a post-hackathon ambition,
-off the demo path. **This cycle the pattern finally broke: verification is real.** All four agents in
-`core/verification/agents.py` now return graded twin-query verdicts fused with driver telemetry
-(`cap_removed`, `grasp_secure`, `tube_aligned`, `aspiration_ok`), each with a test asserting a genuine
-`ok=False` and `ok=True` — and a perception→twin **fusion loop** (`TwinFuser` + `services/twin_fusion`
-@10 Hz) now folds camera detections into the twin the verifiers query. The verify→retry loop can, at last,
-actually fail. Two things keep this from being a *demo* yet, and they define the next block: (1) `_execute`
-is still empty, so the real verdicts gate **twin geometry, not a physical result** — nothing autonomous
-moves; and (2) the whole win is **uncommitted WIP** — HEAD still ships the old `ok=True` stubs, so a clean
-checkout runs theater. Meanwhile the **dexterity half is the strong half**: the arm is teachable (free-drive
-mode), self-collision-safe (joint soft-limit enforcement + `check_pose_target`, with the left arm's J5
-clearance now measured into config), and its sequences are re-runnable. The vision is no longer bottlenecked
-by whether we can verify — we can — but by whether a verdict ever gates a real motion. The next block's job
-is narrow and unglamorous: **commit the verifiers, then wire the floor `_execute`** so one real `ok=False`
-stops one real aspirate. No new substrate.
+**Verification substrate is now marker-based, not learned:** a real AprilTag detector +
+6-DoF pose (`core/perception/fiducials.py`) feeding a live twin is the pragmatic sensing
+layer for verdicts — the heavy learned-perception stack (SAM 2 / FoundationPose / Kaolin)
+stays a post-hackathon ambition, off the demo path. **As of this cycle the last infra gap is
+closed:** the camera transport is mounted (`cameras.router` + `camera_hub`, detections on
+`/ws/state`) and marker ids are the real printed stock (180–224). Nothing structural now stands
+between the repo and a real verdict — what remains is a threshold on an already-computed pose and
+one wired motion path, i.e. the two blockers that have now persisted for **three** cycles: a real
+verifier and a non-empty `_execute`. Meanwhile the **dexterity half has quietly become the strong
+half**: the arm is teachable (free-drive mode), self-collision-safe (joint soft-limit enforcement +
+`check_pose_target` pre-flight), and its sequences are re-runnable — a genuinely good dexterity-and-teleop
+demo. The vision is no longer bottlenecked by capability; it is bottlenecked by *choice*. Every cycle
+that ends with `ok=True` hardcoded quietly re-bets the demo on the dexterity ceiling and leaves Track C's
+*scored* half — verification — on a slide. The next block either buys one real `ok=False`, or the team
+makes that dexterity bet explicit and owns that the "verified" in the title is aspirational.
 
 ---
 
 ## Critical review log (newest first)
-
-### 2026-07-26T00:40Z — The pattern broke: verification is finally real. Now give it something physical to gate.
-
-**Demo-readiness score: 5/10 for the *stated* PoC (verified uncap→aspirate) — up from a flat 3.5 across three prior reviews; ~8/10 for the teleop + streaming-UI + safe-motion show (unchanged).** The stated-PoC number moved for the first time because the one thing that had never moved finally did: a verifier can now return a real `ok=False`. It is not 7+ because the verdicts still gate a twin, not a physical action, and the win is uncommitted.
-
-**What changed since the last review — the scored half, at last.** All four `core/verification/agents.py` agents are now **real** (on-disk WIP): `cap_removed` checks the cap has been reparented off the tube and separated > 20 mm, with a torque-drop telemetry bonus; `grasp_secure` checks the tube is reparented onto a tool and the reported gripper width sits in the expected band; `tube_aligned` thresholds the distance from the tube to the pipette nozzle at 15 mm; `aspiration_ok` reads a positive aspirated volume from telemetry or the nozzle entity. Each returns graded `ok`/`confidence`/`detail`, degrades (lower confidence) rather than crashing on a missing signal, and has a dedicated test asserting *both* the fail and pass paths (`backend/tests/test_verification.py`). Feeding them, a new **perception→twin fusion loop** landed: `TwinFuser` (`core/perception/fusion.py`) composes each detection with the camera's own twin pose into a corrective world position (position-only, confidence + jump gated), driven by `services/twin_fusion.py` at ~10 Hz and actually **started in `main.py`'s lifespan** — real integration, not a lone file (`backend/tests/test_fusion.py`). The committed arm work (`3800c2c`) also put the **left arm's measured J5 override into config**. This is the strongest cycle of the four, and the first to advance the plot.
-
-**What did NOT change — and it's now the whole remaining gap.** `uncap_aspirate.py::_execute` **still** has every driver call commented out (and the agent path via `Skill.run` reuses it), so nothing autonomous moves. The OT-One `connect()`/`_send()` are **still** `TODO`. So the real verifiers currently pass judgment on a twin populated by calibration seeding + kinematics + fusion — not on a physical result. A green `tube_aligned` today means "the twin says the tube is under the nozzle," not "the arm put it there."
-
-**The single biggest threat — the win is invisible to git.** Everything above — four real verifiers, `TwinFuser`, the fusion loop, the RealSense driver, the tests — is **uncommitted WIP**. HEAD (`3800c2c`) still contains `return VerificationResult(ok=True, confidence=0.0, detail="stub")` four times over. If the demo runs a clean checkout, it runs the theater we've been warning about for four cycles *while the real thing sits unstaged on someone's disk*. This is a new failure mode and a sharper one than the old "they won't write it": they wrote it, and it could still not ship. Commit it (Q-COMMIT-1) before anything else.
-
-**Refine scope for the time remaining.**
-- **CUT / FREEZE (hold the line):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only, unchanged. Dexterity/safety hardening stays frozen except the one open item, measuring the **right** arm's J5 override (Q-JLIMIT-1); the left is done. No new subsystems — the temptation this cycle is to polish the fusion loop; resist it.
-- **KEEP:** the now-real verifiers + fusion loop; the P0 agent loop as orchestrator; the hardcoded `PLAN`; the strong teach + safe-motion layer; fiducial detection + calibration twin + live camera transport.
-- **ADD, in strict priority:** (1) **commit** the verifiers + fusion onto the demo branch — the single highest-leverage action available and it writes no new code (Q-COMMIT-1); (2) wire `_execute` for the **floor** path (snap-cap → present → OT aspirate) against the soft-limit-safe `pick_place` primitives, so a verdict gates a real motion (Q-EXEC-1, the last blocker); (3) script **one deliberate failure injection** on `cap_removed` or `tube_aligned` for the reveal (Q-DEMO-1) — now genuinely possible, because the verifier can fail.
-- **DECIDE (Q-CALIB-1 / Q-FUSE-1):** the fused world positions are only right once cameras are calibrated (hand-eye/world-frame still `TODO`). Decide the **minimum** real calibration for the demo — taught poses + kinematics may be enough to make `_execute` + the verifiers honest without a full fiducial world frame.
-
-**Opposing view (steelman).** Uncommitted-but-real is a far better place to stand than committed-but-stub: the hard thinking (predicates, gating, fusion geometry, tests) is done and correct, and committing plus wiring one motion path is an hour of low-risk work. On this read the cycle didn't underdeliver — it front-loaded the intellectually hard part and left the mechanical part for last. Fair — but "done on disk" has a way of not surviving to the demo machine; treat the commit as this cycle's actual deliverable, not a formality.
-
-**Verdict:** The plot finally advanced — the verification thesis is real code with real tests, not a slide. The demo is now one commit and one wired motion path away from crossing from *proof-of-concept* to *proof*. Do those two things and nothing else.
 
 ### 2026-07-26T00:10Z — Third cycle: the dexterity half got genuinely good; the scored half is still a stub
 
