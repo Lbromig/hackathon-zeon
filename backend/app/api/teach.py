@@ -270,19 +270,13 @@ def _assert_reachable_in_one_move(arm: ArmDriver, target: Pose) -> float:
         if not math.isfinite(value):
             raise ValueError(f"target {name} must be a finite number, got {value!r}")
     jump = _distance(current, target)
-    # A limit of 0 (or non-finite) means "no ceiling", and that is the default: waypoints
-    # on this bench are further apart than any fixed ceiling worth picking — the tube
-    # transfer to table transfer move is 563 mm and 84°, which a 250 mm / 90° cap refused
-    # outright. The travel and rotation are still computed and still reported to the UI, so
-    # the operator sees the size of the move before committing to it; they are just no
-    # longer refused. Set HZ_MAX_MOVE_TO_JUMP / HZ_MAX_MOVE_TO_ROTATION to restore a cap.
-    if _limit_active(arm.limits.max_move_to_jump) and not jump <= arm.limits.max_move_to_jump:
+    if not jump <= arm.limits.max_move_to_jump:
         raise ValueError(
             f"target is {jump:.0f} mm away, over the {arm.limits.max_move_to_jump:g} mm "
             "single-move limit — jog closer first"
         )
     turn = _rotation_delta(current, target)
-    if _limit_active(MAX_MOVE_TO_ROTATION_DEG) and not turn <= MAX_MOVE_TO_ROTATION_DEG:
+    if not turn <= MAX_MOVE_TO_ROTATION_DEG:
         raise ValueError(
             f"target rotates {turn:.0f}°, over the {MAX_MOVE_TO_ROTATION_DEG:g}° "
             "single-move limit — jog the wrist closer first"
