@@ -32,8 +32,7 @@ import time
 sys.path.insert(0, ".")
 
 from drivers.opentrons.driver import OpentronsDriver  # noqa: E402
-
-DEFAULT_PORT = "/dev/cu.usbmodem11201"
+from scripts import require_port  # noqa: E402
 STORE = pathlib.Path("hardware/ot_one_envelope.json")
 
 # Confirmed good by earlier runs this session, as half-travel from centre.
@@ -68,7 +67,8 @@ def show(data: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default=DEFAULT_PORT)
+    ap.add_argument("--port", default=None,
+                    help="serial port; detected from /dev/cu.usbmodem* if omitted")
     ap.add_argument("--axis", choices=["X", "Y", "Z", "A"])
     ap.add_argument("--start", type=float, help="first trial distance, mm")
     ap.add_argument("--step", type=float, default=20.0, help="growth per trial, mm")
@@ -89,8 +89,9 @@ def main() -> int:
     axis = args.axis
     start = args.start if args.start is not None else data["confirmed_mm"].get(axis, 20.0)
 
-    d = OpentronsDriver("ot-one-envelope", {"port": args.port})
-    print(f"connecting to {args.port} ...")
+    port = require_port(args.port)
+    d = OpentronsDriver("ot-one-envelope", {"port": port})
+    print(f"connecting to {port} ...")
     d.connect()
     print(f"  connected: {d.info.name}\n")
     print(f"Growing {axis} from {start:.0f} mm in {args.step:.0f} mm steps, "

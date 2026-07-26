@@ -232,16 +232,41 @@ class RemoteCameraDriver(CameraDriver):
     def _read_stream(self) -> None:
         req = urllib.request.Request(self.stream_url, headers={"Accept": "multipart/x-mixed-replace"})
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-            self._set_error("")
-            buf = b""
-            while not self._stop.is_set():
-                chunk = resp.read(65536)
-                if not chunk:
-                    raise DriverError("stream closed by the remote backend")
-                buf += chunk
-                buf = self._drain(buf)
-                if len(buf) > MAX_PART_BYTES:
-                    raise DriverError("multipart desync (no frame boundary found)")
+            # Publish the live response so disconnect() can close it from another
+            # thread. Without this the socket is only reachable from inside this
+            # frame, and _close_conn has nothing to close.
+            with self._conn_lock:
+                self._conn = resp
+            try:
+                self._set_error("")
+                buf = b""
+                while not self._stop.is_set():
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        raise DriverError("stream closed by the remote backend")
+                    buf += chunk
+                    buf = self._drain(buf)
+                    if len(buf) > MAX_PART_BYTES:
+                        raise DriverError("multipart desync (no frame boundary found)")
+            finally:
+                with self._conn_lock:
+                    self._conn = None
+
+    def _close_conn(self) -> None:
+        """Close the in-flight response so a blocked ``read()`` returns immediately.
+
+        Called from ``disconnect()`` on another thread. Closing mid-read makes the
+        reader raise, which ``_pump`` handles as a stream error — the right outcome
+        here, because ``_stop`` is already set, so it exits instead of retrying.
+        """
+        with self._conn_lock:
+            conn, self._conn = self._conn, None
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception:
+            pass    # already closed, or the read tore it down first
 
     def _drain(self, buf: bytes) -> bytes:
         """Pull every complete JPEG out of `buf`, returning the unconsumed tail."""

@@ -31,8 +31,7 @@ from drivers.opentrons.driver import (  # noqa: E402
     DriverError,
     OpentronsDriver,
 )
-
-DEFAULT_PORT = "/dev/cu.usbmodem11201"
+from scripts import require_port  # noqa: E402
 
 
 def legs(dx: float, dy: float) -> list[tuple[str, float]]:
@@ -150,7 +149,8 @@ def chunk(delta: float, cap: float) -> list[float]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default=DEFAULT_PORT)
+    ap.add_argument("--port", default=None,
+                    help="serial port; detected from /dev/cu.usbmodem* if omitted")
     ap.add_argument("--x", type=float, default=60.0, help="box width in mm")
     ap.add_argument("--y", type=float, default=40.0, help="box depth in mm")
     ap.add_argument("--laps", type=int, default=1)
@@ -195,8 +195,9 @@ def main() -> int:
         print("\ndry run, nothing moved.")
         return 0
 
-    d = OpentronsDriver("ot-one-tour", {"port": args.port})
-    print(f"connecting to {args.port} ...")
+    port = require_port(args.port)
+    d = OpentronsDriver("ot-one-tour", {"port": port})
+    print(f"connecting to {port} ...")
     d.connect()
     print(f"  connected: {d.info.name}\n")
     # Corner blending: junction_deviation is absent from this board's config, so
