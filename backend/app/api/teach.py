@@ -250,6 +250,12 @@ def _assert_reachable_in_one_move(arm: ArmDriver, target: Pose) -> float:
             f"target rotates {turn:.0f}°, over the {MAX_MOVE_TO_ROTATION_DEG:g}° "
             "single-move limit — jog the wrist closer first"
         )
+    # Cartesian targets must also respect the joint soft limits, or a limit added to
+    # keep end-effector tooling clear of the arm can be walked straight past by a
+    # move_to. Advisory (IK picks one branch) but it catches the common case.
+    reason = arm.check_pose_target(target)
+    if reason:
+        raise ValueError(reason)
     return jump
 
 

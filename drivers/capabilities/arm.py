@@ -113,6 +113,15 @@ class ArmDriver(InstrumentDriver):
     def clear_errors(self) -> None:
         """Clear latched faults/warnings and return the arm to a movable state."""
 
+    def set_free_drive(self, on: bool = True) -> None:
+        """Enter or leave hand-guiding mode, where the arm can be pushed by hand.
+
+        Not every arm has one. Implementations must guarantee that programmed motion
+        is impossible while it is active, and callers must always turn it back off —
+        commanded moves do not behave normally in a teaching mode.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no free-drive mode")
+
     # --- cartesian ---------------------------------------------------------
     @abstractmethod
     def get_pose(self) -> Pose: ...
@@ -139,6 +148,15 @@ class ArmDriver(InstrumentDriver):
     def move_joints_relative(self, deltas: list[float], speed: float | None = None,
                              wait: bool = True) -> None:
         """Relative joint move. ``deltas`` in deg, one per axis."""
+
+    def check_pose_target(self, pose: Pose) -> str | None:
+        """Pre-flight a cartesian target. Returns a reason string, or None if fine.
+
+        Base implementation has no kinematic model, so it can only pass. Drivers that
+        can solve IK should check the resulting joint angles against the soft limits —
+        otherwise cartesian moves silently bypass every joint limit.
+        """
+        return None
 
     def check_joint_target(self, angles: list[float]) -> str | None:
         """Pre-flight a joint target. Returns a reason string, or None if it's fine.

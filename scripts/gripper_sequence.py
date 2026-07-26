@@ -72,6 +72,7 @@ class Options:
     pause: float = DEFAULT_PAUSE_S
     combine: bool = False
     axis: str = "x"
+    restore: bool = True
 
 
 @dataclass
@@ -121,7 +122,19 @@ def build_sequence(start: Pose, opt: Options) -> list[Action]:
         ]
     actions.append(Action("6b close gripper", grip=GRIP_CLOSED,
                           notes="closes fully — the jaws must be empty"))
+    if opt.restore:
+        # Without this the sequence is NOT idempotent: it adds `yaw` degrees every
+        # run, so each re-run starts further round than the last and eventually
+        # folds the wrist back far enough for end-effector tooling to foul the arm.
+        # Observed for real: two consecutive runs tripped collision error 31.
+        actions.append(Action("7  restore start orientation", pose=lowered_at_start_yaw(
+            start, opt), notes="makes the sequence safe to re-run"))
     return actions
+
+
+def lowered_at_start_yaw(start: Pose, opt: Options) -> Pose:
+    """Final pose of the sequence, but with the original orientation restored."""
+    return _pose(start, z=opt.approach - opt.descend)
 
 
 def _fmt(p: Pose) -> str:
@@ -131,6 +144,31 @@ def _fmt(p: Pose) -> str:
 
 def _dist(a: Pose, b: Pose) -> float:
     return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
+
+def _preflight(driver: XArmDriver, sequence: list[Action]) -> None:
+    """Check every pose in the sequence before issuing the first command.
+
+    Checking as you go is not good enough: by the time step 5b is refused the arm has
+    already gripped and moved, and unwinding that safely is its own problem. Solve
+    IK for all targets up front and refuse the whole run if any one of them lands
+    outside the joint soft limits.
+    """
+    problems = []
+    for action in sequence:
+        if action.pose is None:
+            continue
+        reason = driver.check_pose_target(action.pose)
+        if reason:
+            problems.append(f"{action.label.strip()}: {reason}")
+    if problems:
+        raise RuntimeError(
+            "sequence refused before any motion — "
+            + "; ".join(problems)
+            + ". Jog the arm to a less folded starting pose, or narrow the yaw change."
+        )
+    print(f"  pre-flight: all {sum(1 for a in sequence if a.pose)} pose targets "
+          f"solve within the joint soft limits")
 
 
 def _require_healthy(driver: XArmDriver, when: str) -> None:
@@ -148,7 +186,7 @@ def _require_healthy(driver: XArmDriver, when: str) -> None:
                            f"(warn={status.get('warn_code')})")
 
 
-def run(ip: str, name: str, opt: Options, *, execute: bool) -> bool:
+def run(ip: str, name: str, opt: Options, *, execute: bool, brake: bool = True) -> bool:
     label = name or ip
     print(f"\n=== Gripper + move sequence: '{label}' @ {ip} ===")
     print(f"  {opt.speed:g} mm/s linear, {DEFAULT_ROT_SPEED:g} deg/s rotational, "
@@ -192,7 +230,10 @@ def run(ip: str, name: str, opt: Options, *, execute: bool) -> bool:
                 "this sequence needs the parallel gripper"
             )
 
-        for action in build_sequence(start, opt):
+        sequence = build_sequence(start, opt)
+        _preflight(driver, sequence)
+
+        for action in sequence:
             time.sleep(opt.pause)
             if action.grip is not None:
                 driver.grip(width=action.grip)
@@ -216,17 +257,24 @@ def run(ip: str, name: str, opt: Options, *, execute: bool) -> bool:
             _require_healthy(driver, f"after '{action.label.strip()}'")
 
         print(f"  final pose: {_fmt(driver.get_pose())}")
-        print("  PASS: all 8 actions completed within tolerance, no faults")
-        return True
+        print(f"  PASS: all {len(sequence)} actions completed within tolerance, no faults")
+        ok = True
     except KeyboardInterrupt:
-        print("\n  ABORTED by operator (Ctrl-C) — braking")
-        return False
+        print("\n  ABORTED by operator (Ctrl-C)")
+        ok = False
     except Exception as e:
         print(f"  FAIL: {type(e).__name__}: {e}")
-        return False
+        ok = False
     finally:
-        driver.disconnect()   # also brakes the arm
-        print(f"  [{label}] disconnected (arm braked)")
+        # Only hand the arm over energized on a clean pass. After a fault or an abort
+        # the arm may be mid-trajectory or in a pose nobody vetted, and leaving that
+        # live is the wrong default however the run was invoked.
+        hand_over_live = brake is False and ok
+        driver.disconnect(brake=not hand_over_live)
+        print(f"  [{label}] disconnected — "
+              + ("arm left ENERGIZED and holding (no brake cycle, no clunk)"
+                 if hand_over_live else "arm braked (servos off)"))
+    return ok
 
 
 def main() -> int:
@@ -250,8 +298,17 @@ def main() -> int:
                     help=f"seconds between steps (default {DEFAULT_PAUSE_S:g})")
     ap.add_argument("--combine", action="store_true",
                     help="fuse each translate+rotate into one command instead of two")
+    ap.add_argument("--no-restore", action="store_true",
+                    help="skip the final move back to the starting orientation. Without the "
+                         "restore, each run adds --yaw degrees and re-running walks the wrist "
+                         "round until tooling fouls the arm")
     ap.add_argument("--yes", action="store_true",
                     help="actually move the arm; without this it's a dry run")
+    ap.add_argument("--leave-enabled", action="store_true",
+                    help="leave the servos energized and holding instead of braking. "
+                         "Skips the brake engage/release cycle entirely, so no clunk and the "
+                         "next run starts smoothly. The arm stays live — don't leave it "
+                         "unattended this way")
     args = ap.parse_args()
 
     for field_name in ("distance", "approach", "descend"):
@@ -267,13 +324,13 @@ def main() -> int:
 
     opt = Options(distance=args.distance, approach=args.approach, descend=args.descend,
                   yaw=args.yaw, speed=args.speed, pause=args.pause,
-                  combine=args.combine, axis=args.axis)
+                  combine=args.combine, axis=args.axis, restore=not args.no_restore)
 
     if args.yes:
         print(f"MOVING the arm at {args.ip} within a "
               f"{max(args.distance, args.approach):g} mm envelope — workspace must be clear, "
               f"jaws must be empty.")
-    ok = run(args.ip, args.name, opt, execute=args.yes)
+    ok = run(args.ip, args.name, opt, execute=args.yes, brake=not args.leave_enabled)
     print(f"\n=== {'PASS' if ok else 'FAIL'} ===")
     return 0 if ok else 1
 
