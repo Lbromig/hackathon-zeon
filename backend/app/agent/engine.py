@@ -9,8 +9,14 @@ Events are emitted in the **same dict shape** as ``uncap_aspirate.run`` so the
 existing UI / ``/ws/workflow`` consumers keep working unchanged:
 
     {"step", "phase", "attempt", ...}   phase in
-      started | verifying | passed | failed | retrying
+      started | verifying | passed | failed | retrying | escalated
     plus an additive "checkpoint" phase and a terminal "stopped" phase.
+
+``escalated`` is terminal and is not the same outcome as ``failed``. failed means
+the motion ran up to max_attempts and verification never passed, so retrying was
+at least the right thing to have tried. escalated means two independent sensor
+channels contradict each other, so the physical state is unknown and there is
+nothing to retry.
 
 ``run()`` is a *blocking synchronous generator* on purpose: the websocket layer runs
 it off the event loop in a thread and streams the yielded events (see api/agent.py).
@@ -128,6 +134,24 @@ class Engine:
             self._last_skill = skill
             self._last_result = result
             self._history.append({"skill": skill, "attempt": attempt, "verification": result})
+
+            # Contradicting sensor channels, checked ahead of both the pass and
+            # the retry budget, for the same reasons as uncap_aspirate.run: a
+            # retry assumes we know the state we are starting from, and a
+            # contradiction is precisely not knowing it. Repeating an unscrew
+            # when depth says the cap is still on and torque says it came off
+            # makes whichever is true worse. The pass is checked second because
+            # no confidence makes an unknown physical state green.
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            if "disagreement" in data:
+                yield {"step": skill, "phase": "escalated", "attempt": attempt,
+                       "verification": result,
+                       "disagreement": data["disagreement"],
+                       "detail": "sensor channels contradict, so the physical state "
+                                 "is unknown; not retrying, needs a human"}
+                yield {"phase": "stopped",
+                       "reason": f"sensor channels contradict for {skill!r}"}
+                return True
 
             if result["ok"]:
                 self._passed[skill] = True

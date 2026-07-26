@@ -30,6 +30,11 @@ PASS_THRESHOLD = 0.60
 # A single channel can never exceed this, so one signal alone cannot outrank
 # two that agree.
 SINGLE_CHANNEL_CAP = 0.70
+# Two channels at least this far apart are treated as contradicting each other
+# rather than averaged. TUNABLE: set so that a confident negative (0.0) always
+# conflicts with any channel that would otherwise pass on its own. No bench
+# measurement backs the exact value.
+DISAGREEMENT_SPREAD = 0.50
 
 
 @dataclass
@@ -99,12 +104,42 @@ def _wrist_effort(snapshot: dict[str, Any], device_id: str) -> float | None:
 
 
 def _fuse(channels: dict[str, float]) -> float:
-    """Combine per-channel confidences. One channel alone is capped."""
+    """Combine per-channel confidences. One channel alone is capped.
+
+    Only valid once the channels are known to roughly concur. Averaging
+    contradictory channels produces a middling number that describes neither of
+    them, so callers must check ``_conflict`` first.
+    """
     if not channels:
         return 0.0
     if len(channels) == 1:
         return min(next(iter(channels.values())), SINGLE_CHANNEL_CAP)
     return sum(channels.values()) / len(channels)
+
+
+def _conflict(channels: dict[str, float]) -> tuple[str, str] | None:
+    """The most extreme pair of channels, when they contradict each other.
+
+    Averaging assumes the channels are measuring the same thing and roughly
+    agreeing. When they are far apart that assumption is false: two independent
+    observations of one event are telling opposite stories, and the mean hides
+    precisely the case an operator needs to see.
+
+    The concrete failure this prevents: depth is the only channel that measures
+    the tube rather than a proxy for it, and a confident CAP_ON scores 0.0. With
+    torque at 0.9 and vision at 0.9 the mean is 0.600, which clears
+    PASS_THRESHOLD exactly, so the agent used to report the cap removed while the
+    one channel that actually looked at the tube said it was still on.
+
+    Returns ``(higher_channel, lower_channel)`` or None.
+    """
+    if len(channels) < 2:
+        return None
+    hi = max(channels, key=lambda k: channels[k])
+    lo = min(channels, key=lambda k: channels[k])
+    if channels[hi] - channels[lo] >= DISAGREEMENT_SPREAD:
+        return hi, lo
+    return None
 
 
 def _marker_centre(frame: Any, marker_id: int) -> tuple[float, float] | None:
@@ -127,6 +162,11 @@ def _marker_centre(frame: Any, marker_id: int) -> tuple[float, float] | None:
     except Exception:
         return None
     return None
+
+
+def _norm(delta: tuple[float, float]) -> float:
+    """Euclidean length of an image-space displacement."""
+    return (delta[0] * delta[0] + delta[1] * delta[1]) ** 0.5
 
 
 def _frame_diagonal(frame: Any) -> float | None:
@@ -185,15 +225,41 @@ class CapRemovedAgent(VerificationAgent):
             data |= {"torque_peak_nm": peak, "torque_final_nm": final, "torque_drop": drop}
 
         # --- vision channel ---
+        # Marker displacement alone cannot tell "the cap moved" from "the camera
+        # moved" or "somebody nudged the bench". Both translate the cap marker
+        # across the image identically. When a static datum marker is supplied we
+        # subtract its displacement, which is textbook common-mode rejection: the
+        # part of the motion shared by a fixed reference is not the cap moving.
         before_c = _marker_centre(evidence.before_frames.get(cam), self.CAP_MARKER_ID)
         after_c = _marker_centre(evidence.frames.get(cam), self.CAP_MARKER_ID)
         diag = _frame_diagonal(evidence.frames.get(cam))
         if before_c and after_c and diag:
-            travel = (
-                (after_c[0] - before_c[0]) ** 2 + (after_c[1] - before_c[1]) ** 2
-            ) ** 0.5 / diag
+            delta = (after_c[0] - before_c[0], after_c[1] - before_c[1])
+            datum_id = evidence.expected.get("datum_marker_id")
+            referenced = False
+            if datum_id is not None:
+                d_before = _marker_centre(evidence.before_frames.get(cam), int(datum_id))
+                d_after = _marker_centre(evidence.frames.get(cam), int(datum_id))
+                if d_before and d_after:
+                    d_delta = (d_after[0] - d_before[0], d_after[1] - d_before[1])
+                    data["datum_marker_travel"] = _norm(d_delta) / diag
+                    delta = (delta[0] - d_delta[0], delta[1] - d_delta[1])
+                    referenced = True
+                else:
+                    notes.append(
+                        f"datum marker {int(datum_id)} not tracked on {cam!r}, so cap "
+                        "travel is unreferenced and a camera or bench move would read "
+                        "as the cap moving"
+                    )
+            else:
+                notes.append(
+                    "no datum_marker_id supplied, so cap travel is unreferenced and "
+                    "cannot be told apart from a camera or bench move"
+                )
+            travel = _norm(delta) / diag
             channels["vision"] = _ramp(travel, self.MOVE_LO, self.MOVE_HI)
             data["cap_marker_travel"] = travel
+            data["vision_datum_referenced"] = referenced
         else:
             notes.append(f"cap marker {self.CAP_MARKER_ID} not tracked on {cam!r}")
 
@@ -222,9 +288,33 @@ class CapRemovedAgent(VerificationAgent):
             return VerificationResult(
                 False, 0.0, "no usable evidence: " + "; ".join(notes), data)
 
-        confidence = _fuse(channels)
         data["channels"] = channels
-        detail = ", ".join(f"{k}={v:.2f}" for k, v in channels.items())
+        summary = ", ".join(f"{k}={v:.2f}" for k, v in channels.items())
+
+        # Contradiction is its own outcome, ahead of fusion. Two channels this
+        # far apart cannot both be right, and their mean describes neither, so
+        # there is no confidence to report and nothing for the orchestrator to
+        # retry blindly. Stop and surface it.
+        conflict = _conflict(channels)
+        if conflict is not None:
+            hi, lo = conflict
+            spread = channels[hi] - channels[lo]
+            data["disagreement"] = {
+                "high": hi, "low": lo, "spread": spread,
+                "would_have_fused_to": _fuse(channels),
+            }
+            detail = (
+                f"channels contradict: {hi}={channels[hi]:.2f} vs {lo}={channels[lo]:.2f} "
+                f"(spread {spread:.2f} >= {DISAGREEMENT_SPREAD:.2f}). Independent "
+                f"observations of the same event disagree, so this needs a human "
+                f"rather than an average [{summary}]"
+            )
+            if notes:
+                detail += " (" + "; ".join(notes) + ")"
+            return VerificationResult(False, 0.0, detail, data)
+
+        confidence = _fuse(channels)
+        detail = summary
         if notes:
             detail += " (" + "; ".join(notes) + ")"
         return VerificationResult(confidence >= PASS_THRESHOLD, confidence, detail, data)

@@ -54,9 +54,22 @@ class Skill:
     def verifier(self) -> str:
         return self.step.verifier
 
-    def run(self, dm: DeviceManager, params: dict[str, Any] | None = None) -> None:
-        """Deterministic execution: map capability -> driver calls (P0 ignores params)."""
-        uncap_aspirate._execute(self.step, dm)
+    def run(
+        self,
+        dm: DeviceManager,
+        params: dict[str, Any] | None = None,
+        sample: uncap_aspirate.Sampler = uncap_aspirate._no_sample,
+    ) -> None:
+        """Deterministic execution: map capability -> driver calls (P0 ignores params).
+
+        ``sample`` is the during-trace hook, forwarded to the motion code.
+        CapRemovedAgent looks for the unscrewing torque peak in
+        ``Evidence.during``, and that peak only exists while the wrist is loaded,
+        so it has to be recorded from inside the step rather than after it. This
+        path used to drop the hook, which left the torque channel reporting
+        "wrist never loaded" on every run no matter what the arm did.
+        """
+        uncap_aspirate._execute(self.step, dm, sample)
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -99,6 +112,8 @@ class Toolbox:
         # verify as two separate tools, so without stashing this the before-state is
         # gone by the time we verify — and the verifiers measure *change*.
         self._pre: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+        # skill name -> telemetry snapshots taken while that skill was running.
+        self._during: dict[str, list[dict[str, Any]]] = {}
 
     # --- read tools -------------------------------------------------------- #
     def get_world_model(self) -> dict[str, Any]:
@@ -121,7 +136,12 @@ class Toolbox:
         # Captured before the motion so verify() can measure the change it caused.
         self._pre[name] = (uncap_aspirate._telemetry(skill.step, self._dm),
                            uncap_aspirate._frames(self._dm))
-        skill.run(self._dm, params or {})
+        # And sampled during it, for the same reason uncap_aspirate.run does:
+        # a torque peak is gone by the time the step returns.
+        during: list[dict[str, Any]] = []
+        self._during[name] = during
+        skill.run(self._dm, params or {},
+                  uncap_aspirate._sampler(skill.step, self._dm, during))
         return {
             "skill": name,
             "status": "executed",
@@ -142,6 +162,7 @@ class Toolbox:
             telemetry=uncap_aspirate._telemetry(skill.step, self._dm),
             before=before,
             before_frames=before_frames,
+            during=self._during.get(step, []),
             expected=dict(skill.step.params),
         )
         result = agent.verify(evidence)
