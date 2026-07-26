@@ -12,8 +12,6 @@ import type {
   ArmState,
   ArmSummary,
   PathRecordState,
-  PreflightResult,
-  RequiredPose,
   TaughtPath,
   TaughtPose,
 } from "../api/teach";
@@ -58,10 +56,6 @@ const arms = ref<ArmSummary[]>([]);
 const selectedId = ref<string>(localStorage.getItem("teach.arm") ?? "");
 const state = ref<ArmState | null>(null);
 const poses = ref<TaughtPose[]>([]);
-// Workflow readiness. Fleet-wide, not per-arm: the checklist covers both arms, so
-// switching the selected arm must not clear it.
-const required = ref<RequiredPose[]>([]);
-const preflight = ref<PreflightResult | null>(null);
 // Hand-taught travel routes, and whether one is being recorded right now.
 const paths = ref<TaughtPath[]>([]);
 const recording = ref<PathRecordState | null>(null);
@@ -152,17 +146,6 @@ async function refreshPoses() {
   }
 }
 
-/** Refresh the workflow checklist + readiness banner. Cheap: no hardware I/O. */
-async function refreshReadiness() {
-  try {
-    const result = await api.getPreflight();
-    preflight.value = result;
-    required.value = result.required;
-  } catch {
-    /* readiness is advisory in the UI; the workflow re-checks it before moving */
-  }
-}
-
 async function tick() {
   if (polling || !selectedId.value || document.hidden) return;
   polling = true;
@@ -230,7 +213,6 @@ async function savePose(name: string, note = "") {
   try {
     poses.value = await api.savePose(selectedId.value, name, note);
     pushLog(`save pose "${name}"`, true, "", startedAt);
-    void refreshReadiness(); // a saved pose may have just completed the checklist
     return true;
   } catch (e) {
     pushLog(`save pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
@@ -243,7 +225,6 @@ async function deletePose(name: string) {
   try {
     poses.value = await api.deletePose(selectedId.value, name);
     pushLog(`delete pose "${name}"`, true, "", startedAt);
-    void refreshReadiness();
   } catch (e) {
     pushLog(`delete pose "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
   }
@@ -333,8 +314,6 @@ export function useTeach() {
     selectedId,
     state,
     poses,
-    required,
-    preflight,
     paths,
     recording,
     log,
@@ -349,7 +328,6 @@ export function useTeach() {
     stopPolling,
     refreshArms,
     refreshPoses,
-    refreshReadiness,
     refreshPaths,
     select,
     persistSettings,

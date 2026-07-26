@@ -183,22 +183,6 @@ class CapRequest(FiniteModel):
     speed: float | None = None    # deg/s for the wrist turns
 
 
-class RequiredPose(BaseModel):
-    """A pose the hero workflow needs, and whether it has been taught yet."""
-    device: str
-    name: str
-    step: str                     # which workflow step consumes it
-    order: int                    # position within that step's choreography
-    note: str = ""                # why the choreography visits it
-    taught: bool = False
-    saved_at: str = ""
-
-
-class PreflightResult(BaseModel):
-    ok: bool
-    problems: list[str] = []
-    required: list[RequiredPose] = []
-
 
 class JogRequest(FiniteModel):
     space: Literal["cartesian", "joint"] = "cartesian"

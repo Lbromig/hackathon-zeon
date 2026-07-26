@@ -2,8 +2,6 @@
 import { ref } from "vue";
 import { useFleet } from "./composables/useFleet";
 import { connectAll } from "./api/client";
-import InstrumentPanel from "./components/InstrumentPanel.vue";
-import WorkflowRunner from "./components/WorkflowRunner.vue";
 import TeachPanel from "./components/teach/TeachPanel.vue";
 import CameraTab from "./components/cameras/CameraTab.vue";
 import WorldMapTab from "./components/worldmap/WorldMapTab.vue";
@@ -50,11 +48,16 @@ function select(next: Tab) {
     </nav>
 
     <main class="mt-5">
-      <div v-if="tab === 'fleet'" class="grid items-start gap-5 lg:grid-cols-[2fr_1fr]">
-        <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <InstrumentPanel v-for="d in instruments" :key="d.id" :device="d" />
-        </section>
-        <aside><WorkflowRunner /></aside>
+      <!-- Placeholder. S6 replaces this shell with a router + the workflow tab
+           (R-UI-1); the device cards' raw-status-JSON view and the "Run uncap ->
+           aspirate" button both went with the executor they drove. -->
+      <div v-if="tab === 'fleet'" class="card">
+        <h2 class="card-title">Fleet</h2>
+        <ul class="mt-2 space-y-1 text-sm text-deck-100">
+          <li v-for="d in instruments" :key="d.id" class="num">
+            {{ d.id }} · {{ d.kind }} · {{ d.state }}
+          </li>
+        </ul>
       </div>
 
       <!-- v-if, not v-show: unmounting stops the teach poller when you leave the tab,

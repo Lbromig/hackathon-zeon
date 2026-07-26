@@ -75,24 +75,6 @@ export interface TaughtPose {
   saved_at: string;
 }
 
-/** A pose the hero workflow needs. Derived server-side from the choreography, so
- *  this list cannot drift from what the workflow actually visits. */
-export interface RequiredPose {
-  device: string;
-  name: string;
-  step: string;
-  order: number;
-  note: string;
-  taught: boolean;
-  saved_at: string;
-}
-
-export interface PreflightResult {
-  ok: boolean;
-  problems: string[];
-  required: RequiredPose[];
-}
-
 export type JogSpace = "cartesian" | "joint";
 export const CARTESIAN_AXES = ["x", "y", "z", "roll", "pitch", "yaw"] as const;
 export type CartesianAxis = (typeof CARTESIAN_AXES)[number];
@@ -223,8 +205,3 @@ export const capAction = (
   action: CapAction,
   opts: { half_turns?: number; width?: number; speed?: number } = {},
 ) => post<ActionResult>(`/api/arms/${id}/cap`, { action, ...opts });
-
-// Workflow readiness. Lives under /api/workflow but is consumed by the teach tab:
-// the checklist is what gets the operator from "nothing taught" to a green pre-flight.
-export const listRequiredPoses = () => request<RequiredPose[]>("/api/workflow/required_poses");
-export const getPreflight = () => request<PreflightResult>("/api/workflow/preflight");
