@@ -197,6 +197,27 @@ class CapRemovedAgent(VerificationAgent):
         else:
             notes.append(f"cap marker {self.CAP_MARKER_ID} not tracked on {cam!r}")
 
+        # --- depth channel ---
+        # A third, independent channel, and the only one that measures the thing
+        # itself rather than a proxy for it. The marker channel needs a fiducial
+        # on the cap to stay stuck and in view, which is the first thing a wet
+        # bench takes away; the torque channel infers from the arm rather than
+        # observing the tube. Height at the mouth is geometry: uncapping uncovers
+        # a surface 15 to 20 mm further away whatever the lighting does.
+        #
+        # Needs a reference captured while capped, so it is silent rather than
+        # failing when one was never taken. See depth_height.py.
+        depth_channel, depth_data, depth_note = self._depth_channel(evidence)
+        # Record what depth saw even when it abstains. An inconclusive read is
+        # when the measured delta and the valid-pixel fraction are most worth
+        # having, because they are what tell you the region drifted off the
+        # mouth rather than the cap not moving.
+        data |= depth_data
+        if depth_channel is not None:
+            channels["depth"] = depth_channel
+        elif depth_note:
+            notes.append(depth_note)
+
         if not channels:
             return VerificationResult(
                 False, 0.0, "no usable evidence: " + "; ".join(notes), data)
@@ -207,6 +228,46 @@ class CapRemovedAgent(VerificationAgent):
         if notes:
             detail += " (" + "; ".join(notes) + ")"
         return VerificationResult(confidence >= PASS_THRESHOLD, confidence, detail, data)
+
+    def _depth_channel(
+        self, evidence: Evidence
+    ) -> tuple[float | None, dict[str, Any], str]:
+        """Confidence from the height delta at the tube mouth.
+
+        Returns (confidence or None, data, note). None means the channel had
+        nothing to say, which is not a failure: the other channels still decide.
+        """
+        from .depth_height import HeightStat, Verdict, compare, measure_region
+
+        frame = evidence.frames.get("depth")
+        scale = evidence.expected.get("depth_scale")
+        roi = evidence.expected.get("cap_roi")
+        reference = evidence.expected.get("cap_reference")
+
+        if frame is None or scale is None or roi is None or reference is None:
+            return None, {}, "no depth reference for the tube mouth"
+        if not isinstance(reference, HeightStat):
+            return None, {}, "cap_reference is not a HeightStat"
+
+        try:
+            observed = measure_region(frame, float(scale), tuple(roi))
+        except Exception as exc:
+            return None, {}, f"depth measurement failed: {exc}"
+
+        check = compare(reference, observed)
+        info = {
+            "depth_delta_mm": round(check.delta_mm, 2),
+            "depth_verdict": check.verdict.value,
+            "depth_valid_fraction": round(observed.valid_fraction, 3),
+        }
+        # UNKNOWN contributes nothing rather than contributing zero. A zero would
+        # drag the fused average down and let an unreadable region veto two
+        # channels that did see something.
+        if check.verdict is Verdict.UNKNOWN:
+            return None, info, f"depth inconclusive: {check.detail}"
+        if check.verdict is Verdict.CAP_ON:
+            return 0.0, info, ""
+        return check.confidence, info, ""
 
 
 class GraspSecureAgent(VerificationAgent):
