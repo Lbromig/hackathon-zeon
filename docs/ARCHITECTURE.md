@@ -39,7 +39,7 @@ flowchart TB
       RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
     end
     WM[World model · twin · RLock-guarded<br/>core/worldmodel + services/twin · lock&#40;&#41; for atomic seq<br/>populated after /ws/calibrate · placeholder poses]:::be
-    KIN[Arm FK → twin · REAL on-disk · UNCOMMITTED<br/>core/kinematics + services/kinematics @12Hz<br/>live arm TCP → &#123;arm&#125;_tcp.local · moving parts move<br/>reparent-on-grasp still NOT wired]:::be
+    KIN[Arm FK → twin · REAL · COMMITTED &#40;8a52ec4&#41;<br/>core/kinematics + services/kinematics @12Hz<br/>live arm TCP → &#123;arm&#125;_tcp.local · wired in lifespan<br/>reparent-on-grasp now WRITTEN &#40;working tree&#41;]:::be
     BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
     REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
@@ -173,11 +173,13 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   remain `TODO` (`connect()` stores `object()`, `_send()` returns `None`; a `feat/ot-one-serial-driver` branch
   exists on `origin` but is **not merged** here), so the wired `aspirate` no-ops on hardware — no real aspirate
   has run, and the narrative climax mimes until the serial transport lands (Q-OT-1). Bench teaching of the floor
-  choreography's **12 poses has begun** on the real rig: `data/teach_poses.json` (gitignored) is now present on
-  disk with **2 of 12 poses taught** (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z);
-  the remaining 10 poses and the entire **left** arm are untaught, so `preflight` still correctly **refuses to
-  run** the full choreography (Q-POSES-1) — a green test suite is not a moving demo, but a real arm is now being
-  taught. Calibration's **fixed-camera `world_frame` step is now committed** (`cfa8aac`, last cycle's recommendation done):
+  choreography's poses **unstalled this cycle**: `data/teach_poses.json` (gitignored) now holds **8 taught poses across
+  both arms** — right (6): `cap_grasp_approach`, `cap_grasp`, `tube_grasp_approach`, `tube_grasp`, `transport_safe`,
+  `present_approach`; **left (2, newly taught): `tube_hold_approach`, `tube_hold`** (saved 2026-07-26T05:14–05:24Z). The
+  **second arm is finally being taught** — the four-review right-arm-only stall is broken. Still untaught: at least
+  `cap_lift`, `cap_dropoff`, `cap_dropoff_retreat` and the `present_ot`/aspirate poses, plus more left-arm poses, so
+  `preflight` still correctly **refuses to run** the full choreography until they are taught (Q-POSES-1) — but a real
+  two-arm bench is now actively being taught, on the critical path. Calibration's **fixed-camera `world_frame` step is now committed** (`cfa8aac`, last cycle's recommendation done):
   `core/calibration/world_board.py` defines a shared world frame from a two-tag board (`tag36h11` ids 210 & 211),
   `core/calibration/extrinsics.py::solve_world_cam` solves each fixed camera's `T_world_cam` against that board
   (hardware-free solver, synthetic round-trip test `backend/tests/test_extrinsics.py`), and `pipeline.py::_world_frame`
@@ -196,21 +198,24 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   their MJPEG endpoint — selected wholesale by `HZ_CAMERA_HOST` — so a second machine with no cameras plugged in runs the
   whole stack against the bench's viewpoints (frames enter at the driver layer, RGB-only so `has_depth` is False, honestly
   reports `live: True` and errors on a frozen stream; `backend/tests/test_camera_remote.py`).
-- **Twin↔physics coupling — the motion half is now written (on disk, UNCOMMITTED); the reparent half is still not (verifier-critical):**
-  This cycle an **arm-FK → twin loop** landed on disk with tests but **uncommitted / untracked** (`?? core/kinematics.py`,
-  `?? backend/app/services/kinematics.py`, `?? backend/tests/test_kinematics.py`; `main.py` modified to `kinematics.start()`).
-  `core.kinematics.update_arm_tcp` writes each connected arm's live TCP pose straight into `{arm}_tcp.local` at ~12 Hz, so
-  the twin's TCP / tool / on-arm `gripper_cam` now track the real arm — the moving parts finally move (and the world map
-  reflects where the arm really is). That closes the **motion→twin** half of the coupling *in code*, though it (a) is not in
-  git, so a clean checkout still lacks it, and (b) no-ops until calibration has built the `{arm}_tcp` entities and the arms
-  are connected. **The reparent half is still unwritten:** `WorldModel.reparent()` is exercised **only in tests**
-  (`test_worldmodel.py`, `test_integration_loop.py`, `test_verification.py`) — `grep` still finds **zero** `reparent` calls in
-  `backend/app/` or `core/` production code, and `_run_act`'s `grip`/`release` never attach the tube to the tool (nor
-  detach the cap). So the **parent-based** predicates — `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s
-  reparent clause — still can **never turn true from a real grasp**; the geometry verifiers (`tube_aligned` distance,
-  `cap_removed` separation) are the ones the moving twin now genuinely helps (Q-TWIN-COUPLING, Q-KIN-1; surfaced in the
-  team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the full intended coupling — the FK half now exists
-  on disk, the reparent half does not.
+- **Twin↔physics coupling — the motion half is now COMMITTED + wired; the reparent half is now WRITTEN (working tree, uncommitted):**
+  This cycle the **arm-FK → twin loop** was **committed** (`8a52ec4`): `core/kinematics.py`, `backend/app/services/kinematics.py`,
+  `backend/tests/test_kinematics.py`, and `main.py`'s `kinematics.start()` in the lifespan are all in git now — a clean checkout
+  has it. `core.kinematics.update_arm_tcp` writes each connected arm's live TCP pose straight into `{arm}_tcp.local` at ~12 Hz, so
+  the twin's TCP / tool / on-arm `gripper_cam` track the real arm (no-ops until calibration built the `{arm}_tcp` entities and the
+  arms are connected). **The reparent half is now written too — in the working tree, uncommitted:** `uncap_aspirate.py` gains
+  `_apply_twin_effect(act)` (called from `_run_act`), and the `CHOREOGRAPHY` `grip`/`release` acts now carry `attach=`/`to=` ids
+  (`grip attach="tube_1" to="left_tool"`, `grip attach="tube_1_cap" to="right_tool"`, `release attach="tube_1_cap" to="dropzone"`,
+  handover `grip attach="tube_1" to="right_tool"`), so a real grasp calls `wm.reparent(...)` in production for the first time. The
+  ids are **entity-consistent** — `tube_1`/`tube_1_cap` are seeded by `core/calibration/pipeline.py:125` and `left_tool`/`right_tool`/
+  `dropzone` exist in `definitions.py` — so the reparent will actually fire (it is guarded by `in wm.entities`, a silent no-op only if
+  the twin wasn't seeded). This means the **parent-based** predicates — `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s
+  reparent clause — can now turn true from a real grasp once this is committed and the twin is seeded. Both halves of the coupling now
+  exist in code; the only gap is that the reparent half is not yet in git (Q-TWIN-COUPLING, Q-KIN-1; surfaced in the team's
+  `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the full intended coupling — both halves now exist.
+- **Deployment simplified this cycle:** `8a52ec4` **removed** the Docker infra (`docker-compose.yml`, `docker/backend.Dockerfile`,
+  `docker/frontend.Dockerfile`, `.dockerignore`) — the stack now runs directly (backend `uv`/FastAPI + frontend `vite`), matching how
+  the hackathon bench is actually operated. No orchestration layer is assumed for the demo (Q-DEPLOY-1).
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only

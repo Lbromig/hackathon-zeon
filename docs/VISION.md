@@ -25,34 +25,44 @@ tip, OT aspirates) drives real capability calls against **taught poses**, guarde
 `run()` now genuinely executes → verifies → retries. For the first time the real verdicts **gate real motion**,
 not just twin geometry (`backend/tests/test_workflow_execute.py`). The whole stack is in git
 (commits `2b0ed34`..`e641f56`; HEAD `e641f56`) and a clean checkout of `agent-loop-p0` runs the real thing.
-**The remaining gap is three items, and — corrected this cycle — not all of it is hardware.** (1) The Opentrons
-`aspirate` transport is still a no-op (`connect`/`_send` TODO), so the narrative climax is mimed until
-`origin/feat/ot-one-serial-driver` is merged. (2) Bench teaching has **started** — `data/teach_poses.json` is now
-on disk with 2 of 12 poses taught on the real right arm — but the rest and the whole left arm are untaught, so
-`preflight` still refuses the full choreography. (3) **New, and the honest correction to last cycle's optimism:**
-the verify→retry loop — Track C's *verification* half — is **partially hollow on the real bench**, because
-`reparent()` and motion→twin updates live only in tests; nothing in `_execute` or `twin_fusion` mutates the twin
-on manipulation, so the parent-based predicates (`grasp_secure`, `cap_removed`'s reparent clause) can never turn
-true from a real grasp. That is a small **code** task on the critical path, not pure bring-up. The **dexterity
-half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. **This cycle, for the first time in
-four reviews, new work landed *on* the critical path:** an **arm-FK → twin kinematics loop** (`core/kinematics.py` +
-`services/kinematics.py`, wired into `main.py`) writes each arm's live TCP into the twin at ~12 Hz, so the twin's arms
-finally move with the real hardware — the **motion→twin half** of the verify-loop coupling, and a genuine upgrade for the
-world map and the geometry verifiers (`tube_aligned`, `cap_removed`-separation). Real progress — but held back by the same
-gravity: it is the **laptop-doable half** (the one-line `reparent` that greens the *parent-based* verify climax is still
-unwritten, now with both the RLock substrate and the FK loop sitting ready beside it), and it is **uncommitted** — not in
-git, so a clean checkout still lacks it, a fresh instance of the commit gap the project already paid for. Meanwhile the two
-**room-only** deciding items — the OT serial merge (the pipette still doesn't draw) and pose-teaching (still 2/12) — stood
-still **for a fourth review running.** The story is no longer *can we build it* — the team demonstrably can, and is now
-building the right things — it is **whether the room-only work happens before the clock runs out.** The next block's job is
-narrow and mostly at the bench: **merge the OT transport, finish teaching the poses, and write + commit the one reparent
-line** (or deliberately scope the verify moment onto the now-committed geometry predicate — measure the one board spacing
-and it's metrically real), then one real `ok=False` stops one real aspirate.
+**This cycle the four-review stall broke on two of the three deciding items — the remaining gap is now essentially one.**
+(1) The Opentrons `aspirate` transport is **still** a no-op (`connect`/`_send` TODO, re-verified in HEAD `8a52ec4`), so the
+narrative climax is mimed until `origin/feat/ot-one-serial-driver` is merged — this is now the **lone** deciding item still
+standing still, and it is room-only. (2) Bench teaching **unstalled**: `data/teach_poses.json` jumped from 2 to **8 poses
+across both arms**, and — for the first time in four reviews — the **left arm is being taught** (`tube_hold`,
+`tube_hold_approach`, saved 05:14–05:24Z); the rest can be finished at the bench and `preflight` will run. (3) The
+verify→retry loop's **reparent half is now written**: `uncap_aspirate.py` gains `_apply_twin_effect`, and the choreography's
+grip/release acts carry entity-consistent `attach=`/`to=` ids (`tube_1` is seeded by `pipeline.py`, `left_tool`/`right_tool`/
+`dropzone` exist), so a real grasp calls `wm.reparent(...)` in production for the first time — the parent-based predicates
+(`grasp_secure`, `cap_removed`'s reparent clause) can now turn true from a real grasp; the only gap is that this WIP is not
+yet committed. And the **motion→twin half** (the arm-FK → twin kinematics loop, `core/kinematics.py` + `services/kinematics.py`,
+@12 Hz, wired in `main.py`) was **committed** (`8a52ec4`) — the twin's arms now move with the real hardware on a clean
+checkout, a genuine upgrade for the world map and the geometry verifiers (`tube_aligned`, `cap_removed`-separation). The
+**dexterity half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
+enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. The story is no longer *can we build it*
+or even *are we building the right things* — the team demonstrably is, and this cycle went to the room — it is **whether the
+one remaining room-only beat, the OT serial transport, lands before the clock runs out.** The next block's job is narrow and
+at the bench: **merge the OT transport, finish teaching the poses, commit the reparent WIP** (or scope the verify moment onto
+the now-committed geometry predicate — measure the one board spacing and it's metrically real), then one real `ok=False` stops
+one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T05:40Z — The four-review stall broke: two of three deciding items moved, one of them room-only. Down to one beat.
+
+**Demo-readiness score: 7.5/10 for the *stated* PoC (verified uncap→aspirate) — up from a five-review plateau at 7.0, and this time the number moves because things that *decide* the demo became demonstrable.** ~8.7/10 for the teleop + world-map + safe-motion show. Commit `8a52ec4` ("Vision system etc.") plus working-tree WIP did what four prior reviews kept asking for: it went to the room and touched the deciding items, not the perimeter.
+
+**What genuinely moved — and this time on the critical path, in the room.** Three concrete gains. (1) **Pose-teaching unstalled** after four cycles frozen at 2/12: `data/teach_poses.json` now holds **8 poses across both arms**, and the **left arm is taught for the first time** (`tube_hold`, `tube_hold_approach`, saved 05:14–05:24Z on the real rig). This is the single most important signal in the file — it is hands-on-hardware work that cannot be faked from a laptop, and it finally started on the second arm. (2) **The kinematics loop was committed** (`8a52ec4`, wired in `main.py`'s lifespan) — last review's keeper is now in git, so a clean checkout has the moving twin; Q-KIN-1's uncommitted risk is closed. (3) **The reparent line got written** (working tree): `_apply_twin_effect` + entity-consistent `attach=`/`to=` ids on the choreography's grip/release acts mean a real grasp now calls `wm.reparent(...)` in production — I verified the ids resolve (`tube_1` seeded by `pipeline.py:125`, `left_tool`/`right_tool`/`dropzone` in `definitions.py`), so `grasp_secure` and `cap_removed`'s reparent clause can actually turn true from a real grasp. Two of the three items that have decided this demo for five reviews moved in one cycle. Also: the Docker infra was deleted — a sensible simplification for a bench-run demo (Q-DEPLOY-1).
+
+**The single biggest threat this cycle — Q-OT-1, now standing alone.** For four cycles the top threat was *allocation drift* — laptop work over room work. That threat has eased: the team went to the room this cycle. What it leaves behind is a single, sharp, room-only blocker: **the Opentrons serial transport still does nothing.** `connect()` stores `object()`, `_send()` returns `None`, re-verified in HEAD `8a52ec4`, unchanged for a fifth review; `_execute` calls `ot.aspirate(...)` for real but the pipette never draws, and `feat/ot-one-serial-driver` is still unmerged. This is now *the* deciding item — the narrative climax (the Opentrons reveal) is the one beat that is still mimed, and `aspiration_ok` would pass a green check over an aspirate that never happened. Everything else has converged onto it: poses are being taught, the verifiers are real and committed, the twin moves, the reparent coupling is written. Two lesser risks ride along: the reparent WIP is **uncommitted** (a clean checkout still lacks the grasp coupling — commit it with the pose work), and the committed world frame still rests on `BOARD_SPACING_M = 0.060`, a `TODO(measure)` — one caliper reading undone. A hackathon can still die here: at hour 24 with a beautiful, well-tested, dual-arm-taught system whose headline reveal — the pipette drawing from the tube the robot uncapped — never physically happens because the serial driver didn't get merged.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (unchanged + hardened):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only. Perimeter (cameras, calibration code, viz, concurrency, remote/still drivers) is frozen. Laptop-side critical-path code is now essentially done — the twin coupling exists both halves; **freeze it the moment the reparent WIP is committed.** Any further laptop polish is displacement while the OT beat mimes.
+- **KEEP:** everything committed — `_execute` + choreography, real verifiers + fusion, world-frame calibration + world-map viz, the **now-committed kinematics loop**, still/remote camera hedges, P0 agent loop, teach + safe-motion. **And commit the reparent WIP** (`_apply_twin_effect` + choreography ids) — it is this cycle's at-risk keeper; don't let it vanish the way the FK loop nearly did.
+- **ADD, in strict priority (the whole game is now one item):** (1) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws — room-only, fifth cycle, now the lone decider (Q-OT-1). (2) **finish teaching the remaining poses on both arms** — room-only, now actively moving (`cap_lift`, `cap_dropoff*`, `present_ot`, more left poses) (Q-POSES-1). (3) **commit the reparent WIP** — minutes, laptop (Q-TWIN-COUPLING). (4) **measure the 210/211 board spacing** (one caliper reading) so the world frame is metrically real (Q-CALIB-1). (5) then script **one deliberate failure injection** on a live predicate (Q-DEMO-1).
+- **DECIDE (carried, less urgent now):** the demo's hero verify moment. With the reparent line written *and* the world frame committed, both the parent-based climax and the geometry-only fallback are now real options — pick the parent-based one if the reparent WIP is committed in time; otherwise measure the board and rehearse to geometry. Either is defensible; choose and rehearse.
 
 ### 2026-07-26T05:20Z — The critical path finally moved — but it was the laptop half, uncommitted, and the two room-only items stood still a fourth time.
 
