@@ -292,3 +292,70 @@ acceleration on a machine with no closed loop risks skipped steps.
 so the usable clearance below the datum is less than the bare-nozzle figure, and the
 53 mm tip-engagement depth assumes an *empty* nozzle descending onto a tip in the
 rack — do not reuse it as a descent target with a tip already on.
+
+---
+
+# Measured envelope and axis facts (2026-07-26)
+
+All measured on the bench this session. None of it is readable from firmware — the
+config has no axis limit entries — so this file is the only record.
+
+## X — homed, bounded, absolute
+
+    homing:      G28.2 X parks at ONE end and zeroes there. That end is a hard
+                 stop, not a switch, but it is physically repeatable.
+    direction:   +X is the only direction with travel from the homed end.
+    usable:      ~375 mm confirmed clean, twice.
+    dead end:    ~400 mm. The 400 trial ran long (55.4s vs 53.3s) and the board
+                 then stopped acking, consistent with reaching the stop.
+    recorded in: hardware/ot_one_envelope.json
+
+## Y — moves freely, but has no datum
+
+    homing:      NEVER home Y. G28.2 Y searches for an endstop that never reports
+                 and grinds against a hard stop. This is the original fault that
+                 started the whole bring-up.
+    jogging:     works fine. The fault is specific to homing's long search; a
+                 bounded relative move does no search.
+    direction:   **+Y is TOWARD the operator** (confirmed by observation).
+    travel:      >= 450 mm of real travel in +Y, and this was VERIFIED rather
+                 than assumed: after commanding 450 mm out, driving 450 mm back
+                 returned the carriage to its physical start. Had steps been
+                 ground away against a stop, it would have come back short.
+                 That round-trip is the only lost-step test available here.
+    caveat:      no home means no machine coordinate. Y numbers are relative to
+                 wherever it sat at session start. Vision must supply Y's datum.
+
+## Z — homed, bounded, absolute
+
+    homing:      G28.2 Z drives UP to the top stop and zeroes. 5-7 s when
+                 travelling far; instant means it was already there.
+    direction:   **+Z is DOWN.**
+    clear:       >= 90 mm of descent from the homed top with no resistance,
+                 confirmed by a 10.1 s return trip back up.
+    note:        the 53 mm figure elsewhere in this file is the TIP-ENGAGEMENT
+                 depth over the rack, NOT a travel limit. Do not confuse them.
+
+## The position counter survives reconnection
+
+Contrary to an earlier reading, opening the serial port does **not** wipe the axis
+counters. Observed: X read 235 across a fresh connection, exactly the sum of the
+preceding moves. So a homed axis carries a usable machine coordinate, and
+`OpentronsDriver.move_to_machine(X=..., Z=...)` is legitimate absolute positioning.
+
+The caveat is precise: there is no closed loop. If an axis skips steps the counter
+keeps counting and the coordinate silently drifts. Vision re-observing the nozzle
+is the only way to detect that.
+
+## macOS renumbers the serial port
+
+The board came back as `cu.usbmodem11301` having been `cu.usbmodem11201`, purely
+because a camera joined the same USB hub. Nothing about the robot changed. A
+hardcoded port therefore goes stale on its own and fails with a bare "No such file
+or directory" that reads like an unplugged cable. `core/config.py` now detects it.
+
+## Plugging a camera in can drop the robot
+
+The RealSense and the Smoothieboard share a hub chain. Adding the camera knocked
+the board off the bus entirely once. If the robot vanishes, check whether a camera
+was just connected before assuming a cable fault.
