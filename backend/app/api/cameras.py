@@ -88,9 +88,47 @@ def devices() -> CameraDevices:
                 firmware=dev.get_info(rs.camera_info.firmware_version),
                 assigned_to=pinned.get(serial),
             ))
+        if not found:
+            return CameraDevices(devices=[], error=_no_devices_reason())
         return CameraDevices(devices=found)
     except Exception as e:
         return CameraDevices(error=str(e))
+
+
+def _no_devices_reason() -> str:
+    """Tell "nothing attached" apart from "attached, but the claim was refused".
+
+    query_devices() returns an EMPTY LIST rather than raising when librealsense
+    cannot claim a device. So the SDK's answer is byte-identical whether the bench
+    has no camera at all or four that the OS will not release, and the caller
+    renders "no cameras" over a rig that is fully populated. Measured on this
+    bench: four RealSense units attached, rs-enumerate-devices logging
+    RS2_USB_STATUS_ACCESS on every one, and this endpoint reporting an empty list
+    with no error.
+
+    Cross-checked against the OS view, which needs no claim to answer.
+    """
+    try:
+        import camera_probe
+
+        attached = [d for d in camera_probe.detect() if d.is_realsense]
+    except Exception as e:                      # detection is best-effort
+        return f"librealsense enumerated no devices, and the OS view failed too: {e}"
+    if not attached:
+        # Deliberately not "none are attached". A RealSense that another
+        # librealsense process already owns also vanishes from the OS camera list,
+        # so this branch cannot tell an unplugged camera from a claimed one.
+        return ("librealsense enumerated no devices and the OS lists no RealSense "
+                "units either. Most likely nothing is plugged in, though a unit "
+                "already owned by another librealsense process looks identical "
+                "from here.")
+    names = ", ".join(sorted({d.name for d in attached}))
+    return (
+        f"{len(attached)} RealSense unit(s) are attached ({names}) but librealsense "
+        f"claimed none of them, which it reports as zero devices rather than as an "
+        f"error. This is an exclusive-ownership problem, not a missing camera. Run "
+        f"`python3 camera_probe.py probe` for the specific diagnosis and fix."
+    )
 
 
 @router.post("/{device_id}/connect", response_model=dict)
