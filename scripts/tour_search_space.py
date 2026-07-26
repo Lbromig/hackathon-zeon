@@ -36,8 +36,74 @@ DEFAULT_PORT = "/dev/cu.usbmodem11201"
 
 
 def legs(dx: float, dy: float) -> list[tuple[str, float]]:
-    """A closed rectangle: +X, +Y, -X, -Y. Sums to zero on both axes."""
+    """A closed rectangle: +X, +Y, -X, -Y. Sums to zero on both axes.
+
+    One axis at a time, so every corner is a 90 degree direction change and the
+    planner must decelerate to near zero at each one. Visibly jerky. Kept for
+    comparison; prefer smooth_legs.
+    """
     return [("X", dx), ("Y", dy), ("X", -dx), ("Y", -dy)]
+
+
+def helix_legs(dx: float, dy: float, dz: float,
+               sides: int = 12) -> list[dict[str, float]]:
+    """A closed 3D loop: the XY polygon with Z dipping down and back over a lap.
+
+    All three axes move in every leg, in one coordinated G0 each, so the gantry
+    sweeps a smooth 3D path rather than stepping axis by axis.
+
+    Z is a full raised-dip-raised cycle per lap — `1 - cos` rather than `sin` — so
+    it both starts and ends at the datum and the loop closes on every axis. On
+    this machine **+Z is DOWN**, so a positive dz descends; it is the caller's job
+    to know there is that much clearance, because a crash is invisible to
+    software.
+    """
+    import math
+
+    a, b = dx / 2.0, dy / 2.0
+    pts = []
+    for k in range(sides + 1):          # +1 so the last point closes onto the first
+        t = 2 * math.pi * k / sides
+        pts.append((
+            a * math.cos(t),
+            b * math.sin(t),
+            dz * (1.0 - math.cos(t)) / 2.0,
+        ))
+    out: list[dict[str, float]] = []
+    for k in range(sides):
+        x0, y0, z0 = pts[k]
+        x1, y1, z1 = pts[k + 1]
+        leg = {"X": x1 - x0, "Y": y1 - y0}
+        if abs(z1 - z0) > 1e-9:
+            leg["Z"] = z1 - z0
+        out.append(leg)
+    return out
+
+
+def smooth_legs(dx: float, dy: float, sides: int = 12) -> list[dict[str, float]]:
+    """A closed polygon inscribed in the dx-by-dy box, as coordinated moves.
+
+    Two things make this smooth where the rectangle is not. Each leg names X and
+    Y in one G0, so it executes as a single coordinated diagonal rather than two
+    separate axis moves. And with `sides` legs the direction change at each
+    vertex is roughly 360/sides degrees instead of 90, so the planner barely has
+    to slow down.
+
+    Returns relative deltas that sum to zero on both axes, so the loop closes.
+    """
+    import math
+
+    a, b = dx / 2.0, dy / 2.0
+    pts = [
+        (a * math.cos(2 * math.pi * k / sides), b * math.sin(2 * math.pi * k / sides))
+        for k in range(sides)
+    ]
+    out: list[dict[str, float]] = []
+    for k in range(sides):
+        x0, y0 = pts[k]
+        x1, y1 = pts[(k + 1) % sides]
+        out.append({"X": x1 - x0, "Y": y1 - y0})
+    return out
 
 
 def chunk(delta: float, cap: float) -> list[float]:
@@ -61,23 +127,31 @@ def main() -> int:
     ap.add_argument("--feed", type=float, default=400.0, help="mm/min")
     ap.add_argument("--step", type=float, default=10.0,
                     help=f"max mm per jog (driver cap is {MAX_JOG_MM})")
+    ap.add_argument("--shape", choices=["rect", "smooth"], default="smooth",
+                    help="rect = 90-degree corners (jerky); smooth = inscribed polygon")
+    ap.add_argument("--sides", type=int, default=12,
+                    help="legs per lap for --shape smooth; more = gentler corners")
+    ap.add_argument("--z", type=float, default=0.0,
+                    help="Z dip per lap in mm (+Z is DOWN). 0 = XY only. "
+                         "Only pass this if you know the clearance.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     step_cap = min(args.step, MAX_JOG_MM)
-    plan = [leg for _ in range(args.laps) for leg in legs(args.x, args.y)]
-    total_mm = sum(abs(d) for _, d in plan)
+    total_mm = 0.0
     per_mm_s = 60.0 / args.feed
 
     print(f"tour: {args.x:.0f} x {args.y:.0f} mm box, {args.laps} lap(s)")
-    print(f"  {len(plan)} legs, {total_mm:.0f} mm of travel, "
-          f"{args.feed/60:.1f} mm/s, <= {step_cap:.0f} mm per jog")
-    print(f"  estimated motion time {total_mm * per_mm_s:.0f}s")
+    print(f"  {args.feed/60:.1f} mm/s")
     print("  the loop is CLOSED: it returns to the exact starting point.\n")
 
     if args.dry_run:
-        for axis, d in plan:
-            print(f"  {axis} {d:+.1f} mm  ({len(chunk(d, step_cap))} jog(s))")
+        preview = (legs(args.x, args.y) if args.shape == 'rect'
+                   else helix_legs(args.x, args.y, args.z, args.sides) if args.z
+                   else smooth_legs(args.x, args.y, args.sides))
+        for e in preview:
+            print('  ' + (', '.join(f'{a}{v:+.2f}' for a, v in e.items())
+                          if isinstance(e, dict) else f'{e[0]} {e[1]:+.2f} mm'))
         print("\ndry run, nothing moved.")
         return 0
 
@@ -87,7 +161,7 @@ def main() -> int:
     print(f"  connected: {d.info.name}\n")
     print("*** MOTION. WATCH IT. Ctrl-C cuts motion. ***\n")
 
-    travelled = {"X": 0.0, "Y": 0.0}
+    travelled = {"X": 0.0, "Y": 0.0, "Z": 0.0}
     slow = 0
     try:
         # One jog_path per lap: all four legs are queued back-to-back and the
@@ -95,24 +169,46 @@ def main() -> int:
         # continuous motion. Driving this with one jog() per chunk instead
         # drains the queue after every chunk, which stops the machine dead
         # between steps and makes the path visibly jitter.
-        for lap in range(1, args.laps + 1):
-            lap_legs = legs(args.x, args.y)
-            lap_mm = sum(abs(dd) for _, dd in lap_legs)
-            expected = lap_mm * per_mm_s
-            print(f"  lap {lap}/{args.laps}: "
-                  f"{' -> '.join(f'{a}{dd:+.0f}' for a, dd in lap_legs)}"
-                  f"  ({lap_mm:.0f} mm, expect ~{expected:.1f}s continuous)")
-            t0 = time.time()
-            d.jog_path(lap_legs, feedrate=args.feed)
-            dt = time.time() - t0
-            for a, dd in lap_legs:
-                travelled[a] += dd
-            tag = ""
-            if dt > expected * 1.6:
-                slow += 1
-                tag = "  <-- SLOW, possible contact"
-            print(f"    done in {dt:.2f}s (exp {expected:.2f}s)  "
-                  f"net X{travelled['X']:+.2f} Y{travelled['Y']:+.2f}{tag}")
+        # EVERY lap is queued in ONE call. Splitting per lap drains the planner
+        # between laps, which is a full stop the operator sees as a hitch.
+        if args.shape == "rect":
+            one_lap: list = legs(args.x, args.y)
+        elif args.z:
+            one_lap = helix_legs(args.x, args.y, args.z, args.sides)
+        else:
+            one_lap = smooth_legs(args.x, args.y, args.sides)
+        path = [leg for _ in range(args.laps) for leg in one_lap]
+
+        def leg_mm(e) -> float:
+            if isinstance(e, dict):
+                return sum(v * v for v in e.values()) ** 0.5
+            return abs(e[1])
+
+        path_mm = sum(leg_mm(e) for e in path)
+        expected = path_mm * per_mm_s
+        print(f"  shape={args.shape}"
+              f"{f' sides={args.sides}' if args.shape != 'rect' else ''}, "
+              f"{len(path)} legs queued as ONE continuous path")
+        print(f"  {path_mm:.0f} mm, expect ~{expected:.1f}s\n")
+
+        t0 = time.time()
+        d.jog_path(path, feedrate=args.feed, max_total_mm=path_mm + 50)
+        dt = time.time() - t0
+        for e in path:
+            if isinstance(e, dict):
+                for a, v in e.items():
+                    travelled[a] = travelled.get(a, 0.0) + v
+            else:
+                travelled[e[0]] += e[1]
+        if dt > expected * 1.6:
+            slow += 1
+        print(f"  done in {dt:.2f}s (exp {expected:.2f}s)  "
+              f"net X{travelled['X']:+.2f} Y{travelled['Y']:+.2f} Z{travelled['Z']:+.2f}")
+        overhead = dt - expected
+        print(f"  overhead {overhead:+.2f}s over {len(path)} legs "
+              f"= {overhead/len(path)*1000:+.0f} ms/leg  "
+              f"({'continuous' if abs(overhead)/len(path) < 0.15 else 'still hitching'})")
+        total_mm = path_mm
 
         print(f"\ntour complete. {args.laps} lap(s), {total_mm:.0f} mm travelled.")
         print(f"  net displacement X{travelled['X']:+.2f} Y{travelled['Y']:+.2f} mm "

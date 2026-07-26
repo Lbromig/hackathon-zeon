@@ -371,16 +371,26 @@ class OpentronsDriver(LiquidHandlerDriver):
         """
         if not steps:
             return
-        total = sum(abs(d) for _, d in steps)
+        # Normalise: an entry is either ("X", 10.0) or {"X": 10.0, "Y": 5.0}.
+        norm: list[dict[str, float]] = [
+            dict(e) if isinstance(e, dict) else {e[0]: e[1]} for e in steps
+        ]
+        # A coordinated move's travel is the vector length, not the sum of its
+        # components, so a diagonal is not double-counted against the cap.
+        total = sum(
+            sum(v * v for v in e.values()) ** 0.5 for e in norm
+        )
         if total > max_total_mm:
             raise DriverError(
                 f"refusing a {total:.0f} mm path: the cap is {max_total_mm:.0f} mm "
                 f"total, because a stall is only detected once the path completes."
             )
-        for axis, _ in steps:
-            a = axis.upper()
-            if a not in ("X", "Y", "Z", "A"):
-                raise DriverError(f"unknown axis {axis!r}")
+        for e in norm:
+            for axis in e:
+                a = axis.upper()
+                if a not in ("X", "Y", "Z", "A", *PLUNGER_AXES):
+                    raise DriverError(f"unknown axis {axis!r}")
+        steps = norm  # every loop below iterates the normalised form
         if self._reference_lost:
             raise DriverError("reference lost after an emergency stop; home() again")
 
@@ -389,9 +399,22 @@ class OpentronsDriver(LiquidHandlerDriver):
             self._send(G_RELATIVE)
             # Queue every move first, WITHOUT waiting. This is what makes the
             # motion continuous rather than a series of separate moves.
-            for axis, delta in steps:
-                self._send(f"{G_MOVE} {axis.upper()}{delta:.2f} F{feedrate:.0f}",
-                           motion=True)
+            for entry in steps:
+                if isinstance(entry, dict):
+                    # Multi-axis move: one G0 naming several axes is executed as
+                    # a single COORDINATED move, so a diagonal is one smooth
+                    # sweep. Splitting it into per-axis moves forces a
+                    # deceleration at every direction change, which is what
+                    # makes an axis-at-a-time path feel jerky.
+                    words = " ".join(
+                        f"{a.upper()}{v:.2f}" for a, v in entry.items() if v
+                    )
+                    if not words:
+                        continue
+                else:
+                    axis, delta = entry
+                    words = f"{axis.upper()}{delta:.2f}"
+                self._send(f"{G_MOVE} {words} F{feedrate:.0f}", motion=True)
             # One drain for the whole path. Its ack is the real "arrived".
             self._send(G_WAIT_MOVES, motion=True,
                        timeout=max(MOTION_TIMEOUT, total * 60.0 / feedrate + 10.0))
@@ -400,9 +423,8 @@ class OpentronsDriver(LiquidHandlerDriver):
                 self._send(G_ABSOLUTE)
             except Exception:
                 pass
-        for axis, delta in steps:
-            if axis.upper() == "Z":
-                self._z_offset_mm += delta
+        for e in steps:
+            self._z_offset_mm += e.get("Z", 0.0) + e.get("z", 0.0)
 
     def jog_z(self, delta_mm: float, feedrate: float = APPROACH_FEED) -> float:
         """Move Z by a relative amount. Positive is DOWN on this unit.
