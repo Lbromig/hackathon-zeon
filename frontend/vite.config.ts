@@ -2,7 +2,6 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 
-// In Docker the backend is a sibling service, not localhost — see docker-compose.yml.
 // 127.0.0.1, not localhost: uvicorn binds IPv4 only by default, while Node resolves
 // "localhost" to ::1 first — so a localhost target makes every proxied request fail
 // with "Failed to fetch" against a backend that is plainly running.
@@ -17,8 +16,5 @@ export default defineConfig({
       "/api": backend,
       "/ws": { target: backend.replace(/^http/, "ws"), ws: true },
     },
-    // Bind-mounted source on Docker Desktop doesn't deliver inotify events to the
-    // container, so hot reload needs polling there (and only there — it burns CPU).
-    watch: process.env.VITE_USE_POLLING ? { usePolling: true, interval: 300 } : undefined,
   },
 });

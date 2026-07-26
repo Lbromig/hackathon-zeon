@@ -61,6 +61,14 @@ onMounted(refresh);
         backend. On RGB-D units the tag centre also carries measured depth.
       </span>
       <div class="ml-auto flex gap-2">
+        <a
+          class="btn btn-sm"
+          href="/worldmap.html"
+          target="_blank"
+          rel="noopener"
+          title="Top-down world map: all cameras + tracked objects in one shared frame (after calibration)"
+          >World map ↗</a
+        >
         <button class="btn btn-sm" :disabled="scanning" @click="scan">
           {{ scanning ? "Scanning…" : "Scan for devices" }}
         </button>

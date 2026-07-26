@@ -8,11 +8,13 @@ import {
   SPEED_PRESETS,
   useTeach,
 } from "../../composables/useTeach";
+import CapTools from "./CapTools.vue";
 import CommandLog from "./CommandLog.vue";
 import GripperControl from "./GripperControl.vue";
 import JogPad from "./JogPad.vue";
 import JointJog from "./JointJog.vue";
 import MoveTo from "./MoveTo.vue";
+import PathTeach from "./PathTeach.vue";
 import PoseLibrary from "./PoseLibrary.vue";
 import TeachChecklist from "./TeachChecklist.vue";
 
@@ -266,7 +268,9 @@ onUnmounted(() => {
       <JointJog />
       <MoveTo />
       <GripperControl />
+      <CapTools />
       <PoseLibrary />
+      <PathTeach />
       <CommandLog />
     </div>
 

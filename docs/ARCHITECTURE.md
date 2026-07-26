@@ -32,12 +32,15 @@ flowchart TB
       FUSE[TwinFuser · REAL COMMITTED<br/>core/perception/fusion.py<br/>detection × cam-pose → corrective world xyz<br/>loop: services/twin_fusion @10Hz]:::be
       PROJ[Twin→image projection · REAL COMMITTED<br/>core/perception/projection.py<br/>world entity + K → overlay polygon]:::be
       SHP[Shape detect · REAL COMMITTED<br/>core/perception/shapes.py<br/>Hough circles → untagged labware]:::be
-      CAL[Calibration pipeline<br/>runs + publishes twin · world-frame extrinsics WIP<br/>fixed-cam T_world_cam from 210/211 board<br/>hand-eye/scan · TODO]:::be
+      CAL[Calibration pipeline<br/>runs + publishes twin · world-frame extrinsics COMMITTED<br/>fixed-cam T_world_cam from 210/211 board<br/>board spacing unmeasured · hand-eye/scan · TODO]:::be
+      VIZ[World-map viz · REAL COMMITTED<br/>core/viz/scene.py · world_scene / scene_svg<br/>/api/worldmodel/scene&#40;.svg&#41; · both cams one frame]:::be
       DET[Detect / segment<br/>Grounded-SAM 2 · PLANNED]:::be
       POSE[6-DoF pose + track<br/>FoundationPose CAD · PLANNED]:::be
       RC[Render-compare<br/>Kaolin diff-render · PLANNED]:::be
     end
     WM[World model · twin · RLock-guarded<br/>core/worldmodel + services/twin · lock&#40;&#41; for atomic seq<br/>populated after /ws/calibrate · placeholder poses]:::be
+    KIN[Arm FK → twin · REAL · COMMITTED &#40;8a52ec4&#41;<br/>core/kinematics + services/kinematics @12Hz<br/>live arm TCP → &#123;arm&#125;_tcp.local · wired in lifespan<br/>reparent-on-grasp WRITTEN + TESTED &#40;working tree&#41;]:::be
+    MOT[Motion primitives · core/motion<br/>pick_place · cap_ops ratchet-unscrew NEW<br/>path_teach deadband+RDP NEW<br/>working tree, uncommitted · teach-API only]:::be
     BV[Background verifier · PLANNED<br/>predicates @ 5–15 Hz]:::be
     REC[Recovery controller · PLANNED<br/>closed-loop ON ERROR only]:::be
   end
@@ -47,7 +50,7 @@ flowchart TB
     REG[registry]:::dr
     XA[xarm]:::dr
     OT[opentrons]:::dr
-    CAMd[camera<br/>realsense · UVC · still-replay · mock]:::dr
+    CAMd[camera<br/>realsense · UVC · still-replay · remote-MJPEG · mock]:::dr
   end
 
   subgraph TP[third_party]
@@ -91,6 +94,8 @@ flowchart TB
   WM -. camera world-pose .-> FUSE
   WM -->|entity pose + CAD dims| PROJ
   PROJ -->|overlay polygons| WS
+  WM -->|world XY positions| VIZ
+  VIZ -->|scene JSON + SVG| REST
   CAMd -. frames .-> SHP
   SHP -->|untagged xyz| WM
   CAL --> FID
@@ -100,7 +105,10 @@ flowchart TB
   CAL --> WM
   RC --> WM
   POSE -->|pose + confidence| WM
-  DM -. kinematics FK .-> WM
+  DM -->|live arm TCP| KIN
+  KIN -->|"{arm}_tcp.local"| WM
+  REST -->|teach: grab/ungrab/unscrew · record path| MOT
+  MOT --> CAP
   WM --> BV
   RC -. render-compare .-> BV
   DM -. torque / width / volume .-> BV
@@ -168,31 +176,64 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   remain `TODO` (`connect()` stores `object()`, `_send()` returns `None`; a `feat/ot-one-serial-driver` branch
   exists on `origin` but is **not merged** here), so the wired `aspirate` no-ops on hardware — no real aspirate
   has run, and the narrative climax mimes until the serial transport lands (Q-OT-1). Bench teaching of the floor
-  choreography's **12 poses has begun** on the real rig: `data/teach_poses.json` (gitignored) is now present on
-  disk with **2 of 12 poses taught** (`cap_grasp_approach`, `cap_grasp`, right arm, saved 2026-07-26T02:00Z);
-  the remaining 10 poses and the entire **left** arm are untaught, so `preflight` still correctly **refuses to
-  run** the full choreography (Q-POSES-1) — a green test suite is not a moving demo, but a real arm is now being
-  taught. Calibration's **fixed-camera `world_frame` step is now being wired** (uncommitted WIP on disk):
+  choreography's poses **stalled again this cycle** after last cycle's unstall: `data/teach_poses.json` (gitignored) is
+  **unchanged at 8 taught poses across both arms** (mtime still 05:24Z, no new teaching this run) — right (6):
+  `cap_grasp_approach`, `cap_grasp`, `tube_grasp_approach`, `tube_grasp`, `transport_safe`, `present_approach`; left (2):
+  `tube_hold_approach`, `tube_hold`. Both arms are started, neither is finished. Still untaught: at least `cap_lift`,
+  `cap_dropoff`, `cap_dropoff_retreat` and the `present_ot`/aspirate poses, plus more left-arm poses, so `preflight` still
+  correctly **refuses to run** the full choreography until they are taught (Q-POSES-1) — and this cycle's new manipulation
+  code (the ratchet-unscrew) landed instead of finishing the poses. Calibration's **fixed-camera `world_frame` step is now committed** (`cfa8aac`, last cycle's recommendation done):
   `core/calibration/world_board.py` defines a shared world frame from a two-tag board (`tag36h11` ids 210 & 211),
   `core/calibration/extrinsics.py::solve_world_cam` solves each fixed camera's `T_world_cam` against that board
-  (hardware-free solver, synthetic round-trip unit test), and `pipeline.py::_world_frame` now detects the board on
-  `overview_cam`/`handover_cam`, writes `T_world_cam` into the twin and persists it under `calib/extrinsics/`. This
-  turns fused/projected coords for the fixed cameras from camera-frame toward a real shared metric world frame — the
-  honest substrate the geometry verifiers need. **Still TODO / placeholder:** the on-arm gripper camera's `hand_eye`,
-  `arm_to_arm`, and the scan step remain `TODO` (`PlaceholderScanAdapter`); the board's real tag spacing is an
-  unmeasured `TODO(measure)` placeholder; and `MARKER_MAP` uses **real** printed stock ids (`tag36h11` 180–224) but
-  keeps `identity()` marker→entity offsets (0.02 placeholder). Until the WIP is committed and the spacing measured,
-  world poses are still not trustworthy end-to-end (Q-CALIB-1, Q-FUSE-1).
-- **Twin↔physics coupling is not wired in the live path (verifier-critical):** `WorldModel.reparent()` and any
-  motion-driven twin pose update are exercised **only in tests** (`test_worldmodel.py`, `test_integration_loop.py`,
-  `test_verification.py`) — `grep` finds **zero** `reparent` calls in `backend/app/` or `core/` production code, and
-  neither `_execute`/`CHOREOGRAPHY` nor `twin_fusion` mutates parent links on manipulation. So on the real bench the
-  twin is a correct *topology over placeholder geometry*: the geometry-based verifiers (`cap_removed` separation,
-  `tube_aligned` distance) can still be driven by perception, but the **parent-based** predicates
-  (`grasp_secure` = tube parented to a `TOOL`, and `cap_removed`'s reparent clause) can never turn true from real
-  manipulation until arm-FK pose updates + manipulation-time reparenting are wired into the live loop
-  (Q-TWIN-COUPLING; surfaced in the team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the intended
-  coupling — it is designed, not yet built.
+  (hardware-free solver, synthetic round-trip test `backend/tests/test_extrinsics.py`), and `pipeline.py::_world_frame`
+  now detects the board on `overview_cam`/`handover_cam`, writes `T_world_cam` into the twin and persists it under
+  `calib/extrinsics/`. This turns fused/projected coords for the fixed cameras from camera-frame toward a real shared
+  metric world frame — the honest substrate the geometry verifiers need. A **top-down world-map visualization** landed
+  alongside it (`core/viz/scene.py::world_scene`/`scene_svg`, served at `/api/worldmodel/scene` + `/scene.svg`, with
+  `frontend/public/worldmap.html` + `WorldMapTab.vue`; `backend/tests/test_scene.py`): it places both fixed cameras by
+  solving the *same* board, so on the map they land at their true relative positions — a showable proof that the shared
+  frame is real. **Still TODO / placeholder:** the on-arm gripper camera's `hand_eye`, `arm_to_arm`, and the scan step
+  remain `TODO` (`PlaceholderScanAdapter`); the board's real tag spacing is **still** an unmeasured `TODO(measure)`
+  (`BOARD_SPACING_M = 0.060` placeholder); and `MARKER_MAP` uses **real** printed stock ids (`tag36h11` 180–224) but
+  keeps `identity()` marker→entity offsets (0.02 placeholder). The code is committed now; until the board spacing is
+  measured, world poses are still not metrically trustworthy end-to-end (Q-CALIB-1, Q-FUSE-1). A **remote camera driver**
+  (`drivers/camera/remote.py`, `39bdca6`, registered `"remote"`) also landed: it serves another backend's cameras over
+  their MJPEG endpoint — selected wholesale by `HZ_CAMERA_HOST` — so a second machine with no cameras plugged in runs the
+  whole stack against the bench's viewpoints (frames enter at the driver layer, RGB-only so `has_depth` is False, honestly
+  reports `live: True` and errors on a frozen stream; `backend/tests/test_camera_remote.py`).
+- **Twin↔physics coupling — the motion half is now COMMITTED + wired; the reparent half is now WRITTEN (working tree, uncommitted):**
+  This cycle the **arm-FK → twin loop** was **committed** (`8a52ec4`): `core/kinematics.py`, `backend/app/services/kinematics.py`,
+  `backend/tests/test_kinematics.py`, and `main.py`'s `kinematics.start()` in the lifespan are all in git now — a clean checkout
+  has it. `core.kinematics.update_arm_tcp` writes each connected arm's live TCP pose straight into `{arm}_tcp.local` at ~12 Hz, so
+  the twin's TCP / tool / on-arm `gripper_cam` track the real arm (no-ops until calibration built the `{arm}_tcp` entities and the
+  arms are connected). **The reparent half is now written too — in the working tree, uncommitted:** `uncap_aspirate.py` gains
+  `_apply_twin_effect(act)` (called from `_run_act`), and the `CHOREOGRAPHY` `grip`/`release` acts now carry `attach=`/`to=` ids
+  (`grip attach="tube_1" to="left_tool"`, `grip attach="tube_1_cap" to="right_tool"`, `release attach="tube_1_cap" to="dropzone"`,
+  handover `grip attach="tube_1" to="right_tool"`), so a real grasp calls `wm.reparent(...)` in production for the first time. The
+  ids are **entity-consistent** — `tube_1`/`tube_1_cap` are seeded by `core/calibration/pipeline.py:125` and `left_tool`/`right_tool`/
+  `dropzone` exist in `definitions.py` — so the reparent will actually fire (it is guarded by `in wm.entities`, a silent no-op only if
+  the twin wasn't seeded). This means the **parent-based** predicates — `grasp_secure` (tube parented to a `TOOL`) and `cap_removed`'s
+  reparent clause — can now turn true from a real grasp once this is committed and the twin is seeded. **New this cycle**, a dedicated
+  test (`backend/tests/test_workflow_twin_effects.py`) drives `_apply_twin_effect` over the `uncap`/`transport` choreography and asserts
+  `grasp_secure` and `cap_removed` **flip true after the reparent** — the coupling is now proven in test, not just written. Both halves of
+  the coupling now exist in code; the only remaining gap is that the reparent half is **still not in git** (uncommitted a second cycle —
+  Q-TWIN-COUPLING, Q-COMMIT-2; surfaced in the team's `docs/INTEGRATION_PLAN.md`). Step 5 of the loop below describes the full intended
+  coupling — both halves now exist.
+- **Dexterity/manipulation primitives grew this cycle — the TARGET-rung ratchet-unscrew now exists (working tree, uncommitted):**
+  `core/motion/cap_ops.py` implements the **dual-arm ratchet-unscrew**, the signature move of the TARGET rung: because the tool cabling
+  cannot take a continuous 360°, the wrist takes 180° bites — turn gripped, open, unwind free, re-grip — leaving the cap rotated by
+  `180 × half_turns` while the wrist returns exactly to where it began (**net-zero travel, so it is repeatable**), and it **pre-flights
+  every intermediate wrist angle against the J6 soft limit before moving**. It is thoroughly unit-tested (`backend/tests/test_cap_ops.py`,
+  12 tests) and exposed via `POST /api/teach/{id}/cap` (`action=grab/ungrab/unscrew`, `half_turns`) with a `CapTools.vue` panel. Alongside it,
+  **hand-guided path teaching** landed: `core/motion/path_teach.py` (a pure deadband + Ramer–Douglas–Peucker simplifier that turns a dense
+  free-drive recording into a few replayable waypoints), `core/teach_paths.py` (temp-file + `os.replace` persistence), and
+  `backend/app/services/path_recorder.py`. **Two caveats:** the ratchet is **not wired into the auto `CHOREOGRAPHY`** — `_execute` still runs
+  the FLOOR snap-cap straight-up lift, so the ratchet is currently a **manual teach-panel tool**, not part of the end-to-end run; and the
+  whole batch is **uncommitted** (Q-CAPOPS-1, Q-COMMIT-2). This raises the dexterity ceiling and strengthens the "dexterity + verified
+  cap-removed" fallback story even if the OT never draws — but it landed while the room-only OT merge and pose-teaching stood still.
+- **Deployment simplified this cycle:** `8a52ec4` **removed** the Docker infra (`docker-compose.yml`, `docker/backend.Dockerfile`,
+  `docker/frontend.Dockerfile`, `.dockerignore`) — the stack now runs directly (backend `uv`/FastAPI + frontend `vite`), matching how
+  the hackathon bench is actually operated. No orchestration layer is assumed for the demo (Q-DEPLOY-1).
 - **Planned, no code yet:** the learned **perception stack** (Grounded-SAM 2 / FoundationPose /
   Kaolin render-compare), the **background verifier**, and the **recovery controller**. None of the
   learned-perception model dependencies are installed; fiducial detection needs only

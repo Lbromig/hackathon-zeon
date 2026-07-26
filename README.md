@@ -30,28 +30,13 @@ with cameras feeding the verification agents that gate each step.
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** and **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 for diagrams, and **[PROJECT_PLAN.md](PROJECT_PLAN.md)** for the 24h plan and ownership.
 
-## Quick start (Docker)
+## Quick start
+
+Everything runs directly on the host. This project uses
+**[uv](https://docs.astral.sh/uv/)** for all Python work.
 
 ```bash
 cp .env.example .env        # optional — set your arm IPs / camera sources
-docker compose up           # http://localhost:5273
-```
-
-Brings up the backend (`:8000`) and the UI (`:5173`) together. Both bind-mount the
-repo and run in reload mode, so editing Python or Vue takes effect live; only
-dependency changes need `docker compose up --build`. Taught poses land in `./data`
-on the host.
-
-The arms are reached over TCP by IP, which works from the container's default
-bridge network. **USB devices do not** — the Opentrons serial port and USB cameras
-need `devices:` entries in `docker-compose.yml` (Linux hosts only; on macOS run the
-backend on the host for that work).
-
-## Quick start (uv, no Docker)
-
-This project uses **[uv](https://docs.astral.sh/uv/)** for all Python work.
-
-```bash
 uv sync                     # create .venv + install deps (incl. vendored xArm SDK)
 
 # initialize the arm
@@ -63,6 +48,15 @@ uv run uvicorn backend.app.main:app --reload
 # frontend (separate shell)
 cd frontend && npm install && npm run dev
 ```
+
+The bench runs on the host and not in a container on purpose: the cameras are USB
+(UVC/RealSense) and the Opentrons is on a serial port, and macOS cannot pass either
+into a Linux VM. A containerised backend reports every camera as `disconnected`.
+
+Both services bind to loopback by default. To reach the UI from another machine on
+the bench WiFi, start Vite with `--host` — but note that its proxy exposes the whole
+unauthenticated API along with it, arms included. See
+**[docs/CAMERA_ACCESS.md](docs/CAMERA_ACCESS.md)**.
 
 Boots without hardware — drivers that can't init are skipped; SDK/opencv imports are optional.
 

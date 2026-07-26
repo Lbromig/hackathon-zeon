@@ -11,8 +11,10 @@ import type {
   ActionResult,
   ArmState,
   ArmSummary,
+  PathRecordState,
   PreflightResult,
   RequiredPose,
+  TaughtPath,
   TaughtPose,
 } from "../api/teach";
 
@@ -60,6 +62,9 @@ const poses = ref<TaughtPose[]>([]);
 // switching the selected arm must not clear it.
 const required = ref<RequiredPose[]>([]);
 const preflight = ref<PreflightResult | null>(null);
+// Hand-taught travel routes, and whether one is being recorded right now.
+const paths = ref<TaughtPath[]>([]);
+const recording = ref<PathRecordState | null>(null);
 const log = ref<LogEntry[]>([]);
 const sending = ref(false);
 const loadError = ref("");
@@ -135,7 +140,7 @@ async function select(id: string) {
   poses.value = [];
   if (!id) return;
   localStorage.setItem("teach.arm", id);
-  await Promise.all([tick(), refreshPoses()]);
+  await Promise.all([tick(), refreshPoses(), refreshPaths()]);
 }
 
 async function refreshPoses() {
@@ -253,6 +258,62 @@ const setFreeDrive = (on: boolean) =>
   send(on ? "hand-guide ON" : "hand-guide off", () => api.setFreeDrive(selectedId.value, on),
        { force: true });
 
+// --- taught travel paths -----------------------------------------------------
+
+async function refreshPaths() {
+  if (!selectedId.value) return;
+  try {
+    paths.value = await api.listPaths(selectedId.value);
+    recording.value = await api.getPathRecording(selectedId.value);
+  } catch {
+    /* advisory in the UI; the backend is the source of truth */
+  }
+}
+
+async function startRecording(name: string) {
+  const ok = await send(`record path "${name}"`, () =>
+    api.startPathRecording(selectedId.value, name),
+  );
+  await refreshPaths();
+  return ok;
+}
+
+async function stopRecording(name: string, note = "") {
+  const ok = await send(`save path "${name}"`, () =>
+    api.stopPathRecording(selectedId.value, name, note),
+  );
+  await refreshPaths();
+  return ok;
+}
+
+async function deletePath(name: string) {
+  const startedAt = performance.now();
+  try {
+    paths.value = await api.deletePath(selectedId.value, name);
+    pushLog(`delete path "${name}"`, true, "", startedAt);
+  } catch (e) {
+    pushLog(`delete path "${name}"`, false, e instanceof Error ? e.message : String(e), startedAt);
+  }
+}
+
+const replayPath = (name: string, reverse = false) =>
+  send(`replay "${name}"${reverse ? " reversed" : ""}`, () =>
+    api.replayPath(selectedId.value, name, { speed: settings.speed, reverse }),
+  );
+
+const grabCap = (width?: number) =>
+  send("grab cap", () => api.capAction(selectedId.value, "grab", { width }));
+const ungrabCap = () =>
+  send("ungrab cap", () => api.capAction(selectedId.value, "ungrab"));
+/** Ratchet unscrew — `halfTurns` x 180°. Long-running: the arm turns, opens,
+ *  unwinds and re-grips once per bite. */
+const unscrewCap = (halfTurns: number, width?: number) =>
+  send(`unscrew cap (${halfTurns} x 180°)`, () =>
+    api.capAction(selectedId.value, "unscrew", {
+      half_turns: halfTurns, width, speed: settings.speed,
+    }),
+  );
+
 export function useTeach() {
   return {
     // state
@@ -263,6 +324,8 @@ export function useTeach() {
     poses,
     required,
     preflight,
+    paths,
+    recording,
     log,
     sending,
     loadError,
@@ -276,6 +339,7 @@ export function useTeach() {
     refreshArms,
     refreshPoses,
     refreshReadiness,
+    refreshPaths,
     select,
     persistSettings,
     // commands
@@ -295,5 +359,12 @@ export function useTeach() {
     deletePose,
     gotoPose,
     setFreeDrive,
+    startRecording,
+    stopRecording,
+    deletePath,
+    replayPath,
+    grabCap,
+    ungrabCap,
+    unscrewCap,
   };
 }
