@@ -191,20 +191,33 @@ class XArmDriver(ArmDriver):
         if self.config.get("save_conf"):
             self._check(api.save_conf(), "save_conf")
 
-    def disconnect(self) -> None:
+    def disconnect(self, *, brake: bool = True) -> None:
         """Leave the arm mechanically safe, then drop the connection.
 
         Closing the socket does NOT stop a queued trajectory — the controller runs
         it to completion unsupervised, with no reachable /stop. De-energizing the
         servos is also what engages the holding brakes, so skipping it leaves an
         arm that sags the moment power is cut. Best effort: this must not raise.
+
+        ``brake=False`` stops motion but leaves the servos energized, holding
+        position under active torque. Use it between back-to-back runs with someone
+        present: it avoids the brake engage/release cycle entirely, so there is no
+        clunk and the next connect() picks up smoothly (motion_enable on an
+        already-enabled arm is a no-op). The arm stays live until something brakes
+        it, so do not leave it that way unattended.
         """
         api, self._api = self._api, None
         if api is not None:
             try:
-                self._brake(api)
+                if brake:
+                    self._brake(api)
+                else:
+                    # Still stop motion — only the de-energize is skipped.
+                    api.set_state(4)
+                    self._wait_until_stopped(api)
             except Exception as e:  # pragma: no cover - hardware dependent
-                print(f"[xarm {self.device_id}] WARNING: could not brake on disconnect: {e}")
+                verb = "brake" if brake else "stop"
+                print(f"[xarm {self.device_id}] WARNING: could not {verb} on disconnect: {e}")
             finally:
                 try:
                     api.disconnect()
@@ -385,6 +398,24 @@ class XArmDriver(ArmDriver):
         self._check(api.set_mode(0), "set_mode(0)")
         self._check(api.set_state(0), "set_state(0)")
 
+    def set_free_drive(self, on: bool = True) -> None:
+        """Enter or leave manual (joint teaching) mode — xArm mode 2.
+
+        In mode 2 the controller holds the arm against gravity but lets you
+        back-drive the joints by hand. Two things to know:
+
+        * Gravity compensation is computed from ``tcp_load``. An understated payload
+          makes the arm sink as soon as you let go, an overstated one makes it climb.
+          Set the payload before relying on this.
+        * Programmed motion does not behave normally in a teaching mode, so always
+          return to mode 0 before commanding a move. Callers should use try/finally.
+        """
+        api = self._require()
+        mode = 2 if on else 0
+        self._check(api.motion_enable(True), "motion_enable")
+        self._check(api.set_mode(mode), f"set_mode({mode})")
+        self._check(api.set_state(0), "set_state(0)")
+
     def get_pose(self) -> Pose:
         code, p = self._require().get_position(is_radian=False)
         if code != 0:
@@ -447,15 +478,85 @@ class XArmDriver(ArmDriver):
 
     @property
     def limits(self) -> ArmLimits:
-        """Configured soft limits, backfilled with the SDK's per-model joint table.
+        """Configured soft limits, backfilled with the SDK's per-model joint table,
+        then narrowed by any per-joint overrides from config.
 
-        Without this there are no joint soft limits at all: the base check returns
-        early when ``joints`` is None, leaving the controller as the only backstop.
+        Without the backfill there are no joint soft limits at all: the base check
+        returns early when ``joints`` is None, leaving the controller as the only
+        backstop.
+
+        ``config["joint_limit_overrides"]`` narrows individual joints without having
+        to restate all six, e.g. ``{"5": [-90, 90]}`` (1-based, matching the J1..J6
+        labels on the arm). This is how you keep bulky end-effector tooling — a
+        camera, a long gripper — from folding back into the arm: the controller's
+        own self-collision detection models the arm's links ONLY and knows nothing
+        about anything bolted to the flange.
+
+        Overrides can only tighten, never widen, the model's mechanical range.
         """
         limits = super().limits
         if limits.joints is None and self._joint_limits:
-            limits.joints = self._joint_limits
+            limits.joints = list(self._joint_limits)
+
+        overrides = self.config.get("joint_limit_overrides") or {}
+        if not overrides or limits.joints is None:
+            return limits
+
+        joints = list(limits.joints)
+        for key, bounds in overrides.items():
+            index = int(key) - 1        # config is 1-based (J1..J6)
+            if not 0 <= index < len(joints):
+                raise DriverError(
+                    f"joint_limit_overrides: J{key} is out of range for a "
+                    f"{len(joints)}-axis arm"
+                )
+            lo, hi = (float(bounds[0]), float(bounds[1]))
+            if lo >= hi:
+                raise DriverError(f"joint_limit_overrides: J{key} has lo >= hi")
+            model_lo, model_hi = joints[index]
+            joints[index] = (max(lo, model_lo), min(hi, model_hi))
+        limits.joints = joints
         return limits
+
+    @property
+    def model_joint_limits(self) -> list[tuple[float, float]] | None:
+        """The model's mechanical joint range in degrees, before any config override.
+
+        Limit *discovery* has to work against this rather than ``limits.joints``,
+        which may already be narrowed by an override you are trying to replace.
+        """
+        return list(self._joint_limits) if self._joint_limits else None
+
+    def check_pose_target(self, pose: Pose) -> str | None:
+        """Pre-flight a *cartesian* target against the joint soft limits.
+
+        Cartesian moves otherwise bypass the joint limits completely — only
+        joint-space moves go through check_joint_target — so a J5 limit added to keep
+        end-effector tooling clear of the arm is worthless if a move_to can drive J5
+        straight past it. Solves IK for the target and checks the resulting angles.
+
+        Advisory: IK returns one solution and the controller may pick a different
+        branch, so this can miss a case, but it catches the common one. Returns a
+        reason string, or None if the target looks acceptable.
+        """
+        api = self._api
+        if api is None:
+            return None
+        try:
+            code, angles = api.get_inverse_kinematics(
+                [pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw],
+                input_is_radian=False, return_is_radian=False,
+            )
+        except Exception:
+            return None      # advisory only
+        if code != 0 or angles is None:
+            return f"no inverse-kinematics solution for that pose (code={code})"
+        reason = self.check_joint_target([float(a) for a in angles[: self.axis_count]])
+        if reason:
+            solved = ", ".join(f"J{i+1}={a:.1f}" for i, a in
+                               enumerate(angles[: self.axis_count]))
+            return f"{reason} — the pose solves to [{solved}]"
+        return None
 
     @property
     def axis_count(self) -> int:

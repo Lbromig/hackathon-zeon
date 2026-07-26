@@ -20,13 +20,38 @@ stays a post-hackathon ambition, off the demo path. **As of this cycle the last 
 closed:** the camera transport is mounted (`cameras.router` + `camera_hub`, detections on
 `/ws/state`) and marker ids are the real printed stock (180–224). Nothing structural now stands
 between the repo and a real verdict — what remains is a threshold on an already-computed pose and
-one wired motion path, i.e. the two blockers that have persisted for two cycles: a real verifier
-and a non-empty `_execute`. The vision is no longer bottlenecked by capability; it is bottlenecked
-by choosing to spend a block on the scored half instead of more substrate.
+one wired motion path, i.e. the two blockers that have now persisted for **three** cycles: a real
+verifier and a non-empty `_execute`. Meanwhile the **dexterity half has quietly become the strong
+half**: the arm is teachable (free-drive mode), self-collision-safe (joint soft-limit enforcement +
+`check_pose_target` pre-flight), and its sequences are re-runnable — a genuinely good dexterity-and-teleop
+demo. The vision is no longer bottlenecked by capability; it is bottlenecked by *choice*. Every cycle
+that ends with `ok=True` hardcoded quietly re-bets the demo on the dexterity ceiling and leaves Track C's
+*scored* half — verification — on a slide. The next block either buys one real `ok=False`, or the team
+makes that dexterity bet explicit and owns that the "verified" in the title is aspirational.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T00:10Z — Third cycle: the dexterity half got genuinely good; the scored half is still a stub
+
+**Demo-readiness score: 3.5/10 for the *stated* PoC (verified uncap→aspirate) — flat for the third review running; ~8/10 for a live teleop + streaming-UI + safe-motion show, up from ~7.** The stated-PoC number will not move until a verifier can return `ok=False`, and it wasn't touched. What keeps climbing is the *unscored* demo: the arm is now genuinely nice to drive.
+
+**What changed since the last review.** Another substantial, real cycle — all in dexterity/safety, none in verification. The xArm driver grew a **safety/teaching layer** (on-disk WIP): **free-drive teaching mode** (`set_free_drive`, mode 2) so poses can be hand-taught; **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`); and a **cartesian pre-flight** (`check_pose_target`) that solves IK and refuses any move landing outside the soft limits — closing a real hole where cartesian moves silently bypassed every joint limit. `scripts/gripper_sequence.py` is now **idempotent** with an all-poses `_preflight`, after two consecutive runs actually tripped controller collision error 31 (J5 folding the flange camera into the arm). A new interactive `scripts/find_joint_limit.py` *measures* that clearance under human supervision. Plus more `camera_hub`, a `validate_camera.py`, and pyrealsense2 build tooling. This is careful, hard-won hardware work — the arm went from "moves" to "safe and teachable."
+
+**What did NOT change — third cycle unchanged, and it's still the whole ballgame.** All four `core/verification/agents.py` agents **still** `return VerificationResult(ok=True, confidence=0.0, detail="stub")`. `uncap_aspirate.py::_execute` **still** has every driver call commented out (and so does the agent path via `Skill.run`). The OT-One `connect()`/`_send()` are **still** `TODO`. Nothing autonomous moves; nothing is actually verified. HEAD hasn't advanced past last run's doc commit — all this cycle's work is still uncommitted WIP on disk.
+
+**The single biggest threat — the prioritization pattern is now the risk, not any one gap.** For three cycles the review has named the same two blockers, and for three cycles the team has built *beside* them. The inputs have been complete the whole time — marker pose (`entity_world_pose`), reachable detections (`/ws/state`), soft-limit-safe motion primitives (`pick_place` + `check_pose_target`). `tube_aligned` is *still* one subtraction and a threshold. The danger is no longer "can't"; it's that the demo is drifting, cycle by cycle, into an excellent **teleop/dexterity** show that quietly abandons the *verification* thesis in its own title. A judge asking "what happens if the cap doesn't come off?" gets, for the third review running, no live answer.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (escalated):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — unchanged, docs-only. **Now also freeze dexterity/safety hardening**: the arm is safe and teachable enough for the demo; further limit-tuning beyond measuring the one J5 override (Q-JLIMIT-1) is displacement activity. Infra was frozen last cycle and shipped more anyway — this time it must actually stop.
+- **KEEP:** the now-strong teach + safe-motion layer; the P0 agent loop as orchestrator; the hardcoded `PLAN`; fiducial detection + calibration twin + live camera transport as the verification substrate.
+- **ADD, in strict priority (identical to the last two cycles because it still isn't done):** (1) make **one** verifier real off the existing fiducial pose — `tube_aligned` (pose-error threshold) or `cap_removed` (marker-gone) — so the loop can fail; (2) wire `_execute` for the **floor** path (snap-cap → present → OT aspirate) calling the real, now-soft-limit-safe `pick_place` primitives; (3) script **one deliberate failure injection** for the reveal. The safe-motion work actually *lowers the risk* of doing (2) now — there's less excuse than ever.
+- **DECIDE (Q-PRIORITY-1, escalated to a demand):** either commit the next block to the verdict, or state on the record that the demo bets on the screw-cap dexterity ceiling and drops "verified" from the pitch. Silence keeps choosing the latter by default.
+
+**Opposing view (steelman).** The dexterity work isn't a detour from Track C — *dexterity is half the track*, and a two-arm rig that can be hand-taught and provably won't self-collide is a legitimately strong, low-risk showpiece. If verification really is "one subtraction," it survives being the literal last commit, so hardening the guaranteed half first is defensible risk management. Fair — but "one subtraction" undone across three cycles is no longer a schedule, it's a revealed preference; and a Track-C demo that proves only the unscored half is leaving points on the table it already paid for the substrate to collect.
+
+**Verdict:** The strongest dexterity cycle yet, and the third in a row where the plot didn't advance. The repo has had everything needed to stop being theater for three cycles. The next block still has exactly one job: *make one verifier return a real `ok=False`* — and now there's a safe arm to fail in front of.
 
 ### 2026-07-26T00:14Z — The infra gap closed; the scored gap didn't move (a wasted cycle for Track C's theme)
 

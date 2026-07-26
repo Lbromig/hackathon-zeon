@@ -45,8 +45,17 @@ HOLDING_ARM: str = os.getenv("HZ_HOLDING_ARM", "left")
 GRASP_WIDTH_M: float = float(os.getenv("HZ_GRASP_WIDTH_M", "0.0153"))
 
 DEFAULT_FLEET: list[dict[str, Any]] = [
+    # J5 measured by hand on 2026-07-26 with scripts/find_joint_limit.py: swept in
+    # 3° steps with a human confirming clearance each step, stopped at +118.9° and
+    # -83.4°, then backed off the script's 5° margin. Keeps the end-effector tooling
+    # from folding back into the arm — the controller's self-collision detection
+    # models the arm's links only and knows nothing about anything on the flange.
+    # Measured on this arm's tooling: re-run the script if the end effector changes.
     {"type": "xarm", "id": "left", "name": "Left arm", "ip": "192.168.3.13",
-     "gripper": "auto", "limits": TEACH_LIMITS},
+     "gripper": "auto", "limits": TEACH_LIMITS,
+     "joint_limit_overrides": {"5": [-78.4, 113.9]}},
+    # No override yet — J5 has not been swept on this arm. Its tooling differs, so
+    # the left arm's numbers must not be copied across.
     {"type": "xarm", "id": "right", "name": "Right arm", "ip": "192.168.3.11",
      "gripper": "auto", "limits": TEACH_LIMITS},
     {"type": "opentrons", "id": "ot", "name": "Opentrons (OT-One)", "transport": "serial",

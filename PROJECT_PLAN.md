@@ -100,7 +100,7 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
 ## Timeline
 
 - [x] **H+2** — Direction locked, 2 xArms + OT + cameras reserved, repo cloned, roles set
-- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
+- [x] **H+6** — Backend boots (FastAPI + REST + WS), UI lists the fleet, teach panel drives an arm. xArm driver connects + moves for real (`drivers/xarm/driver.py` on the real `XArmAPI`, `scripts/init_xarm.py`). Teach layer is now hardened + tested (`backend/tests/test_teach_api.py`, `TeachPanel.vue`/`MoveTo.vue`), and the **camera stream path is mounted** (`main.py:67` includes `cameras.router`; MJPEG `/api/cameras/{id}/stream`, detections on `/ws/state`) with a RealSense RGB-D driver on disk. This cycle the **xArm safety/teaching layer deepened** (on-disk WIP): manual **free-drive teaching mode** (`set_free_drive`, xArm mode 2), **joint soft-limit enforcement** (model-table backfill + config `joint_limit_overrides`) and a **cartesian pre-flight** (`check_pose_target`) that refuses moves whose IK lands outside the soft limits, plus an interactive `scripts/find_joint_limit.py` to *measure* the J5 wrist-vs-flange-camera clearance the controller can't model — genuine dexterity groundwork. *OT driver's one real action (a serial aspirate) is still unverified here — its `connect()`/`_send()` are `TODO`; real OT serial work lives on `origin/feat/ot-one-serial-driver`, not merged into this branch.*
 - [ ] **H+12** — FLOOR demo: snap-cap uncap + place tube in OT nest + aspirate, end-to-end (guaranteed baseline). *Not yet real: `backend/app/workflows/uncap_aspirate.py::_execute` still has every driver call commented out (TODO), so nothing moves autonomously end-to-end.*
 - [ ] **H+16** — Dale: dual-arm ratchet-unscrew stable · Lukas: arm↔OT calibration done · Di: cap-off + aspiration agents returning real verdicts. *Landed toward this: Di's fiducial perception is real (`core/perception/fiducials.py` — AprilTag tag36h11 + 6-DoF pose), the calibration pipeline now runs and publishes the twin (`/ws/calibrate`), the camera transport is now mounted (`cameras.router` + `camera_hub`, detections on `/ws/state`), and `MARKER_MAP` now carries real stock ids (180–224). Still open — unchanged this cycle: verification agents remain `ok=True` stubs (no real verdict yet); calibration hand-eye/world-frame/scan steps are TODO so twin poses are placeholder; marker→entity offsets unmeasured.*
 - [ ] **H+20** — TARGET: dual-arm screw-cap uncap + arm-held aspiration + verify→retry loop end-to-end; stretch decision
@@ -137,7 +137,11 @@ be as honest as the verifiers — which, as of `c29a76c`, are real and fail clos
 - Fiducial poses will still be wrong until measured: `core/calibration/markers.py::MARKER_MAP` now uses
   **real** printed stock ids (`tag36h11` 180–224) but keeps `identity()` marker→entity offsets
   (0.02 placeholder). Measure the marker→entity offsets before trusting twin poses for any verifier.
-- **Prioritization risk (this cycle).** The last two reviews named exactly two blockers — real verifiers
-  and a wired `_execute`. This cycle shipped infra around them (camera hub, teach hardening, docker,
-  mock fleet, motion-validation scripts) but touched **neither**. Everything needed to make one verifier
-  real has been on disk for a full cycle; the next block must spend on the verdict, not more substrate.
+- **Prioritization risk (now three cycles).** Three straight reviews named exactly two blockers — real
+  verifiers and a wired `_execute`. This cycle again shipped *around* them: deeper xArm safety/teaching
+  (free-drive mode, joint soft-limit enforcement + `check_pose_target` pre-flight, `find_joint_limit.py`),
+  more camera-hub and validation scripts — real dexterity progress, but **neither blocker moved**. The arm
+  is now genuinely operable and self-collision-safe; the *scored* half of Track C (verification) is exactly
+  as stubbed as it was three cycles ago. Everything needed to make one verifier real has sat on disk for
+  three cycles. The next block must spend on the verdict, not more substrate — or the team must state
+  explicitly that it is betting the demo on the dexterity ceiling (Q-PRIORITY-1).

@@ -115,7 +115,11 @@ The diagram is the **target** architecture; nodes are annotated with what is rea
   The **calibration pipeline** (`core/calibration/pipeline.py`, streamed on `/ws/calibrate`) now runs
   end-to-end and **publishes the twin** (`twin.set_world`): it connects the fleet, registers skeleton
   geometry (tip box + tube rack) and seeds a demo tube, so `services/twin.get_world()` is populated
-  after a calibrate run. The xArm driver runs the real vendor SDK; other drivers have mock counterparts.
+  after a calibrate run. The xArm driver runs the real vendor SDK and has grown a **safety/teaching
+  layer** (on-disk WIP): manual free-drive teaching (`set_free_drive`, mode 2), joint soft-limit
+  enforcement (model-table backfill + config overrides) and a cartesian pre-flight (`check_pose_target`)
+  that rejects moves whose IK exits the soft limits, with `scripts/find_joint_limit.py` to measure the
+  flange-camera clearance the controller can't model; other drivers have mock counterparts.
   The **camera path is now live end-to-end:** `main.py` mounts `cameras.router`
   (`backend/app/api/cameras.py`, MJPEG `/api/cameras/{id}/stream` + `/detections`) backed by a
   worker-threaded `services/camera_hub.py`, and its per-camera detections ride `/ws/state`; a
