@@ -25,30 +25,45 @@ tip, OT aspirates) drives real capability calls against **taught poses**, guarde
 `run()` now genuinely executes → verifies → retries. For the first time the real verdicts **gate real motion**,
 not just twin geometry (`backend/tests/test_workflow_execute.py`). The whole stack is in git
 (commits `2b0ed34`..`e641f56`; HEAD `e641f56`) and a clean checkout of `agent-loop-p0` runs the real thing.
-**This cycle the four-review stall broke on two of the three deciding items — the remaining gap is now essentially one.**
-(1) The Opentrons `aspirate` transport is **still** a no-op (`connect`/`_send` TODO, re-verified in HEAD `8a52ec4`), so the
-narrative climax is mimed until `origin/feat/ot-one-serial-driver` is merged — this is now the **lone** deciding item still
-standing still, and it is room-only. (2) Bench teaching **unstalled**: `data/teach_poses.json` jumped from 2 to **8 poses
-across both arms**, and — for the first time in four reviews — the **left arm is being taught** (`tube_hold`,
-`tube_hold_approach`, saved 05:14–05:24Z); the rest can be finished at the bench and `preflight` will run. (3) The
-verify→retry loop's **reparent half is now written**: `uncap_aspirate.py` gains `_apply_twin_effect`, and the choreography's
-grip/release acts carry entity-consistent `attach=`/`to=` ids (`tube_1` is seeded by `pipeline.py`, `left_tool`/`right_tool`/
-`dropzone` exist), so a real grasp calls `wm.reparent(...)` in production for the first time — the parent-based predicates
-(`grasp_secure`, `cap_removed`'s reparent clause) can now turn true from a real grasp; the only gap is that this WIP is not
-yet committed. And the **motion→twin half** (the arm-FK → twin kinematics loop, `core/kinematics.py` + `services/kinematics.py`,
-@12 Hz, wired in `main.py`) was **committed** (`8a52ec4`) — the twin's arms now move with the real hardware on a clean
-checkout, a genuine upgrade for the world map and the geometry verifiers (`tube_aligned`, `cap_removed`-separation). The
-**dexterity half remains the strong half**: the arm is teachable (free-drive), self-collision-safe (joint soft-limit
-enforcement + `check_pose_target`, one arm's J5 clearance measured), and re-runnable. The story is no longer *can we build it*
-or even *are we building the right things* — the team demonstrably is, and this cycle went to the room — it is **whether the
-one remaining room-only beat, the OT serial transport, lands before the clock runs out.** The next block's job is narrow and
-at the bench: **merge the OT transport, finish teaching the poses, commit the reparent WIP** (or scope the verify moment onto
-the now-committed geometry predicate — measure the one board spacing and it's metrically real), then one real `ok=False` stops
-one real aspirate.
+**This cycle the dexterity ceiling rose sharply — but every gain is laptop-buildable and uncommitted, while the one beat that
+decides the demo stood still again.** The genuinely-new work is the **dual-arm ratchet-unscrew — the TARGET rung's signature
+move — now implemented and thoroughly tested** (`core/motion/cap_ops.py` + 12 tests): it respects the tool-cabling limit with
+180° ratchet bites, net-zero wrist travel so it is repeatable, and pre-flights every wrist angle against the J6 limit before
+moving; it's exposed via a teach endpoint + `CapTools.vue`, alongside hand-guided **path teaching** (deadband + RDP). This
+materially strengthens the honest fallback: even if the Opentrons never draws, *a dual-arm ratchet-unscrew gated by a real
+`cap_removed` verdict is a compelling Track-C dexterity-plus-verification demo on its own.* And the reparent coupling is now not
+just written but **tested** — `test_workflow_twin_effects.py` proves `grasp_secure`/`cap_removed` flip true after the grasp.
+**But three things did not move, and they are the ones that matter:** (1) the Opentrons `aspirate` transport is **still** a
+no-op (`connect`/`_send` TODO, HEAD unchanged at `8a52ec4`), so the narrative climax is still mimed until
+`origin/feat/ot-one-serial-driver` is merged — sixth review running; (2) bench teaching **stalled again** at 8 poses (no new
+teaching this cycle) so `preflight` still refuses the full choreography; (3) **none of the new work is committed** — no team
+commit landed this cycle, re-opening the exact WIP-loss risk the project already paid for once. The ratchet also isn't wired
+into the auto choreography — it's a manual teach-panel tool, not part of the end-to-end run. So the story is no longer *can we
+build it* — the team keeps building impressive, on-theme dexterity — it is **whether the room-only work (merge the OT transport,
+finish the poses) gets done before the clock runs out, or whether the team keeps reaching for the buildable-anywhere half.** The
+next block's job is narrow and at the bench: **merge the OT transport, finish teaching the poses, and commit the whole WIP batch**
+(or scope the verify moment onto the committed geometry predicate — measure the one board spacing and it's metrically real), then
+one real `ok=False` stops one real aspirate.
 
 ---
 
 ## Critical review log (newest first)
+
+### 2026-07-26T06:10Z — The dexterity ceiling jumped (a tested ratchet-unscrew) — but it's uncommitted, laptop-built, and the OT beat mimed a sixth time.
+
+**Demo-readiness score: 7.5/10 for the *stated* PoC (verified uncap→aspirate) — held, but for a new reason.** ~8.0/10 for the dexterity + teleop + world-map show (up from ~8.7 framing last cycle only because I'm now scoring the *demonstrable-today* dexterity story specifically, which genuinely strengthened). No team commit landed this cycle — HEAD's parent is still `8a52ec4` — so everything below is working-tree WIP, `py_compile`-clean but not in git.
+
+**What genuinely moved — the TARGET rung's signature move now exists in code.** The headline is `core/motion/cap_ops.py`: the **dual-arm ratchet-unscrew**, the exact dexterity beat the TARGET rung is named for, implemented properly. It treats the tool cabling honestly — the wrist can't spin 360°, so it takes 180° bites (turn gripped / open / unwind free / re-grip), leaving the cap backed off a full turn while the wrist returns *exactly* to start, which makes the routine repeatable rather than walking J6 toward its limit; and it **pre-flights every intermediate wrist angle against the J6 soft limit before it moves**. It's backed by 12 unit tests (`test_cap_ops.py`) covering the ratchet plan, repeatability, joint-limit refusal, and end-state, and exposed through a teach endpoint (`POST /api/teach/{id}/cap`) + a `CapTools.vue` panel. Hand-guided **path teaching** landed alongside it (`path_teach.py` with a clean deadband + Ramer–Douglas–Peucker simplifier, `teach_paths.py`, `path_recorder.py`). And the reparent coupling from last cycle is now **tested** — `test_workflow_twin_effects.py` drives the choreography's grip/release acts and asserts `grasp_secure`/`cap_removed` flip true after the grasp. This is real, on-theme, well-engineered dexterity work, and it raises the project's ceiling: it converts "dual-arm screw-cap uncap" from an aspiration in the fallback ladder into tested code.
+
+**The single biggest threat — the same room-only OT beat, mimed a sixth time, now with allocation drift back beside it.** For four cycles the top threat was allocation drift; last cycle it looked broken; this cycle it **re-emerged**, and the diagnosis is unusually clean. Of everything the team touched this cycle — a ratchet-unscrew, a path-teacher, a reparent test — *every single item is buildable at a laptop or a quiet bench and none of it is the thing that decides the demo.* Meanwhile the two room-only deciding items stood still: the OT `connect()`/`_send()` are still `TODO` (re-verified, unchanged in HEAD `8a52ec4`), `feat/ot-one-serial-driver` is still unmerged, so `_execute` calls `ot.aspirate(...)` and nothing draws — the narrative climax, mimed for a **sixth** review; and `data/teach_poses.json` didn't gain a single pose (mtime unmoved at 05:24Z). Two riders make it worse: (1) the entire new batch is **uncommitted** — a clean checkout at hour 24 has none of the ratchet, the path-teacher, or the reparent coupling, the precise Q-COMMIT-1 failure this project already suffered and fixed; (2) the ratchet **isn't even wired into the auto choreography** — `_execute` still runs the FLOOR snap-cap, so the shiny new capability is a manual teach-panel button, not part of the end-to-end run. A hackathon dies exactly here: hour 24, a beautiful and genuinely dexterous system, whose headline reveal — the pipette drawing from the tube the robot uncapped — still physically does not happen, and whose best new code isn't on the demo branch.
+
+**Refine scope for the time remaining.**
+- **CUT / FREEZE (hardened):** learned perception (SAM 2 / FoundationPose / Kaolin), background verifier, closed-loop recovery — docs-only. **Freeze new manipulation code now.** The ratchet-unscrew is the natural stopping point for dexterity — it's tested and it's enough. Any further laptop/bench-buildable code this cycle (more primitives, more teaching UX) is displacement while the OT beat mimes and the poses sit unfinished.
+- **KEEP:** everything committed (`_execute` + choreography, real verifiers + fusion, world-frame calibration + world-map viz, the committed kinematics loop, still/remote camera hedges, P0 agent loop, teach + safe-motion). **And commit this cycle's whole WIP batch** — the ratchet-unscrew + tests, the path-teacher, the reparent coupling + its test, the teach-API/frontend changes. It's this cycle's at-risk keeper and it's larger than any prior uncommitted pile.
+- **ADD, in strict priority (room-only first, and it is the whole game):** (1) **merge `origin/feat/ot-one-serial-driver`** so the aspirate physically draws — room-only, sixth cycle (Q-OT-1). (2) **finish teaching the remaining poses on both arms** — room-only, stalled again (Q-POSES-1). (3) **commit the WIP batch** — minutes, laptop (Q-COMMIT-2). (4) **decide the ratchet's demo role** — either wire it into a TARGET choreography or plan to drive it live from the teach panel as the dexterity showpiece (Q-CAPOPS-1). (5) **measure the 210/211 board spacing** (one caliper reading) so the world frame is metrically real (Q-CALIB-1). (6) then script **one deliberate failure injection** on a live predicate (Q-DEMO-1).
+- **DECIDE (now sharper):** which demo you're actually giving. Two honest options now exist and both are strong. (A) *Full stated PoC* — needs the OT merge + finished poses, room-only, and it's mimed six cycles running. (B) *Dexterity-forward* — the dual-arm ratchet-unscrew (drive it from the teach panel) gated by a real `cap_removed` verdict, no OT draw claimed. (B) is now genuinely compelling and almost entirely done; if the OT won't merge in the next block, commit to (B) openly rather than mime (A).
+
+**Opposing view (steelman).** The fair read: the team built the single most theme-defining artifact in the repo. Track C is *dexterity and physical verification*, and a tested dual-arm ratchet-unscrew that respects real cabling limits and pre-flights its own joint constraints is exactly the hard, credible dexterity the track rewards — arguably worth more to the score than a mimed pipette draw, because it's a capability a judge can watch succeed live and understand instantly. On that view the ceiling rose and the score should too, and the "allocation drift" charge is unfair: you build your strongest asset when you can, and the OT merge is a scheduling fact, not an engineering failure. The counter is unchanged and, at six cycles, close to decisive: the ratchet, the path-teacher, and the reparent test all share one property — they could be done at any time, including after the demo — while the OT rig and pose-teaching can only happen in the room and will eat the final hour if deferred; and none of the new work is even committed, so today it doesn't survive a fresh checkout. Held at 7.5 because the *stated* PoC is exactly as demonstrable as last cycle — climax still mimed, poses still short — while the *fallback* demo got materially stronger. The next cycle spent on more buildable-anywhere code is the one where the clock, not the capability, picks the demo for them — but that same strengthened fallback means the floor under a bad ending is higher than it's ever been.
 
 ### 2026-07-26T05:40Z — The four-review stall broke: two of three deciding items moved, one of them room-only. Down to one beat.
 
