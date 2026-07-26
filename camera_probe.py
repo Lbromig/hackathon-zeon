@@ -698,6 +698,42 @@ def capture(out_prefix: str) -> int:
     return 1
 
 
+def _sdk_can_claim() -> bool:
+    """Whether librealsense can actually open a device, tested in a child.
+
+    Asking in-process is not an option. The bundled librealsense 2.56.5 SIGSEGVs
+    instead of erroring when it cannot claim an interface, so the question
+    "can the SDK work here?" would kill whoever asked it. A child process both
+    answers it and absorbs the crash: a child that dies by signal is a no.
+
+    Cached, because starting a pipeline is not free and the answer does not
+    change while a server is up.
+    """
+    global _SDK_CLAIM_OK
+    if _SDK_CLAIM_OK is not None:
+        return _SDK_CLAIM_OK
+
+    probe = r"""
+import pyrealsense2 as rs
+p = rs.pipeline(); c = rs.config()
+c.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+p.start(c); p.stop()
+print("CLAIM_OK")
+"""
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=25, check=False,
+        )
+        _SDK_CLAIM_OK = "CLAIM_OK" in (done.stdout or "")
+    except (subprocess.SubprocessError, OSError):
+        _SDK_CLAIM_OK = False
+    return _SDK_CLAIM_OK
+
+
+_SDK_CLAIM_OK: bool | None = None
+
+
 class FrameFeed:
     """One reader for the camera, shared by every viewer.
 
@@ -816,10 +852,20 @@ class FrameFeed:
                 self.source = "synthetic"
                 return self._synthetic_frame()
 
-            # The SDK first: it is the only metric-depth path, and on macOS it
-            # is usually the only working one.
+            # AVFoundation FIRST, even though it cannot give depth.
+            #
+            # The SDK used to be tried first, on the grounds that it is the only
+            # metric-depth path. That made a live view hostage to a library that
+            # is not crash safe: the bundled librealsense 2.56.5 SIGSEGVs rather
+            # than erroring when it cannot claim an interface, and because the
+            # attempt runs in-process it took the whole server down with it. A
+            # colour frame that appears beats a depth frame that segfaults, so
+            # the path that cannot crash goes first and the SDK is attempted
+            # only when AVFoundation is unavailable AND a subprocess has
+            # confirmed the SDK can actually claim the device.
             if self._pipe is None and self._cap is None:
-                self._start_realsense()
+                if not self._open_cv2() and _sdk_can_claim():
+                    self._start_realsense()
             if self._pipe is not None:
                 try:
                     frame = self._read_realsense(view)
@@ -831,35 +877,16 @@ class FrameFeed:
                     self.error = ""
                 return frame
 
-            try:
-                import cv2
-            except ImportError:
-                self.error = "cv2 is not installed in this interpreter."
-                return None
             if self._cap is None:
-                # Retry, and do not give up on the first refusal. OpenCV's
-                # AVFoundation backend calls requestAccessForMediaType and then
-                # spins the run loop, so the opens issued while that request is
-                # still pending fail with "not authorized ... requesting" even
-                # though access is about to be granted. Trying once made `serve`
-                # refuse to start moments before the very same call succeeded.
-                cap = None
-                for attempt in range(6):
-                    cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
-                    if cap.isOpened():
-                        break
-                    cap.release()
-                    cap = None
-                    time.sleep(0.4 if attempt < 3 else 0.8)
-                if cap is None:
-                    cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
-                if not cap.isOpened():
-                    cap.release()
-                    result = probe_opencv(detect())
-                    self.error = f"{result.diagnosis.value}: {result.detail}"
-                    return None
-                self._cap = cap
-                self.source = "opencv"
+                if not self.error:
+                    self.error = "no capture path opened"
+                return None
+            if (view or self.view) == "depth":
+                # AVFoundation carries no depth. Say so on the frame rather than
+                # failing the request: a broken image icon reads as a glitching
+                # camera, when the truth is that this path structurally cannot
+                # provide depth and the SDK path is the one to fix.
+                return self._depth_unavailable_frame()
             ok, frame = self._cap.read()
             if not ok or frame is None:
                 self.error = "device opened but returned no frame"
@@ -867,6 +894,51 @@ class FrameFeed:
             self.error = ""
             self._n += 1
             return frame
+
+    def _open_cv2(self) -> bool:
+        """Open this feed's camera through AVFoundation. True on success.
+
+        Retries rather than giving up on the first refusal: OpenCV's backend
+        calls requestAccessForMediaType and then spins the run loop, so opens
+        issued while that request is still pending fail with
+        "not authorized ... requesting" even though access is about to be
+        granted. Trying once made `serve` refuse to start moments before the
+        same call succeeded.
+        """
+        try:
+            import cv2
+        except ImportError:
+            self.error = "cv2 is not installed in this interpreter."
+            return False
+
+        for attempt in range(6):
+            cap = cv2.VideoCapture(self.index, cv2.CAP_AVFOUNDATION)
+            if cap.isOpened():
+                self._cap = cap
+                self.source = "opencv"
+                self.error = ""
+                return True
+            cap.release()
+            time.sleep(0.4 if attempt < 3 else 0.8)
+
+        self.error = (
+            f"AVFoundation would not open capture index {self.index} after 6 tries"
+        )
+        return False
+
+    def _depth_unavailable_frame(self) -> Any:
+        import cv2
+        import numpy as np
+
+        frame = np.zeros((480, 640, 3), dtype="uint8")
+        frame[:] = (32, 24, 16)
+        cv2.putText(frame, "no depth on this path", (60, 220),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+        cv2.putText(frame, "colour via AVFoundation; depth needs the", (60, 260),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+        cv2.putText(frame, "librealsense path (see preflight)", (60, 285),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+        return frame
 
     def jpeg(self, quality: int = 80, view: str | None = None) -> bytes | None:
         frame = self.read(view)
