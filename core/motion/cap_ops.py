@@ -5,14 +5,18 @@ the wrist turns one **bite** with the cap held, opens, turns back by the same am
 with the cap free, re-grips, and turns again. Several bites therefore back the cap off
 a full turn while the wrist itself never travels more than one bite in one go.
 
-    +bite  (gripped — cap turns)
-     open  (let go)
-    -bite  (free — wrist unwinds, cap stays where it is)
-    close  (re-grip)
-    +bite  (gripped — cap turns again)
-     ...
-     open  (release the cap)
-    -bite  (free — wrist returns to where it started)
+    +s*bite  (gripped — cap turns)
+       open  (let go)
+    -s*bite  (free — wrist unwinds, cap stays where it is)
+      close  (re-grip)
+    +s*bite  (gripped — cap turns again)
+        ...
+       open  (release the cap)
+    -s*bite  (free — wrist returns to where it started)
+
+where ``s`` is :data:`UNSCREW_SIGN` — which way the tool axis turns to *loosen*, which is a
+fact about the thread and the tool mounting rather than something this module may assume. It
+was written here as a bare ``+bite`` once, and on the bench that tightened caps.
 
 Net effect per call: the cap rotates ``total_deg`` degrees, the cap is left released,
 and the wrist ends exactly where it began. Zero net wrist travel is what makes the
