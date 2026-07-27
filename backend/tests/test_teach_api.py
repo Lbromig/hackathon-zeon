@@ -11,6 +11,8 @@ import drivers.mock  # noqa: F401  -- registers the mock driver types
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.api import teach
+
 FLEET = [
     {"type": "mock_arm", "id": "left", "name": "Left arm",
      "limits": {"joints": [[-360, 360]] * 6, "max_jog_linear": 50, "max_jog_angular": 15,
@@ -136,13 +138,42 @@ def test_nearby_cartesian_move_is_allowed(client):
     assert arm(client).get_pose().x == pytest.approx(220)
 
 
-def test_large_rotation_is_refused(client):
-    """Same xyz, flipped wrist, is still a big unplanned swing."""
+def test_large_rotation_is_refused_when_a_cap_is_configured(client, monkeypatch):
+    """Same xyz, flipped wrist, is still a big unplanned swing — IF a cap is set.
+
+    The cap is lifted by default (2026-07-26 operator decision: it refused real
+    waypoint-to-waypoint moves), so this pins it explicitly rather than relying on the
+    default. The guard itself still has to work for anyone who restores it.
+    """
+    monkeypatch.setattr(teach, "MAX_MOVE_TO_ROTATION_DEG", 90.0)
     here = arm(client).get_pose().__dict__
     body = client.post("/api/arms/left/move_to",
                        json={"pose": {**here, "yaw": here["yaw"] + 170}}).json()
     assert not body["ok"] and "rotates" in body["detail"]
     assert arm(client).get_pose().yaw == pytest.approx(here["yaw"])
+
+
+def test_a_large_rotation_is_allowed_by_default(client):
+    """The default is no cap: a waypoint-to-waypoint move may rotate freely."""
+    here = arm(client).get_pose().__dict__
+    body = client.post("/api/arms/left/move_to",
+                       json={"pose": {**here, "yaw": here["yaw"] + 84}}).json()
+    assert body["ok"], body
+    assert arm(client).get_pose().yaw == pytest.approx(here["yaw"] + 84)
+
+
+def test_a_far_cartesian_target_is_allowed_when_the_cap_is_lifted(client):
+    """The bench case: 563 mm between two taught waypoints, previously refused at 250 mm.
+
+    The FLEET fixture still pins 250 so `test_far_cartesian_move_is_refused` keeps testing
+    the guard; this states the shipped default (100 m, i.e. no cap) on the arm under test.
+    """
+    arm(client).limits.max_move_to_jump = 100_000.0
+    here = arm(client).get_pose().__dict__
+    body = client.post("/api/arms/left/move_to",
+                       json={"pose": {**here, "x": here["x"] + 563.5}}).json()
+    assert body["ok"], body
+    assert arm(client).get_pose().x == pytest.approx(here["x"] + 563.5)
 
 
 def test_joint_target_outside_limits_is_refused(client):

@@ -369,6 +369,17 @@ class Loop(ActionBase):
     threshold_mm: float = Field(default=1.5, gt=0.0)
     """The remaining offset at which the loop is converged (D16/Q4)."""
     watch_slot: SlotName = "selected_offset"
+    corrected_axes: tuple[str, ...] = ("x", "y", "z")
+    """Which axes this loop is responsible for closing, and therefore which must be OBSERVED
+    before it may claim convergence (R-VIS-4).
+
+    All three by default, which is the safe reading: a solve that saw x and y and reported a
+    partial magnitude must not terminate a loop whose z was never measured. Narrow it only when
+    the rig genuinely cannot close an axis and the plan means to say so — a single side-on view
+    observes one in-plane axis, because the other runs along the camera's optical axis
+    (measured on this bench: 2.07 px/mm against 0.06). Declaring that in the plan is honest;
+    inferring it from whatever happened to be visible is not, because then an occluded tag
+    silently shrinks the goal and the loop reports success for reaching it."""
     max_iterations: int = Field(default=12, ge=1, le=MAX_LOOP_ITERATIONS)
     no_progress_abort: int = Field(default=3, ge=1)
     """Consecutive iterations without improvement before the loop aborts as `stalled`. The
@@ -554,6 +565,14 @@ class DecapOutputs(OutputsBase):
     wrist configuration than one that did not."""
     rewind_deg: float = 0.0
     """How far the wrist was unwound before starting. 0 when no rewind was needed."""
+    ended_gripped: bool = True
+    """Whether the jaws finished **closed on the cap**.
+
+    The next authored action lifts the cap clear of the tube, and it cannot do that with open
+    jaws — the bench saw exactly that: "the gripper opened first, so it didn't hold on to the
+    decapped cap". Whether the arm still has the cap therefore decides what its next move may
+    safely be, which makes it a fact the record has to carry rather than one a reader infers
+    from configuration."""
 
 
 class TraverseOutputs(OutputsBase):

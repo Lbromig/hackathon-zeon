@@ -447,13 +447,13 @@ def decap(action: ArmDecap, ctx: ActionContext) -> DecapOutputs:
         # different wrist configuration than one that did not, and the record has to show it.
         ctx.warn("wrist_rewound_before_decap",
                  f"the wrist was parked too far round for a {result.step_deg:g}° bite to stay "
-                 f"inside its soft limit, so it was rewound {result.unwound_deg:.0f}° with the "
+                 f"inside its soft limit, so it was rewound {abs(result.unwound_deg):.0f}° with the "
                  f"jaws open before the first bite. The cap did not turn; the {result.bites} "
                  f"bites then ran normally.")
 
     if not result.returned:
-        # Reported, not raised: the cap is off and the jaws are open, so the action did what
-        # it was for. A wrist that did not return is a mechanical problem that must reach the
+        # Reported, not raised: the cap is off and (by default) still held, so the action did
+        # what it was for. A wrist that did not return is a mechanical problem that must reach the
         # operator (R-LOG-6) before the next decap walks the joint further.
         ctx.warn("wrist_did_not_return",
                  f"wrist ended {result.net_wrist_travel_deg:+.2f}° from where it started, "
@@ -468,6 +468,7 @@ def decap(action: ArmDecap, ctx: ActionContext) -> DecapOutputs:
         preflight_ok=result.preflight_ok,
         wrist_rewound_before_decap=bool(result.unwound_deg),
         rewind_deg=float(result.unwound_deg),
+        ended_gripped=bool(result.ended_gripped),
     )
 
 

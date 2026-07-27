@@ -164,7 +164,7 @@ export function summarize(item: ChainRow, ctx: SummaryContext): Bit[] {
       const rewound = out?.wrist_rewound_before_decap === true;
       const rewindDeg = num(out?.rewind_deg);
       if (rewound) {
-        push(rewindDeg ? `rewound ${deg(rewindDeg)}` : "rewound", "warn",
+        push(rewindDeg ? `rewound ${deg(Math.abs(rewindDeg))}` : "rewound", "warn",
           "the wrist had to be unwound before the ratchet could start");
       } else if (hasWarning(item, "wrist_rewound_before_decap")) {
         // Both halves exist now: the field and the `ctx.warn`. This branch catches the case

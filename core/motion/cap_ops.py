@@ -157,7 +157,7 @@ class CapConfig:
     # are OPEN, immediately before closing them, so the lift never drags the cap sideways.
     #
     # The consequence is deliberate and worth stating: the arm does NOT end where it started.
-    # It ends `(bites - 1) * lift_per_regrip_mm` higher, which is why the result reports
+    # It ends `closes * lift_per_regrip_mm` higher, which is why the result reports
     # `lifted_mm` separately from the wrist's net travel. Set 0 to disable.
     # Which way the tool axis turns to LOOSEN. See UNSCREW_SIGN: the bench found the old
     # hardcoded positive turn was tightening the cap, and tightening a seated cap drives the
@@ -229,7 +229,7 @@ class RatchetResult:
     #: safely be, and a lift with open jaws carries nothing.
     ended_gripped: bool = END_GRIPPED
     unwound_deg: float = 0.0
-    #: Total cartesian +Z the arm was raised across the run, `(bites - 1) * lift_per_regrip_mm`
+    #: Total cartesian +Z the arm was raised across the run, `closes * lift_per_regrip_mm`
     #: when lifting is on. The arm therefore does NOT end where it started; the wrist still
     #: does, which is what `net_wrist_travel_deg` tracks.
     lifted_mm: float = 0.0
@@ -443,10 +443,10 @@ def unscrew_cap(arm: ArmDriver, cfg: CapConfig | None = None,
     note = "" if result.returned else (
         f" WARNING: wrist ended {result.net_wrist_travel_deg:+.1f}° from start, expected 0")
     prefix = ("" if not result.unwound_deg else
-              f"rewound wrist {result.unwound_deg:.0f}° first (jaws open, cap untouched); ")
+              f"rewound wrist {abs(result.unwound_deg):.0f}° first (jaws open, cap untouched); ")
     lift = ("" if not result.lifted_mm else
             f", arm raised {result.lifted_mm:.0f} mm following the thread")
-    return (f"{prefix}unscrewed {result.total_rotation_deg:.0f}° in {result.bites} x "
+    return (f"{prefix}unscrewed {abs(result.total_rotation_deg):.0f}° in {result.bites} x "
             f"{result.step_deg:.0f}° bites; "
             f"{'cap held' if result.ended_gripped else 'cap released'}, "
             f"wrist returned to start"
